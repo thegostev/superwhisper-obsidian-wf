@@ -5,6 +5,12 @@
 [![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](https://support.apple.com/guide/launchd)
 [![Obsidian](https://img.shields.io/badge/output-Obsidian%20Markdown-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 
+> [!STABLE]
+> The service works stable and without issues after 100 test recordings over a last month.
+
+> [!WALK_AND_TALK]
+> If you make voice -> text notes while walking - this app is for you.
+
 ## Why
 
 Voice notes are easy to make then they should be analysed and stored properly for reuse. For example: after a morning walk where you clean up your head by talking thoughts out with [Just Press Record](https://www.openplanetsoftware.com/just-press-record/) app, you need them be available immediately in a folder.
