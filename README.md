@@ -7,7 +7,6 @@
 
 <img width="2814" height="1536" alt="Gemini_Generated_Image_588w7j588w7j588w" src="https://github.com/user-attachments/assets/ff60d7a8-9d9e-41e3-bddb-de8b4fc30a65" />
 
-> [!STABLE]
 > The service works stable and without issues after 100 test recordings over a last month.
 
 ## Why
