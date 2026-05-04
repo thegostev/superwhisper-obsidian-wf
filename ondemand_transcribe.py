@@ -3,7 +3,6 @@
 Usage:
     python ondemand_transcribe.py --catchup --dry-run       # Preview last 7 days
     python ondemand_transcribe.py --catchup 14              # Process last 14 days
-    python ondemand_transcribe.py --catchup --reprocess-partial  # Fix missing analysis
 """
 
 import argparse
@@ -15,10 +14,7 @@ from config import DELAY_BETWEEN_FILES, FOLDERS, WATCH_FOLDER
 from pipeline import (
     TIMESTAMP_FORMAT,
     FatalAPIError,
-    analyze_with_retry,
     build_transcript_index,
-    configure_gemini,
-    configure_ollama,
     discover_recent_folders,
     get_audio_timestamp,
     is_file_stable,
@@ -70,16 +66,16 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
 def check_processing_status(audio_file, timestamp, transcript_index):
     """Check if audio file has been processed.
 
-    Returns: (status, category, transcript_path, analysis_path)
-    where status is "complete" | "transcript_only" | "unprocessed"
+    Returns: (status, category, output_path, _unused)
+    where status is "complete" | "unprocessed"
+
+    Single-file output: presence in the index implies the analysis file exists.
     """
     timestamp_key = timestamp.strftime(TIMESTAMP_FORMAT)
 
     if timestamp_key in transcript_index:
         entry = transcript_index[timestamp_key]
-        if entry["analysis_path"]:
-            return ("complete", entry["category"], entry["transcript_path"], entry["analysis_path"])
-        return ("transcript_only", entry["category"], entry["transcript_path"], None)
+        return ("complete", entry["category"], entry["output_path"], None)
 
     return ("unprocessed", None, None, None)
 
@@ -120,7 +116,6 @@ def process_batch(unprocessed_files, state, dry_run=False):
             print(f"❌ Exception processing {filename}: {e}", flush=True)
             failed_files.append(audio_path)
 
-        # Rate limiting between files
         if i < total and not dry_run:
             import time
 
@@ -131,55 +126,19 @@ def process_batch(unprocessed_files, state, dry_run=False):
 
 
 def reprocess_analysis_only(transcript_only_files, dry_run=False):
-    """Regenerate analysis for files with transcripts but no analysis."""
-    success_count = 0
-    failed_files = []
-    total = len(transcript_only_files)
+    """Regenerate analysis for files with transcripts but no analysis.
 
-    for i, (audio_path, timestamp, category, transcript_path) in enumerate(transcript_only_files, 1):
-        filename = os.path.basename(audio_path)
-        print(f"\n[{i}/{total}] Generating analysis for {filename}...", flush=True)
-
-        if dry_run:
-            print(f"  📝 Transcript: {transcript_path}", flush=True)
-            print("  ⚠️  DRY RUN - Would generate analysis", flush=True)
-            success_count += 1
-            continue
-
-        try:
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                transcript_content = f.read()
-
-            result = analyze_with_retry(transcript_content)
-
-            if result:
-                _, _, analysis_text = result  # category/filename from disk — don't relocate
-                transcript_filename = os.path.basename(transcript_path)
-                analysis_path = save_analysis(category, transcript_filename, analysis_text)
-                if analysis_path:
-                    print(f"✅ Analysis saved: {analysis_path}", flush=True)
-                    success_count += 1
-                else:
-                    failed_files.append(audio_path)
-            else:
-                failed_files.append(audio_path)
-
-        except FatalAPIError as e:
-            print(f"\n🛑 FATAL: {e}", flush=True)
-            failed_files.append(audio_path)
-            break
-        except Exception as e:
-            print(f"❌ Failed to generate analysis: {e}", flush=True)
-            failed_files.append(audio_path)
-
-        # Rate limiting
-        if i < total and not dry_run:
-            import time
-
-            print(f"   ⏸️  Pausing {DELAY_BETWEEN_FILES}s before next analysis...", flush=True)
-            time.sleep(DELAY_BETWEEN_FILES)
-
-    return {"success": success_count, "failed": failed_files, "total": total}
+    TODO: With Superwhisper, transcription and analysis are a single pass.
+    Re-running analysis in isolation is not supported — re-process the original
+    audio file through the full pipeline instead (use --catchup without --reprocess-partial).
+    """
+    print(
+        "⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
+        "   Superwhisper combines transcription + analysis in one pass.\n"
+        "   To regenerate analysis, re-process the original audio file via --catchup.",
+        flush=True,
+    )
+    return {"success": 0, "failed": [f for f, *_ in transcript_only_files], "total": len(transcript_only_files)}
 
 
 # ============================================================================
@@ -195,14 +154,15 @@ def main():
 Examples:
   python ondemand_transcribe.py --catchup --dry-run          # Preview last 7 days
   python ondemand_transcribe.py --catchup 14                 # Process last 14 days
-  python ondemand_transcribe.py --catchup --reprocess-partial  # Fix missing analysis
         """,
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Show what would be processed without actually processing"
     )
     parser.add_argument(
-        "--reprocess-partial", action="store_true", help="Generate missing analysis for existing transcripts"
+        "--reprocess-partial",
+        action="store_true",
+        help="(Not supported with Superwhisper — re-process audio files instead)",
     )
     parser.add_argument("--verbose", action="store_true", help="Show detailed progress")
     parser.add_argument(
@@ -221,11 +181,8 @@ Examples:
         print("\n⚠️  Please specify --catchup [DAYS] to auto-discover folders.")
         sys.exit(1)
 
-    configure_gemini()
-    configure_ollama()
-
     print("=" * 60)
-    print("📼 On-Demand Audio Transcription & Analysis")
+    print("📼 On-Demand Audio Transcription & Analysis (Superwhisper)")
     print("=" * 60)
 
     # Discover folders and audio files
@@ -291,17 +248,12 @@ Examples:
         print(f"  ✅ Success: {results['success']}")
         print(f"  ❌ Failed:  {len(results['failed'])}")
 
-    # Regenerate missing analysis
+    # Reprocess partial (not supported)
     if transcript_only and args.reprocess_partial:
-        print(f"\n📊 Generating analysis for {len(transcript_only)} existing transcripts...")
-        print("-" * 60)
-        results = reprocess_analysis_only(transcript_only, dry_run=args.dry_run)
-        print(f"\n{'-' * 60}")
-        print(f"  ✅ Success: {results['success']}")
-        print(f"  ❌ Failed:  {len(results['failed'])}")
+        reprocess_analysis_only(transcript_only, dry_run=args.dry_run)
     elif transcript_only:
         print(f"\n💡 Tip: {len(transcript_only)} file(s) have transcripts but no analysis.")
-        print("   Run with --reprocess-partial to generate missing analysis.")
+        print("   Re-process the original audio files to regenerate analysis via Superwhisper.")
 
     print(f"\n{'=' * 60}")
     print("✅ Done!")

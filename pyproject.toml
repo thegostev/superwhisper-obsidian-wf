@@ -1,14 +1,10 @@
 [project]
 name = "meeting-transcriber"
 version = "0.1.0"
-description = "Automated audio transcription and analysis using Gemini API"
+description = "Automated audio transcription and analysis via Superwhisper"
 requires-python = ">=3.9"
 dependencies = [
-    "google-genai>=1.0.0",
     "PyYAML>=6.0",
-    "anthropic>=0.40.0",
-    "faster-whisper>=1.0.0",
-    "ollama>=0.3.0",
 ]
 
 [tool.setuptools]

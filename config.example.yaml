@@ -1,140 +1,49 @@
-# MeetingTranscriber Configuration
+# RecordingAnalyser Configuration
 # Copy this file to config.yaml and fill in your values.
 
-# ── Analysis provider ──────────────────────────────────────────────────────
-# "ollama"  — fully local, no API keys needed (default)
-# "gemini"  — Gemini Pro cloud model (requires GEMINI_API_KEY env var)
-analysis_provider: ollama
+# ── Superwhisper integration ───────────────────────────────────────────────
+# Mode key: find in ~/Documents/superwhisper/modes (filename without extension)
+superwhisper_mode_key: "meeting"
+superwhisper_timeout: 3600           # seconds to wait for result before giving up
+superwhisper_recordings_dir: "~/Documents/superwhisper/recordings"
+superwhisper_poll_interval: 3        # seconds between polls while waiting
 
-# Ollama settings (used when analysis_provider: ollama)
-# Run `ollama list` to confirm the exact model tag installed on your machine.
-ollama_model: "qwen3.5:9b"
-ollama_host: "http://localhost:11434"
-# ollama_thinking: false  # set true to enable Qwen extended reasoning (~163s/file)
+# ── Custom Mode prompt (reference only — paste into Superwhisper UI) ───────
+# Go to Superwhisper > Settings > Custom Mode > Prompt and set:
+#
+# The User Message is the raw transcription of the audio.
+# Output EXACTLY the following structure, with no preamble or extra text:
+#
+# ---CATEGORY---
+# <one of: MUSIKKERE | MINNESOTERE | PERSONLIG | INTERVJUER | DEFAULT>
+# ---FILENAME---
+# <meeting title — no date, no .md extension, no slashes>
+# ---ANALYSIS---
+# <full analysis in Markdown>
 
-# ── Gemini (disabled — only needed when analysis_provider: gemini) ─────────
-# export GEMINI_API_KEY="your-key"  # in ~/.zshrc or launchd plist
-# transcription_model: "gemini-3-flash-preview"
-# analysis_model: "gemini-3-pro-preview"
-
-# ── Claude fallback (disabled — Ollama mode is fully local) ───────────────
-# export ANTHROPIC_API_KEY="your-key"  # in ~/.zshrc or launchd plist
-# claude_fallback_model: "claude-sonnet-4-6"
-
-# Watch folder: where Just Press Record saves audio files
-# Audio files should be organized in date-based subfolders: YYYY-MM-DD/*.m4a
+# ── Watch folder ───────────────────────────────────────────────────────────
+# Where Just Press Record saves audio files.
+# Audio is expected in date-based subfolders: YYYY-MM-DD/*.m4a
 watch_folder: "~/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
 
-# Category folders: map category names to output paths
-# Each category gets transcripts/ and analysis/ subdirectories automatically
+# ── Output folders ─────────────────────────────────────────────────────────
+# Map category names to exact output folder paths.
+# Files land directly here — no subfolder is appended by the code.
 folders:
-  WORK: "~/Documents/Work Vault/Meetings"
-  PERSONAL: "~/Documents/Personal Vault/Meetings"
-  DEFAULT: "~/Documents/Default Vault/Meetings"
+  MUSIKKERE: "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Musikkere - Obsidian/Meetings"
+  MINNESOTERE: "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Minnesotere - Obsidian/3 - Meetings"
+  PERSONLIG: "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Personlig - Obsidian/Meetings"
+  INTERVJUER: "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Personlig - Obsidian/Intervjuer"
+  DEFAULT: "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Personlig - Obsidian/Meetings"
 
-# State tracking
+# ── State tracking ─────────────────────────────────────────────────────────
 state_file: "~/.meeting_transcriber_state.json"
 failed_analysis_log: "failed_analysis.log"
 
-# Service behavior
+# ── Service behavior ───────────────────────────────────────────────────────
 scan_interval: 30           # seconds between scan cycles
 scan_days_back: 7           # how many days of recordings to scan
-delay_between_files: 5      # seconds pause between files (no API rate limits with Ollama; was 90 for Gemini)
-max_retries: 3              # retry attempts per API call
-max_files_per_cycle: 5      # max files to process per scan cycle
-retry_backoff: [10, 30, 60]             # seconds between transcription retries
-analysis_retry_backoff: [60, 180, 300]  # seconds between analysis retries
-api_timeout: 300            # seconds timeout for API calls
-
-# Transcription prompt
-# Sent with the audio file to the Flash model.
-# Customize categories and keywords to match your folders above.
-transcription_prompt: |
-  You are an expert transcriptionist.
-
-  1. Transcribe the attached audio meeting into clear, formatted Markdown.
-     - Transcribe verbatim, capturing the actual words spoken
-     - Format with proper headings and structure
-     - No summarization - capture everything said
-     - Formatting: Format the output as a script with timestamps every 30 seconds
-     - Speakers: Identify distinct speakers as Speaker A and Speaker B (speaker diarization)
-     - Cleanliness: Remove filler words like 'um' and 'uh' (clean verbatim)
-
-  2. Classify the content context:
-     - "WORK" (Work-related meetings, standups, planning)
-     - "PERSONAL" (Personal, friends, family, small talk)
-
-  3. Create a filename:
-     Format: "[Meeting Name] - [Topic 1, Topic 2, Topic 3]"
-     - Topics should be 2-3 words max
-     - Do NOT include date or time (will be added automatically)
-
-  4. Output format:
-     CATEGORY: [category name]
-     FILENAME: [generated filename]
-
-
-     ---TRANSCRIPT---
-     [Markdown formatted transcript]
-
-# Analysis prompt
-# Sent with the transcript text to the Pro model.
-analysis_prompt: |
-  You analyze meeting transcripts. Extract every meaningful insight, preserve how things were actually said.
-
-  IMPORTANT: You are analyzing a pre-existing transcript. Do not modify or reinterpret the words. Work strictly from what is written.
-
-  STYLE
-
-  Write like smart personal notes, not corporate minutes. Each bullet is a clear thought in natural language. No template labels (don't write "Decision:", "Context:", "Insight:" as prefixes). Let the content speak.
-
-  Use emojis sparingly to mark states:
-  🤝 = decision reached
-  💡 = notable idea or insight
-  ⚡ = disagreement or tension
-  ❓ = unresolved, needs follow-up
-  ▶️ = action item
-  🟢 = goes fine, as expected
-  🟡 = risk identified, uncertainty
-  🔴 = goes not by the plan, fail, miss
-  🚫 = blocked, blocker identified
-  ✅ = completed, done
-
-  STRUCTURE
-
-  Group by topic. One thought per bullet. Use sub-bullets only for logical groupings within a single idea.
-
-  When a topic was discussed/debated: show how the conversation evolved, then mark where it landed (✅ or ❓).
-
-  VOICE
-
-  - Stay close to speakers' actual words from the transcript. Don't sanitize into corporate language.
-  - Weave names naturally into sentences: "Alex thought start date was November 17th" not "Speaker: Alex mentioned..."
-  - If names aren't clear from transcript, describe by role or skip attribution. Never write "Speaker 1" or "Unknown speaker."
-  - Complex thoughts stay complex. Don't simplify—use better words instead.
-  - Cut filler, not meaning.
-
-  CAPTURE
-
-  - What was decided and why
-  - Action items (who does what, by when)
-  - Key facts, numbers, context shared
-  - Concerns raised, debates that happened
-  - Where discussions ended up
-
-  SKIP
-
-  - Greetings, small talk
-  - Repetition (capture once)
-  - Process commentary ("meeting started at...")
-
-  OUTPUT FORMAT
-
-  ## Topic Name
-
-  - Insight as spoken, with natural attribution
-  - Another insight
-    - Sub-point if it's part of the same thought
-    - Another sub-point
-  - ✅ Final decision or ❓ Left unresolved: current state
-  - 📌 Person to do specific thing
+delay_between_files: 5      # seconds between files (Superwhisper is local, no API rate limit)
+max_retries: 3
+max_files_per_cycle: 5
+retry_backoff: [10, 30, 60]

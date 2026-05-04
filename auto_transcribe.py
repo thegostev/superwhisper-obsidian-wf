@@ -10,7 +10,6 @@ import time
 from datetime import datetime
 
 from config import (
-    API_TIMEOUT,
     DELAY_BETWEEN_FILES,
     FOLDERS,
     MAX_FILES_PER_CYCLE,
@@ -18,14 +17,13 @@ from config import (
     SCAN_DAYS_BACK,
     SCAN_INTERVAL,
     STATE_FILE,
+    SUPERWHISPER_TIMEOUT,
     WATCH_FOLDER,
 )
 from pipeline import (
     TIMESTAMP_FORMAT,
     FatalAPIError,
     build_transcript_index,
-    configure_gemini,
-    configure_ollama,
     discover_recent_folders,
     get_audio_timestamp,
     is_file_stable,
@@ -69,7 +67,7 @@ def discover_audio_files(watch_folder, state, transcript_index):
             timestamp_key = timestamp.strftime(TIMESTAMP_FORMAT)
             if timestamp_key in transcript_index:
                 existing = transcript_index[timestamp_key]
-                if existing.get("analysis_path"):
+                if existing.get("output_path"):
                     state.setdefault("processed", {})[file_path] = {
                         "status": "complete",
                         "category": existing["category"],
@@ -152,17 +150,14 @@ def run_scan_cycle(state, transcript_index, cycle_number):
 
 
 def main():
-    configure_gemini()
-    configure_ollama()
-
     print("=" * 60, flush=True)
-    print("🎙️  Auto-Transcription Service", flush=True)
+    print("🎙️  Auto-Transcription Service (Superwhisper)", flush=True)
     print("=" * 60, flush=True)
     print(f"Watch folder: {WATCH_FOLDER}", flush=True)
     print(f"Scanning last {SCAN_DAYS_BACK} days of recordings", flush=True)
     print(f"Scan interval: {SCAN_INTERVAL}s | Delay between files: {DELAY_BETWEEN_FILES}s", flush=True)
-    print(f"Max retries: {MAX_RETRIES} per stage | Max files/cycle: {MAX_FILES_PER_CYCLE}", flush=True)
-    print(f"API timeout: {API_TIMEOUT}s | State file: {STATE_FILE}", flush=True)
+    print(f"Max retries: {MAX_RETRIES} per file | Max files/cycle: {MAX_FILES_PER_CYCLE}", flush=True)
+    print(f"Superwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}", flush=True)
     print("=" * 60, flush=True)
 
     state = load_state()
@@ -183,7 +178,7 @@ def main():
             run_scan_cycle(state, transcript_index, cycle)
         except FatalAPIError as e:
             print(f"\n🛑 FATAL: {e}", flush=True)
-            print("   API key or permissions issue. Service stopping.", flush=True)
+            print("   Unrecoverable error. Service stopping.", flush=True)
             sys.exit(1)
         except Exception as e:
             print(f"\n❌ Scan cycle {cycle} error: {e}", flush=True)

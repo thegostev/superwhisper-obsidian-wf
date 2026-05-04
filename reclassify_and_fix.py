@@ -8,6 +8,10 @@ Usage:
     python reclassify_and_fix.py --generate-missing-analysis [--dry-run] [--verbose]
     python reclassify_and_fix.py --reclassify [--dry-run] [--verbose]
     python reclassify_and_fix.py --generate-missing-analysis --reclassify [--dry-run]
+
+NOTE: Both operations depend on Superwhisper re-processing. They are stubbed until
+the Superwhisper pipeline (switch_superwhisper_mode / handoff_to_superwhisper /
+wait_for_superwhisper_result / parse_superwhisper_output) is implemented in pipeline.py.
 """
 
 import argparse
@@ -19,11 +23,7 @@ import time
 
 from config import DELAY_BETWEEN_FILES, FOLDERS
 from pipeline import (
-    analyze_with_retry,
-    configure_claude,
-    configure_gemini,
-    configure_ollama,
-    parse_analysis_response,
+    FatalAPIError,
     save_analysis,
 )
 
@@ -55,36 +55,24 @@ def find_missing_analysis(folders, verbose=False):
 
 
 def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=False):
-    """Generate analysis for a single transcript. Returns success status."""
+    """Generate analysis for a single transcript.
+
+    TODO: Implement once Superwhisper pipeline is complete.
+    With Superwhisper, analysis cannot be run in isolation on an existing transcript.
+    The original audio file must be re-processed through the full pipeline.
+    """
     filename = os.path.basename(transcript_path)
 
     if dry_run:
         print(f"  [DRY RUN] Would generate analysis for: {category}/{filename}", flush=True)
         return True
 
-    try:
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            transcript_content = f.read()
-
-        if verbose:
-            print(f"  Generating analysis for: {filename}...", flush=True)
-
-        result = analyze_with_retry(transcript_content)
-
-        if result:
-            _, _, analysis_text = result  # category/filename from disk location — don't relocate
-            analysis_path = save_analysis(category, filename, analysis_text)
-            if analysis_path:
-                if verbose:
-                    print(f"  ✅ Analysis saved: {analysis_path}", flush=True)
-                return True
-
-        print(f"  ❌ Failed to save analysis for: {filename}", flush=True)
-        return False
-
-    except Exception as e:
-        print(f"  ❌ Error generating analysis for {filename}: {e}", flush=True)
-        return False
+    print(
+        f"  ⚠️  Cannot generate analysis for {filename} — Superwhisper pipeline not yet implemented.\n"
+        f"     Re-process the original audio file to regenerate transcript + analysis together.",
+        flush=True,
+    )
+    return False
 
 
 # ============================================================================
@@ -98,33 +86,19 @@ def should_update_filename(filename):
 
 
 def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
-    """Re-classify a transcript. Returns (new_category, new_filename) or None."""
+    """Re-classify a transcript. Returns (new_category, new_filename) or None.
+
+    TODO: Implement once Superwhisper pipeline is complete.
+    Reclassification requires re-running the full Superwhisper pipeline on the
+    original audio file; it cannot be done from the transcript text alone.
+    """
     filename = os.path.basename(transcript_path)
-
-    try:
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            transcript_content = f.read()
-
-        if verbose:
-            print(f"  Classifying: {filename}...", flush=True)
-
-        if dry_run:
-            print(f"  [DRY RUN] Would classify transcript: {filename}", flush=True)
-
-        result = analyze_with_retry(transcript_content)
-        if result is None:
-            print(f"  ❌ Analysis returned no result for: {filename}", flush=True)
-            return None
-        category, suggested_filename, _ = result
-
-        if verbose:
-            print(f"  → Classified as: {category} | {suggested_filename}", flush=True)
-
-        return (category, suggested_filename)
-
-    except Exception as e:
-        print(f"  ❌ Error classifying {filename}: {e}", flush=True)
-        return None
+    print(
+        f"  ⚠️  Cannot reclassify {filename} — Superwhisper pipeline not yet implemented.\n"
+        f"     Re-process the original audio file to get updated category + filename.",
+        flush=True,
+    )
+    return None
 
 
 def extract_timestamp(filename):
@@ -228,7 +202,7 @@ def scan_default_folder(verbose=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Reclassify and fix MeetingTranscriber files")
+    parser = argparse.ArgumentParser(description="Reclassify and fix RecordingAnalyser files")
     parser.add_argument("--generate-missing-analysis", action="store_true", help="Generate missing analysis files")
     parser.add_argument("--reclassify", action="store_true", help="Reclassify and move Unknown Meeting files")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without executing")
@@ -241,12 +215,8 @@ def main():
         print("\n⚠️  Please specify at least one operation: --generate-missing-analysis or --reclassify")
         sys.exit(1)
 
-    # configure_gemini()  # disabled
-    # configure_claude()  # disabled
-    configure_ollama()
-
     print("=" * 60)
-    print("🔧 MeetingTranscriber Maintenance")
+    print("🔧 RecordingAnalyser Maintenance")
     print("=" * 60)
 
     if args.dry_run:

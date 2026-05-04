@@ -1,4 +1,4 @@
-"""Shared test fixtures for MeetingTranscriber."""
+"""Shared test fixtures for RecordingAnalyser."""
 
 import json
 from pathlib import Path
@@ -14,8 +14,6 @@ if not _TEST_CONFIG.exists():
     import yaml
 
     _test_cfg = {
-        "transcription_model": "gemini-3-flash-preview",
-        "analysis_model": "gemini-3-pro-preview",
         "watch_folder": "/tmp/test-watch-folder",
         "folders": {
             "WORK": "/tmp/test-work",
@@ -24,8 +22,7 @@ if not _TEST_CONFIG.exists():
         },
         "state_file": "/tmp/test-state.json",
         "failed_analysis_log": "/tmp/test-failed.log",
-        "transcription_prompt": "Test transcription prompt.",
-        "analysis_prompt": "Test analysis prompt.",
+        "superwhisper_mode_key": "test-mode-key",
     }
     _TEST_CONFIG.write_text(yaml.dump(_test_cfg))
     _CREATED_TEST_CONFIG = True
@@ -35,11 +32,13 @@ else:
 
 @pytest.fixture
 def tmp_output_dir(tmp_path):
-    """Temporary directory structure mimicking Obsidian vault output."""
+    """Temporary directory structure mimicking Obsidian vault output.
+
+    Files land directly in the category folder (no transcripts/ or analysis/ subfolders).
+    """
     categories = ["WORK", "PERSONAL", "DEFAULT"]
     for cat in categories:
-        (tmp_path / cat / "transcripts").mkdir(parents=True)
-        (tmp_path / cat / "analysis").mkdir(parents=True)
+        (tmp_path / cat).mkdir(parents=True)
     return tmp_path
 
 
@@ -68,18 +67,14 @@ def state_file(tmp_path, sample_state):
 
 
 @pytest.fixture
-def mock_gemini_response():
-    """Factory fixture for mock Gemini API responses."""
+def mock_superwhisper_output():
+    """Factory fixture for mock Superwhisper Custom Mode output strings."""
 
-    def _make_response(category="WORK", filename="Test Meeting - Topics", transcript="This is a test transcript."):
-        text = f"CATEGORY: {category}\nFILENAME: {filename}\n---TRANSCRIPT---\n{transcript}"
-        return text
+    def _make_output(
+        category="PERSONLIG",
+        filename="Test Meeting",
+        analysis="## Summary\nTest analysis content.",
+    ):
+        return f"CATEGORY: {category}\nFILENAME: {filename}\n\n{analysis}"
 
-    return _make_response
-
-
-@pytest.fixture(autouse=True)
-def no_api_calls(monkeypatch):
-    """Prevent any real Gemini API calls during tests."""
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    return _make_output
