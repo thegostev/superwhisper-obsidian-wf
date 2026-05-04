@@ -5,11 +5,10 @@
 [![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](https://support.apple.com/guide/launchd)
 [![Obsidian](https://img.shields.io/badge/output-Obsidian%20Markdown-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 
+<img width="2814" height="1536" alt="Gemini_Generated_Image_588w7j588w7j588w" src="https://github.com/user-attachments/assets/ff60d7a8-9d9e-41e3-bddb-de8b4fc30a65" />
+
 > [!STABLE]
 > The service works stable and without issues after 100 test recordings over a last month.
-
-> [!WALK_AND_TALK]
-> If you make voice -> text notes while walking - this app is for you.
 
 ## Why
 
