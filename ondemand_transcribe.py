@@ -9,6 +9,7 @@ import argparse
 import glob
 import os
 import sys
+import time
 
 from config import DELAY_BETWEEN_FILES, FOLDERS, WATCH_FOLDER
 from pipeline import (
@@ -117,8 +118,6 @@ def process_batch(unprocessed_files, state, dry_run=False):
             failed_files.append(audio_path)
 
         if i < total and not dry_run:
-            import time
-
             print(f"   ⏸️  Pausing {DELAY_BETWEEN_FILES}s before next file...", flush=True)
             time.sleep(DELAY_BETWEEN_FILES)
 
