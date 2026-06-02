@@ -18,6 +18,8 @@ if not _TEST_CONFIG.exists():
         "folders": {
             "WORK": "/tmp/test-work",
             "PERSONAL": "/tmp/test-personal",
+            "PERSONLIG": "/tmp/test-personlig",
+            "MINNESOTERE": "/tmp/test-minnesotere",
             "DEFAULT": "/tmp/test-default",
         },
         "state_file": "/tmp/test-state.json",
