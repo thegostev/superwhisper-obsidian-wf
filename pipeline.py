@@ -149,7 +149,7 @@ def save_output(category: str, filename: str, content: str) -> str | None:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(content)
         return output_path
-    except (OSError, IOError) as e:
+    except OSError as e:
         print(f"⚠️  Warning: Failed to save output: {e}", flush=True)
         return None
 
