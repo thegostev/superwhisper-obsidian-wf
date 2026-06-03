@@ -183,10 +183,12 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
     index: dict[str, dict] = {}
 
     for category, base_path in folders.items():
-        if not os.path.exists(base_path):
+        base = Path(base_path)
+        if not base.exists():
             continue
         try:
-            for filename in os.listdir(base_path):
+            for filepath in base.iterdir():
+                filename = filepath.name
                 if not filename.endswith(".md"):
                     continue
                 if filename.endswith(" - Analysis.md"):
@@ -195,7 +197,7 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
                     timestamp_key = filename[:14]
                     index[timestamp_key] = {
                         "category": category,
-                        "output_path": os.path.join(base_path, filename),
+                        "output_path": str(filepath),
                     }
         except (OSError, PermissionError) as e:
             print(f"⚠️  Warning: Could not scan {base_path}: {e}", flush=True)
