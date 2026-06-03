@@ -138,13 +138,13 @@ def extract_section(content: str, start_marker: str, end_marker: str | None) -> 
 
 def save_output(category: str, filename: str, content: str) -> str | None:
     """Save analysis output directly to the configured category folder."""
-    dest_folder = FOLDERS.get(category, FOLDERS["DEFAULT"])
+    dest = Path(FOLDERS.get(category, FOLDERS["DEFAULT"]))
     try:
-        os.makedirs(dest_folder, exist_ok=True)
+        dest.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         print(f"⚠️  Warning: Could not create output folder: {e}", flush=True)
 
-    output_path = os.path.join(dest_folder, filename)
+    output_path = str(dest / filename)
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(content)
