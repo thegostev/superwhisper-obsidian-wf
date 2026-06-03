@@ -112,7 +112,7 @@ def get_audio_timestamp(audio_path):
 
     # Strategy 3: file creation time
     try:
-        ctime = os.path.getctime(audio_path)
+        ctime = Path(audio_path).stat().st_ctime
         return datetime.fromtimestamp(ctime)
     except Exception:
         return datetime.now()
