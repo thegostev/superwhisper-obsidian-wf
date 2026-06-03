@@ -32,6 +32,10 @@ from pipeline import (
     save_state,
 )
 
+# Emit a heartbeat log line every Nth idle cycle (keeps logs quiet but alive).
+IDLE_HEARTBEAT_EVERY_N_CYCLES = 10
+
+
 # ============================================================================
 # AUDIO DISCOVERY (daemon-specific: state filtering, index dedup, per-cycle cap)
 # ============================================================================
@@ -112,7 +116,7 @@ def run_scan_cycle(state, transcript_index, cycle_number):
     new_files = discover_audio_files(WATCH_FOLDER, state, transcript_index)
 
     if not new_files:
-        if cycle_number % 10 == 0:
+        if cycle_number % IDLE_HEARTBEAT_EVERY_N_CYCLES == 0:
             print(f"[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - No new files", flush=True)
         return 0
 

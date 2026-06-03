@@ -27,6 +27,26 @@ from config import (
 # Shared timestamp format for filenames: "YY-MM-DD HH.MM"
 TIMESTAMP_FORMAT = "%y-%m-%d %H.%M"
 
+# Output-contract markers emitted by the Superwhisper Custom Mode prompt.
+# The parser reads the header lines; everything after is the analysis body.
+CATEGORY_HEADER = "CATEGORY:"
+FILENAME_HEADER = "FILENAME:"
+CATEGORY_SECTION_MARKER = "---CATEGORY---"  # section-marker fallback format
+
+# Sentinel defaults used when parsing fails or a category is unknown.
+DEFAULT_CATEGORY = "DEFAULT"
+DEFAULT_FILENAME = "Unknown Meeting"
+
+# Output file naming.
+MARKDOWN_EXT = ".md"
+ANALYSIS_SUFFIX = " - Analysis.md"  # legacy two-file output, skipped during indexing
+TIMESTAMP_KEY_LENGTH = 14  # leading chars of a filename forming the "YY-MM-DD HH.MM" key
+
+# Timeouts and delays (seconds).
+MDLS_TIMEOUT_SECONDS = 5  # macOS metadata lookup
+MODE_SWITCH_SETTLE_SECONDS = 1.0  # let Superwhisper apply the mode before handoff
+FILE_STABILITY_WAIT_SECONDS = 2  # iCloud sync settle check
+
 
 # ============================================================================
 # ERROR CLASSES
@@ -82,7 +102,7 @@ def get_audio_timestamp(audio_path):
             ["mdls", "-name", "kMDItemContentCreationDate", "-raw", audio_path],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=MDLS_TIMEOUT_SECONDS,
         )
         if result.returncode == 0 and result.stdout.strip():
             timestamp_str = result.stdout.strip()
@@ -138,7 +158,7 @@ def extract_section(content: str, start_marker: str, end_marker: str | None) -> 
 
 def save_output(category: str, filename: str, content: str) -> str | None:
     """Save analysis output directly to the configured category folder."""
-    dest = Path(FOLDERS.get(category, FOLDERS["DEFAULT"]))
+    dest = Path(FOLDERS.get(category, FOLDERS[DEFAULT_CATEGORY]))
     try:
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -189,12 +209,12 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
         try:
             for filepath in base.iterdir():
                 filename = filepath.name
-                if not filename.endswith(".md"):
+                if not filename.endswith(MARKDOWN_EXT):
                     continue
-                if filename.endswith(" - Analysis.md"):
+                if filename.endswith(ANALYSIS_SUFFIX):
                     continue
-                if len(filename) >= 14:
-                    timestamp_key = filename[:14]
+                if len(filename) >= TIMESTAMP_KEY_LENGTH:
+                    timestamp_key = filename[:TIMESTAMP_KEY_LENGTH]
                     index[timestamp_key] = {
                         "category": category,
                         "output_path": str(filepath),
@@ -205,7 +225,7 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
     return index
 
 
-def is_file_stable(path: str, wait_seconds: int = 2) -> bool:
+def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -> bool:
     """Check if file has finished syncing (not still downloading from iCloud)."""
     try:
         size1 = os.path.getsize(path)
@@ -261,7 +281,7 @@ def switch_superwhisper_mode() -> None:
         ["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"],
         check=True,
     )
-    time.sleep(1.0)  # allow mode switch to settle before file handoff
+    time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
 
 def handoff_to_superwhisper(file_path: str) -> None:
@@ -327,7 +347,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
             except OSError:
                 continue
             text = _read_superwhisper_entry(entry)
-            if text and ("CATEGORY:" in text or "---CATEGORY---" in text):
+            if text and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text
 
@@ -353,20 +373,20 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     Raises PermanentFileError if no analysis body is found.
     """
     lines = raw_output.strip().split("\n")
-    category = "DEFAULT"
-    filename = "Unknown Meeting"
+    category = DEFAULT_CATEGORY
+    filename = DEFAULT_FILENAME
     analysis_start = 0
 
     for i, line in enumerate(lines):
-        if line.startswith("CATEGORY:"):
-            cat = line.split("CATEGORY:", 1)[1].strip().upper()
+        if line.startswith(CATEGORY_HEADER):
+            cat = line.split(CATEGORY_HEADER, 1)[1].strip().upper()
             cat = re.sub(r'[^\x00-\x7F]', '', cat).strip()
-            category = cat if cat in FOLDERS else "DEFAULT"
+            category = cat if cat in FOLDERS else DEFAULT_CATEGORY
             if cat not in FOLDERS:
                 print(f"   ⚠️  Unknown category '{cat}', falling back to DEFAULT", flush=True)
             analysis_start = i + 1
-        elif line.startswith("FILENAME:"):
-            fn = line.split("FILENAME:", 1)[1].strip()
+        elif line.startswith(FILENAME_HEADER):
+            fn = line.split(FILENAME_HEADER, 1)[1].strip()
             fn = fn.replace("/", "-").replace("\\", "-").replace(":", ".").replace("?", "").replace("*", "").replace('"', "")
             if fn:
                 filename = fn
@@ -410,8 +430,8 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
 
         formatted_timestamp = timestamp.strftime(TIMESTAMP_FORMAT)
         filename = f"{formatted_timestamp} - {ai_filename}"
-        if not filename.endswith(".md"):
-            filename += ".md"
+        if not filename.endswith(MARKDOWN_EXT):
+            filename += MARKDOWN_EXT
 
         output_path = save_output(category, filename, analysis)
         if output_path:
