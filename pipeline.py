@@ -48,7 +48,7 @@ class PermanentFileError(Exception):
 
 def load_state():
     """Load processed files state from disk."""
-    if os.path.exists(STATE_FILE):
+    if Path(STATE_FILE).exists():
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
