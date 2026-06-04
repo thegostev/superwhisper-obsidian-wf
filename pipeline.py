@@ -6,7 +6,6 @@ All entry points (daemon, on-demand CLI, maintenance CLI) import from here.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import time
@@ -227,12 +226,13 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
 
 def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -> bool:
     """Check if file has finished syncing (not still downloading from iCloud)."""
+    p = Path(path)
     try:
-        size1 = os.path.getsize(path)
+        size1 = p.stat().st_size
         if size1 == 0:
             return False
         time.sleep(wait_seconds)
-        size2 = os.path.getsize(path)
+        size2 = p.stat().st_size
         return size1 == size2
     except (OSError, FileNotFoundError):
         return False
@@ -245,16 +245,15 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
     recent_folders = []
 
     try:
-        for entry in os.listdir(watch_folder):
-            if not date_pattern.match(entry):
+        for child in Path(watch_folder).iterdir():
+            if not date_pattern.match(child.name):
                 continue
-            full_path = os.path.join(watch_folder, entry)
-            if not os.path.isdir(full_path):
+            if not child.is_dir():
                 continue
             try:
-                folder_date = datetime.strptime(entry, "%Y-%m-%d")
+                folder_date = datetime.strptime(child.name, "%Y-%m-%d")
                 if folder_date >= cutoff:
-                    recent_folders.append((folder_date, full_path))
+                    recent_folders.append((folder_date, str(child)))
             except ValueError:
                 continue
     except OSError as e:
@@ -286,7 +285,7 @@ def switch_superwhisper_mode() -> None:
 
 def handoff_to_superwhisper(file_path: str) -> None:
     """Open audio file in Superwhisper for transcription + analysis in one pass."""
-    if not os.path.exists(file_path):
+    if not Path(file_path).exists():
         raise PermanentFileError(f"Audio file not found: {file_path}")
     subprocess.run(["open", file_path, "-a", "Superwhisper"], check=True)
     # .m4a is an MPEG-4 audio container — accepted by Superwhisper.
@@ -353,7 +352,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
 
     raise TimeoutError(
         f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s "
-        f"for: {os.path.basename(file_path)}"
+        f"for: {Path(file_path).name}"
     )
 
 
@@ -419,7 +418,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     Returns (success: bool, category: str | None).
     Raises FatalAPIError to stop the service on unrecoverable errors.
     """
-    basename = os.path.basename(file_path)
+    basename = Path(file_path).name
     attempts = state.get("processed", {}).get(file_path, {}).get("attempts", 0)
 
     try:
