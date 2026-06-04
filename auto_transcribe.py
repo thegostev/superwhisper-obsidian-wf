@@ -95,10 +95,9 @@ def discover_audio_files(watch_folder, state, transcript_index):
     audio_files.sort(key=lambda x: x[1])
 
     if len(audio_files) > MAX_FILES_PER_CYCLE:
-        deferred = len(audio_files) - MAX_FILES_PER_CYCLE
         print(
             f"   📋 {len(audio_files)} files found, processing {MAX_FILES_PER_CYCLE} "
-            f"this cycle ({deferred} deferred to next cycle)",
+            f"this cycle ({len(audio_files) - MAX_FILES_PER_CYCLE} deferred to next cycle)",
             flush=True,
         )
         audio_files = audio_files[:MAX_FILES_PER_CYCLE]
