@@ -3,11 +3,10 @@
 Runs as a launchd service. See README.md for setup instructions.
 """
 
-import glob
-import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 from config import (
     DELAY_BETWEEN_FILES,
@@ -52,9 +51,8 @@ def discover_audio_files(watch_folder, state, transcript_index):
     state_dirty = False
 
     for folder_path in folders:
-        pattern = os.path.join(folder_path, "*.m4a")
-        for file_path in glob.glob(pattern):
-            basename = os.path.basename(file_path)
+        for file_path in map(str, Path(folder_path).glob("*.m4a")):
+            basename = Path(file_path).name
 
             # Skip iCloud placeholders, temp files, hidden files
             if ".icloud" in file_path or ".tmp" in file_path or basename.startswith("."):
@@ -128,8 +126,8 @@ def run_scan_cycle(state, transcript_index, cycle_number):
     fail_count = 0
 
     for i, (audio_path, timestamp) in enumerate(new_files, 1):
-        basename = os.path.basename(audio_path)
-        parent = os.path.basename(os.path.dirname(audio_path))
+        basename = Path(audio_path).name
+        parent = Path(audio_path).parent.name
         print(f"\n📂 [{i}/{len(new_files)}] {parent}/{basename}", flush=True)
 
         success, category = process_audio(audio_path, timestamp, state)
