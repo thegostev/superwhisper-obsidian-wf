@@ -6,10 +6,9 @@ Usage:
 """
 
 import argparse
-import glob
-import os
 import sys
 import time
+from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS, WATCH_FOLDER
 from pipeline import (
@@ -39,17 +38,16 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     nonexistent = []
 
     for subfolder in scan_subfolders:
-        subfolder_path = os.path.join(watch_folder, subfolder)
+        subfolder_path = Path(watch_folder) / subfolder
 
-        if not os.path.isdir(subfolder_path):
+        if not subfolder_path.is_dir():
             nonexistent.append(subfolder)
             if verbose:
                 print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
             continue
 
-        pattern = os.path.join(subfolder_path, "*.m4a")
-        for file_path in glob.glob(pattern):
-            basename = os.path.basename(file_path)
+        for file_path in map(str, subfolder_path.glob("*.m4a")):
+            basename = Path(file_path).name
             if ".icloud" in file_path or ".tmp" in file_path or basename.startswith("."):
                 continue
             if not is_file_stable(file_path, wait_seconds=1):
@@ -91,7 +89,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
     total = len(unprocessed_files)
 
     for i, (audio_path, timestamp) in enumerate(unprocessed_files, 1):
-        filename = os.path.basename(audio_path)
+        filename = Path(audio_path).name
         print(f"\n[{i}/{total}] Processing {filename}...", flush=True)
 
         if dry_run:
@@ -184,7 +182,7 @@ Examples:
 
     # Discover folders and audio files
     folder_paths = discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)
-    scan_subfolders = [os.path.basename(p) for p in folder_paths]
+    scan_subfolders = [Path(p).name for p in folder_paths]
     print(f"\n🔄 Catchup mode: scanning last {args.catchup} days", flush=True)
     print(f"📁 Target subfolders: {', '.join(scan_subfolders)}", flush=True)
 
