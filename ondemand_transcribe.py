@@ -59,8 +59,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     if nonexistent:
         print(f"\n⚠️  {len(nonexistent)} subfolder(s) not found: {', '.join(nonexistent)}", flush=True)
 
-    audio_files.sort(key=lambda x: x[1])
-    return audio_files
+    return sorted(audio_files, key=lambda x: x[1])
 
 
 def check_processing_status(audio_file, timestamp, transcript_index):

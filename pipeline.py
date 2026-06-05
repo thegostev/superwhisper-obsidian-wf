@@ -260,8 +260,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
         print(f"❌ Cannot list watch folder: {e}", flush=True)
         return []
 
-    recent_folders.sort(key=lambda x: x[0])
-    return [path for _, path in recent_folders]
+    return [path for _, path in sorted(recent_folders, key=lambda x: x[0])]
 
 
 # ============================================================================
@@ -305,8 +304,7 @@ def _read_superwhisper_entry(path: Path) -> str | None:
         meta = path / "meta.json"
         if not meta.exists():
             return None
-        data = json.loads(meta.read_text(encoding="utf-8"))
-        return data.get("llmResult") or ""
+        return json.loads(meta.read_text(encoding="utf-8")).get("llmResult") or ""
     except (OSError, ValueError):
         return None
 
