@@ -131,8 +131,7 @@ def get_audio_timestamp(audio_path):
 
     # Strategy 3: file creation time
     try:
-        ctime = Path(audio_path).stat().st_ctime
-        return datetime.fromtimestamp(ctime)
+        return datetime.fromtimestamp(Path(audio_path).stat().st_ctime)
     except Exception:
         return datetime.now()
 
@@ -232,8 +231,7 @@ def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -
         if size1 == 0:
             return False
         time.sleep(wait_seconds)
-        size2 = p.stat().st_size
-        return size1 == size2
+        return size1 == p.stat().st_size
     except (OSError, FileNotFoundError):
         return False
 
@@ -426,8 +424,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         raw_output = wait_for_superwhisper_result(file_path, since=since)
         category, ai_filename, analysis = parse_superwhisper_output(raw_output)
 
-        formatted_timestamp = timestamp.strftime(TIMESTAMP_FORMAT)
-        filename = f"{formatted_timestamp} - {ai_filename}"
+        filename = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename}"
         if not filename.endswith(MARKDOWN_EXT):
             filename += MARKDOWN_EXT
 
