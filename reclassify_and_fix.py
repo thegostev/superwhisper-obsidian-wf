@@ -22,10 +22,6 @@ import sys
 import time
 
 from config import DELAY_BETWEEN_FILES, FOLDERS
-from pipeline import (
-    FatalAPIError,
-    save_analysis,
-)
 
 # ============================================================================
 # MISSING ANALYSIS
