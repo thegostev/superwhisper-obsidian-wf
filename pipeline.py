@@ -136,24 +136,6 @@ def get_audio_timestamp(audio_path):
         return datetime.now()
 
 
-def extract_section(content: str, start_marker: str, end_marker: str | None) -> str:
-    """Extract content between start_marker and end_marker (or end of string)."""
-    lines = content.split("\n")
-    capturing = False
-    section_lines = []
-
-    for line in lines:
-        if start_marker and start_marker in line:
-            capturing = True
-            continue
-        if end_marker and end_marker in line:
-            break
-        if capturing:
-            section_lines.append(line)
-
-    return "\n".join(section_lines).strip()
-
-
 def save_output(category: str, filename: str, content: str) -> str | None:
     """Save analysis output directly to the configured category folder."""
     dest = Path(FOLDERS.get(category, FOLDERS[DEFAULT_CATEGORY]))
