@@ -115,13 +115,12 @@ def get_audio_timestamp(audio_path):
 
     # Strategy 2: directory + filename parse
     try:
-        path_parts = Path(audio_path).parts
-        filename = Path(audio_path).stem
-        for part in reversed(path_parts):
+        p = Path(audio_path)
+        for part in reversed(p.parts):
             if len(part) == 10 and part[4] == "-" and part[7] == "-":
                 try:
                     year, month, day = part.split("-")
-                    time_part = filename.split()[0] if " " in filename else filename
+                    time_part = p.stem.split()[0] if " " in p.stem else p.stem
                     hour, minute, second = time_part.split("-")
                     return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
                 except (ValueError, IndexError):
