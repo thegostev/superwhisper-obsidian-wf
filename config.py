@@ -17,14 +17,7 @@ _CONFIG_FILE = _CONFIG_DIR / "config.yaml"
 
 
 def load_config(config_path: Path = _CONFIG_FILE) -> dict[str, Any]:
-    """Load configuration from YAML file.
-
-    Args:
-        config_path: Path to the YAML config file.
-
-    Returns:
-        Configuration dictionary with all settings.
-    """
+    """Load and return configuration from YAML file."""
     if not config_path.exists():
         print(
             f"ERROR: Config file not found: {config_path}\n"
