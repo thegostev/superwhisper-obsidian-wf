@@ -59,10 +59,8 @@ def discover_audio_files(watch_folder, state, transcript_index):
                 continue
 
             # Skip if already processed or permanently failed
-            if file_path in state.get("processed", {}):
-                entry = state["processed"][file_path]
-                if entry.get("status") in ("complete", "failed_permanent"):
-                    continue
+            if state.get("processed", {}).get(file_path, {}).get("status") in ("complete", "failed_permanent"):
+                continue
 
             # Check transcript index before stability check
             timestamp = get_audio_timestamp(file_path)
