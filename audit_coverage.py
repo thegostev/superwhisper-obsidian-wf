@@ -42,11 +42,7 @@ for day_dir in sorted(WATCH.iterdir()):
                 untracked[day_dir.name].append(m4a.name)
 
 # All dates
-all_dates = sorted(set(
-    [d for d in audio_by_date if d >= "2026"] +
-    [d for d in by_date if d >= "2026"] +
-    [d for d in fail_by_date if d >= "2026"]
-))
+all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in src if d >= "2026"})
 
 # Print table
 print(f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | {'MUSIKKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |")
