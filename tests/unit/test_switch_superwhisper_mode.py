@@ -1,7 +1,6 @@
 """Unit tests for switch_superwhisper_mode()."""
 
-import subprocess
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 import pytest
 
