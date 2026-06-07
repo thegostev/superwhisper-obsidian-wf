@@ -26,8 +26,7 @@ def load_config(config_path: Path = _CONFIG_FILE) -> dict[str, Any]:
         )
         sys.exit(1)
 
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg: dict[str, Any] = yaml.safe_load(f)
+    cfg: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     # Expand ~ in path values
     cfg["watch_folder"] = os.path.expanduser(cfg["watch_folder"])
