@@ -52,10 +52,8 @@ def discover_audio_files(watch_folder, state, transcript_index):
 
     for folder_path in folders:
         for file_path in map(str, Path(folder_path).glob("*.m4a")):
-            basename = Path(file_path).name
-
             # Skip iCloud placeholders, temp files, hidden files
-            if ".icloud" in file_path or ".tmp" in file_path or basename.startswith("."):
+            if ".icloud" in file_path or ".tmp" in file_path or Path(file_path).name.startswith("."):
                 continue
 
             # Skip if already processed or permanently failed

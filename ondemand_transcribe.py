@@ -47,8 +47,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
             continue
 
         for file_path in map(str, subfolder_path.glob("*.m4a")):
-            basename = Path(file_path).name
-            if ".icloud" in file_path or ".tmp" in file_path or basename.startswith("."):
+            if ".icloud" in file_path or ".tmp" in file_path or Path(file_path).name.startswith("."):
                 continue
             if not is_file_stable(file_path, wait_seconds=1):
                 continue
