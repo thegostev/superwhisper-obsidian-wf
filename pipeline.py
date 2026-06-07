@@ -351,8 +351,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
     for i, line in enumerate(lines):
         if line.startswith(CATEGORY_HEADER):
-            cat = line.split(CATEGORY_HEADER, 1)[1].strip().upper()
-            cat = re.sub(r'[^\x00-\x7F]', '', cat).strip()
+            cat = re.sub(r'[^\x00-\x7F]', '', line.split(CATEGORY_HEADER, 1)[1].strip().upper()).strip()
             if cat not in FOLDERS:
                 print(f"   ⚠️  Unknown category '{cat}', falling back to DEFAULT", flush=True)
                 cat = DEFAULT_CATEGORY

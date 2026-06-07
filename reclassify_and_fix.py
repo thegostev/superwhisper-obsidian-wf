@@ -110,8 +110,7 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
         print(f"  ❌ Could not extract timestamp from: {old_filename}", flush=True)
         return False
 
-    suffix = "" if new_filename.endswith(".md") else ".md"
-    new_full_filename = f"{timestamp} - {new_filename}{suffix}"
+    new_full_filename = f"{timestamp} - {new_filename}{'' if new_filename.endswith('.md') else '.md'}"
 
     dest = Path(FOLDERS.get(new_category, FOLDERS["DEFAULT"]))
     transcripts_dir = dest / "transcripts"
@@ -228,8 +227,7 @@ def main():
             failed_count = 0
 
             for i, (transcript_path, category) in enumerate(missing, 1):
-                filename = Path(transcript_path).name
-                print(f"[{i}/{len(missing)}] {category}/{filename}")
+                print(f"[{i}/{len(missing)}] {category}/{Path(transcript_path).name}")
 
                 if generate_missing_analysis(transcript_path, category, args.dry_run, args.verbose):
                     success_count += 1
@@ -259,8 +257,7 @@ def main():
             failed_count = 0
 
             for i, transcript_path in enumerate(unknown_meetings, 1):
-                filename = Path(transcript_path).name
-                print(f"[{i}/{len(unknown_meetings)}] {filename}")
+                print(f"[{i}/{len(unknown_meetings)}] {Path(transcript_path).name}")
 
                 result = reclassify_transcript(transcript_path, args.dry_run, args.verbose)
                 if result is None:
