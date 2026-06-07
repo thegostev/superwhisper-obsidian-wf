@@ -69,8 +69,7 @@ def load_state():
     """Load processed files state from disk."""
     if Path(STATE_FILE).exists():
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            return json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
             print(f"⚠️  Warning: Could not load state file, starting fresh: {e}", flush=True)
     return {"processed": {}}
@@ -79,8 +78,7 @@ def load_state():
 def save_state(state):
     """Save processed files state to disk."""
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, default=str)
+        Path(STATE_FILE).write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
     except OSError as e:
         print(f"⚠️  Warning: Could not save state file: {e}", flush=True)
 
@@ -143,11 +141,10 @@ def save_output(category: str, filename: str, content: str) -> str | None:
     except OSError as e:
         print(f"⚠️  Warning: Could not create output folder: {e}", flush=True)
 
-    output_path = str(dest / filename)
+    p = dest / filename
     try:
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return output_path
+        p.write_text(content, encoding="utf-8")
+        return str(p)
     except OSError as e:
         print(f"⚠️  Warning: Failed to save output: {e}", flush=True)
         return None
@@ -160,9 +157,8 @@ save_analysis = save_output
 def log_failed_analysis(transcript_path: str, category: str, filename: str) -> None:
     """Append a NEEDS_ANALYSIS entry to the persistent failure log."""
     try:
-        entry = f"{datetime.now().isoformat()} | NEEDS_ANALYSIS | {category} | {filename} | {transcript_path}\n"
         with open(FAILED_ANALYSIS_LOG, "a", encoding="utf-8") as f:
-            f.write(entry)
+            f.write(f"{datetime.now().isoformat()} | NEEDS_ANALYSIS | {category} | {filename} | {transcript_path}\n")
         print(f"   📝 Logged to failed_analysis.log: {filename}", flush=True)
     except OSError as e:
         print(f"⚠️  Warning: Could not write to failed_analysis.log: {e}", flush=True)
@@ -213,7 +209,7 @@ def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -
             return False
         time.sleep(wait_seconds)
         return size1 == p.stat().st_size
-    except (OSError, FileNotFoundError):
+    except OSError:
         return False
 
 
