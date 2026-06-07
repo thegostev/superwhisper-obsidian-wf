@@ -15,11 +15,11 @@ wait_for_superwhisper_result / parse_superwhisper_output) is implemented in pipe
 """
 
 import argparse
-import os
 import re
 import shutil
 import sys
 import time
+from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS
 
@@ -33,19 +33,18 @@ def find_missing_analysis(folders, verbose=False):
     missing = []
 
     for category, base_path in folders.items():
-        transcripts_folder = os.path.join(base_path, "transcripts")
-        analysis_folder = os.path.join(base_path, "analysis")
-        if not os.path.exists(transcripts_folder):
+        base = Path(base_path)
+        transcripts_dir = base / "transcripts"
+        if not transcripts_dir.exists():
             continue
 
-        for f in os.listdir(transcripts_folder):
-            if not f.endswith(".md"):
+        for fp in transcripts_dir.iterdir():
+            if fp.suffix != ".md":
                 continue
-            analysis_file = f.replace(".md", " - Analysis.md")
-            if not os.path.exists(os.path.join(analysis_folder, analysis_file)):
-                missing.append((os.path.join(transcripts_folder, f), category))
+            if not (base / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists():
+                missing.append((str(fp), category))
                 if verbose:
-                    print(f"  Missing analysis: {category}/{f}", flush=True)
+                    print(f"  Missing analysis: {category}/{fp.name}", flush=True)
 
     return missing
 
@@ -57,7 +56,7 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
     With Superwhisper, analysis cannot be run in isolation on an existing transcript.
     The original audio file must be re-processed through the full pipeline.
     """
-    filename = os.path.basename(transcript_path)
+    filename = Path(transcript_path).name
 
     if dry_run:
         print(f"  [DRY RUN] Would generate analysis for: {category}/{filename}", flush=True)
@@ -88,7 +87,7 @@ def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
     Reclassification requires re-running the full Superwhisper pipeline on the
     original audio file; it cannot be done from the transcript text alone.
     """
-    filename = os.path.basename(transcript_path)
+    filename = Path(transcript_path).name
     print(
         f"  ⚠️  Cannot reclassify {filename} — Superwhisper pipeline not yet implemented.\n"
         f"     Re-process the original audio file to get updated category + filename.",
@@ -105,7 +104,7 @@ def extract_timestamp(filename):
 
 def move_transcript_and_analysis(old_transcript_path, new_category, new_filename, dry_run=False, verbose=False):
     """Move both transcript and analysis files to new category folder."""
-    old_filename = os.path.basename(old_transcript_path)
+    old_filename = Path(old_transcript_path).name
     timestamp = extract_timestamp(old_filename)
     if not timestamp:
         print(f"  ❌ Could not extract timestamp from: {old_filename}", flush=True)
@@ -114,28 +113,28 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
     suffix = "" if new_filename.endswith(".md") else ".md"
     new_full_filename = f"{timestamp} - {new_filename}{suffix}"
 
-    dest_folder = FOLDERS.get(new_category, FOLDERS["DEFAULT"])
-    transcripts_folder = os.path.join(dest_folder, "transcripts")
-    analysis_folder = os.path.join(dest_folder, "analysis")
+    dest = Path(FOLDERS.get(new_category, FOLDERS["DEFAULT"]))
+    transcripts_dir = dest / "transcripts"
+    analysis_dir = dest / "analysis"
 
-    new_transcript_path = os.path.join(transcripts_folder, new_full_filename)
+    new_transcript_path = transcripts_dir / new_full_filename
     new_analysis_filename = new_full_filename.replace(".md", " - Analysis.md")
-    new_analysis_path = os.path.join(analysis_folder, new_analysis_filename)
+    new_analysis_path = analysis_dir / new_analysis_filename
 
     # Handle collisions
-    if os.path.exists(new_transcript_path):
+    if new_transcript_path.exists():
         print(f"  ⚠️  File already exists at destination: {new_transcript_path}", flush=True)
-        base, ext = os.path.splitext(new_full_filename)
+        base, ext = Path(new_full_filename).stem, Path(new_full_filename).suffix
         counter = 2
-        while os.path.exists(os.path.join(transcripts_folder, f"{base} ({counter}){ext}")):
+        while (transcripts_dir / f"{base} ({counter}){ext}").exists():
             counter += 1
         new_full_filename = f"{base} ({counter}){ext}"
-        new_transcript_path = os.path.join(transcripts_folder, new_full_filename)
+        new_transcript_path = transcripts_dir / new_full_filename
         new_analysis_filename = new_full_filename.replace(".md", " - Analysis.md")
-        new_analysis_path = os.path.join(analysis_folder, new_analysis_filename)
+        new_analysis_path = analysis_dir / new_analysis_filename
 
     old_analysis_path = old_transcript_path.replace("/transcripts/", "/analysis/").replace(".md", " - Analysis.md")
-    has_analysis = os.path.exists(old_analysis_path)
+    has_analysis = Path(old_analysis_path).exists()
 
     if dry_run:
         print("  [DRY RUN] Would move:", flush=True)
@@ -147,8 +146,8 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
         return True
 
     try:
-        os.makedirs(transcripts_folder, exist_ok=True)
-        os.makedirs(analysis_folder, exist_ok=True)
+        transcripts_dir.mkdir(parents=True, exist_ok=True)
+        analysis_dir.mkdir(parents=True, exist_ok=True)
 
         shutil.move(old_transcript_path, new_transcript_path)
         if verbose:
@@ -166,7 +165,7 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
     except Exception as e:
         print(f"  ❌ Error moving files: {e}", flush=True)
         try:
-            if os.path.exists(new_transcript_path) and not os.path.exists(old_transcript_path):
+            if new_transcript_path.exists() and not Path(old_transcript_path).exists():
                 shutil.move(new_transcript_path, old_transcript_path)
                 print("  🔄 Rolled back transcript move", flush=True)
         except Exception:
@@ -176,14 +175,13 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
 
 def scan_default_folder(verbose=False):
     """Scan DEFAULT folder for transcript files."""
-    default_folder = FOLDERS["DEFAULT"]
-    transcripts_folder = os.path.join(default_folder, "transcripts")
+    transcripts_dir = Path(FOLDERS["DEFAULT"]) / "transcripts"
 
-    if not os.path.exists(transcripts_folder):
-        print(f"⚠️  DEFAULT transcripts folder not found: {transcripts_folder}", flush=True)
+    if not transcripts_dir.exists():
+        print(f"⚠️  DEFAULT transcripts folder not found: {transcripts_dir}", flush=True)
         return []
 
-    transcripts = [os.path.join(transcripts_folder, f) for f in os.listdir(transcripts_folder) if f.endswith(".md")]
+    transcripts = [str(f) for f in transcripts_dir.iterdir() if f.suffix == ".md"]
     if verbose:
         print(f"Found {len(transcripts)} transcripts in DEFAULT folder", flush=True)
     return transcripts
@@ -230,7 +228,7 @@ def main():
             failed_count = 0
 
             for i, (transcript_path, category) in enumerate(missing, 1):
-                filename = os.path.basename(transcript_path)
+                filename = Path(transcript_path).name
                 print(f"[{i}/{len(missing)}] {category}/{filename}")
 
                 if generate_missing_analysis(transcript_path, category, args.dry_run, args.verbose):
@@ -250,7 +248,7 @@ def main():
         print("-" * 60)
 
         transcripts = scan_default_folder(verbose=args.verbose)
-        unknown_meetings = [t for t in transcripts if should_update_filename(os.path.basename(t))]
+        unknown_meetings = [t for t in transcripts if should_update_filename(Path(t).name)]
 
         if not unknown_meetings:
             print("✅ No 'Unknown Meeting' files found in DEFAULT folder!")
@@ -261,7 +259,7 @@ def main():
             failed_count = 0
 
             for i, transcript_path in enumerate(unknown_meetings, 1):
-                filename = os.path.basename(transcript_path)
+                filename = Path(transcript_path).name
                 print(f"[{i}/{len(unknown_meetings)}] {filename}")
 
                 result = reclassify_transcript(transcript_path, args.dry_run, args.verbose)
