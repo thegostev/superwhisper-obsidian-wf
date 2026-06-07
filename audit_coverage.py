@@ -6,8 +6,7 @@ from collections import defaultdict
 STATE = Path.home() / ".meeting_transcriber_state.json"
 WATCH = Path.home() / "Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
 
-with open(STATE) as f:
-    data = json.load(f)
+data = json.loads(STATE.read_text())
 
 processed = data["processed"]
 
