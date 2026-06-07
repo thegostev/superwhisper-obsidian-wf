@@ -75,11 +75,6 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
 # ============================================================================
 
 
-def should_update_filename(filename):
-    """Check if filename contains 'Unknown Meeting'."""
-    return "Unknown Meeting" in filename
-
-
 def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
     """Re-classify a transcript. Returns (new_category, new_filename) or None.
 
@@ -96,19 +91,14 @@ def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
     return None
 
 
-def extract_timestamp(filename):
-    """Extract timestamp prefix from filename (YY-MM-DD HH.MM format)."""
-    match = re.match(r"^(\d{2}-\d{2}-\d{2}\s+\d{2}\.\d{2})", filename)
-    return match.group(1) if match else None
-
-
 def move_transcript_and_analysis(old_transcript_path, new_category, new_filename, dry_run=False, verbose=False):
     """Move both transcript and analysis files to new category folder."""
     old_filename = Path(old_transcript_path).name
-    timestamp = extract_timestamp(old_filename)
-    if not timestamp:
+    match = re.match(r"^(\d{2}-\d{2}-\d{2}\s+\d{2}\.\d{2})", old_filename)
+    if not match:
         print(f"  ❌ Could not extract timestamp from: {old_filename}", flush=True)
         return False
+    timestamp = match.group(1)
 
     new_full_filename = f"{timestamp} - {new_filename}{'' if new_filename.endswith('.md') else '.md'}"
 
@@ -246,7 +236,7 @@ def main():
         print("-" * 60)
 
         transcripts = scan_default_folder(verbose=args.verbose)
-        unknown_meetings = [t for t in transcripts if should_update_filename(Path(t).name)]
+        unknown_meetings = [t for t in transcripts if "Unknown Meeting" in Path(t).name]
 
         if not unknown_meetings:
             print("✅ No 'Unknown Meeting' files found in DEFAULT folder!")
