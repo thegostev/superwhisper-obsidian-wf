@@ -118,8 +118,7 @@ def get_audio_timestamp(audio_path):
             if len(part) == 10 and part[4] == "-" and part[7] == "-":
                 try:
                     year, month, day = part.split("-")
-                    time_part = p.stem.split()[0] if " " in p.stem else p.stem
-                    hour, minute, second = time_part.split("-")
+                    hour, minute, second = (p.stem.split()[0] if " " in p.stem else p.stem).split("-")
                     return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
                 except (ValueError, IndexError):
                     continue
