@@ -68,11 +68,8 @@ def check_processing_status(audio_file, timestamp, transcript_index):
     Single-file output: presence in the index implies the analysis file exists.
     """
     timestamp_key = timestamp.strftime(TIMESTAMP_FORMAT)
-
     if timestamp_key in transcript_index:
-        entry = transcript_index[timestamp_key]
-        return ("complete", entry["category"], entry["output_path"], None)
-
+        return ("complete", transcript_index[timestamp_key]["category"], transcript_index[timestamp_key]["output_path"], None)
     return ("unprocessed", None, None, None)
 
 
@@ -180,8 +177,7 @@ Examples:
     print("=" * 60)
 
     # Discover folders and audio files
-    folder_paths = discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)
-    scan_subfolders = [Path(p).name for p in folder_paths]
+    scan_subfolders = [Path(p).name for p in discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)]
     print(f"\n🔄 Catchup mode: scanning last {args.catchup} days", flush=True)
     print(f"📁 Target subfolders: {', '.join(scan_subfolders)}", flush=True)
 
