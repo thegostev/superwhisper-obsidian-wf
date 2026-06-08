@@ -4,7 +4,6 @@ Loads settings from config.yaml. No external API keys required — processing
 is handled by Superwhisper running locally on the same machine.
 """
 
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,8 +11,7 @@ from typing import Any
 import yaml
 
 # ---------- Locate config file ----------
-_CONFIG_DIR = Path(__file__).parent
-_CONFIG_FILE = _CONFIG_DIR / "config.yaml"
+_CONFIG_FILE = Path(__file__).parent / "config.yaml"
 
 
 def load_config(config_path: Path = _CONFIG_FILE) -> dict[str, Any]:
@@ -29,14 +27,14 @@ def load_config(config_path: Path = _CONFIG_FILE) -> dict[str, Any]:
     cfg: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     # Expand ~ in path values
-    cfg["watch_folder"] = os.path.expanduser(cfg["watch_folder"])
-    cfg["state_file"] = os.path.expanduser(cfg.get("state_file", "~/.meeting_transcriber_state.json"))
-    cfg["failed_analysis_log"] = os.path.expanduser(cfg.get("failed_analysis_log", "failed_analysis.log"))
+    cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
+    cfg["state_file"] = str(Path(cfg.get("state_file", "~/.meeting_transcriber_state.json")).expanduser())
+    cfg["failed_analysis_log"] = str(Path(cfg.get("failed_analysis_log", "failed_analysis.log")).expanduser())
     if "superwhisper_recordings_dir" in cfg:
-        cfg["superwhisper_recordings_dir"] = os.path.expanduser(cfg["superwhisper_recordings_dir"])
+        cfg["superwhisper_recordings_dir"] = str(Path(cfg["superwhisper_recordings_dir"]).expanduser())
 
     for cat in cfg.get("folders", {}):
-        cfg["folders"][cat] = os.path.expanduser(cfg["folders"][cat])
+        cfg["folders"][cat] = str(Path(cfg["folders"][cat]).expanduser())
 
     return cfg
 
@@ -53,9 +51,9 @@ FAILED_ANALYSIS_LOG: str = _cfg["failed_analysis_log"]
 # Superwhisper integration
 SUPERWHISPER_MODE_KEY: str = _cfg.get("superwhisper_mode_key", "meeting")
 SUPERWHISPER_TIMEOUT: int = _cfg.get("superwhisper_timeout", 300)
-SUPERWHISPER_RECORDINGS_DIR: str = os.path.expanduser(
+SUPERWHISPER_RECORDINGS_DIR: str = str(Path(
     _cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")
-)
+).expanduser())
 SUPERWHISPER_POLL_INTERVAL: int = _cfg.get("superwhisper_poll_interval", 3)
 
 # Service behavior
