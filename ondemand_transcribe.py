@@ -215,8 +215,7 @@ Examples:
     print(f"   ✅ Complete (transcript + analysis):  {complete}")
     print(f"   📝 Transcript only (missing analysis): {len(transcript_only)}")
     print(f"   🆕 Unprocessed:                        {len(unprocessed)}")
-    print(f"   📁 Total audio files:                  {len(all_audio_files)}")
-    print(f"{'=' * 60}")
+    print(f"   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
 
     if not unprocessed and not transcript_only:
         print("\n✨ All files are fully processed!")

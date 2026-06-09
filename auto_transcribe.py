@@ -149,8 +149,7 @@ def main():
     print(f"Scanning last {SCAN_DAYS_BACK} days of recordings", flush=True)
     print(f"Scan interval: {SCAN_INTERVAL}s | Delay between files: {DELAY_BETWEEN_FILES}s", flush=True)
     print(f"Max retries: {MAX_RETRIES} per file | Max files/cycle: {MAX_FILES_PER_CYCLE}", flush=True)
-    print(f"Superwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}", flush=True)
-    print("=" * 60, flush=True)
+    print(f"Superwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}\n{'=' * 60}", flush=True)
 
     state = load_state()
     statuses = [v.get("status") for v in state.get("processed", {}).values()]

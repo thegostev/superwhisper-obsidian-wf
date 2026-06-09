@@ -62,11 +62,8 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
         print(f"  [DRY RUN] Would generate analysis for: {category}/{filename}", flush=True)
         return True
 
-    print(
-        f"  ⚠️  Cannot generate analysis for {filename} — Superwhisper pipeline not yet implemented.\n"
-        f"     Re-process the original audio file to regenerate transcript + analysis together.",
-        flush=True,
-    )
+    print(f"  ⚠️  Cannot generate analysis for {filename} — Superwhisper pipeline not yet implemented.\n"
+          "     Re-process the original audio file to regenerate transcript + analysis together.", flush=True)
     return False
 
 
@@ -83,11 +80,8 @@ def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
     original audio file; it cannot be done from the transcript text alone.
     """
     filename = Path(transcript_path).name
-    print(
-        f"  ⚠️  Cannot reclassify {filename} — Superwhisper pipeline not yet implemented.\n"
-        f"     Re-process the original audio file to get updated category + filename.",
-        flush=True,
-    )
+    print(f"  ⚠️  Cannot reclassify {filename} — Superwhisper pipeline not yet implemented.\n"
+          "     Re-process the original audio file to get updated category + filename.", flush=True)
     return None
 
 
