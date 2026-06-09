@@ -245,10 +245,7 @@ def switch_superwhisper_mode() -> None:
             "superwhisper_mode_key is not set in config.yaml. "
             "Default value is 'meeting' — verify in ~/Documents/superwhisper/modes."
         )
-    subprocess.run(
-        ["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"],
-        check=True,
-    )
+    subprocess.run(["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"], check=True)
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
 
