@@ -346,15 +346,13 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
     for i, line in enumerate(lines):
         if line.startswith(CATEGORY_HEADER):
-            cat = re.sub(r'[^\x00-\x7F]', '', line.split(CATEGORY_HEADER, 1)[1].strip().upper()).strip()
-            if cat not in FOLDERS:
-                print(f"   ⚠️  Unknown category '{cat}', falling back to DEFAULT", flush=True)
-                cat = DEFAULT_CATEGORY
-            category = cat
+            category = re.sub(r'[^\x00-\x7F]', '', line.split(CATEGORY_HEADER, 1)[1].strip().upper()).strip()
+            if category not in FOLDERS:
+                print(f"   ⚠️  Unknown category '{category}', falling back to DEFAULT", flush=True)
+                category = DEFAULT_CATEGORY
             analysis_start = i + 1
         elif line.startswith(FILENAME_HEADER):
-            fn = line.split(FILENAME_HEADER, 1)[1].strip()
-            fn = fn.replace("/", "-").replace("\\", "-").replace(":", ".").replace("?", "").replace("*", "").replace('"', "")
+            fn = line.split(FILENAME_HEADER, 1)[1].strip().replace("/", "-").replace("\\", "-").replace(":", ".").replace("?", "").replace("*", "").replace('"', "")
             if fn:
                 filename = fn
             analysis_start = i + 1
