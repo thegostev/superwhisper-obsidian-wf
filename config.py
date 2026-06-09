@@ -10,11 +10,8 @@ from typing import Any
 
 import yaml
 
-# ---------- Locate config file ----------
-_CONFIG_FILE = Path(__file__).parent / "config.yaml"
 
-
-def load_config(config_path: Path = _CONFIG_FILE) -> dict[str, Any]:
+def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict[str, Any]:
     """Load and return configuration from YAML file."""
     if not config_path.exists():
         print(f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.", flush=True)
