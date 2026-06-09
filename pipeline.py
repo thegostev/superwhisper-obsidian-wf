@@ -149,10 +149,6 @@ def save_output(category: str, filename: str, content: str) -> str | None:
         return None
 
 
-# Keep alias for callers that import save_analysis (reclassify_and_fix.py)
-save_analysis = save_output
-
-
 def log_failed_analysis(transcript_path: str, category: str, filename: str) -> None:
     """Append a NEEDS_ANALYSIS entry to the persistent failure log."""
     try:
