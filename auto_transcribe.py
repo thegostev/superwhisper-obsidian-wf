@@ -138,17 +138,13 @@ def run_scan_cycle(state, transcript_index, cycle_number):
             print(f"   ⏸️  Pausing {DELAY_BETWEEN_FILES}s before next file...", flush=True)
             time.sleep(DELAY_BETWEEN_FILES)
 
-    print(f"\n{'=' * 50}", flush=True)
-    print(f"Cycle {cycle_number} complete: {success_count} succeeded, {fail_count} failed", flush=True)
-    print(f"{'=' * 50}", flush=True)
+    print(f"\n{'=' * 50}\nCycle {cycle_number} complete: {success_count} succeeded, {fail_count} failed\n{'=' * 50}", flush=True)
 
     return success_count
 
 
 def main():
-    print("=" * 60, flush=True)
-    print("🎙️  Auto-Transcription Service (Superwhisper)", flush=True)
-    print("=" * 60, flush=True)
+    print(f"{'=' * 60}\n🎙️  Auto-Transcription Service (Superwhisper)\n{'=' * 60}", flush=True)
     print(f"Watch folder: {WATCH_FOLDER}", flush=True)
     print(f"Scanning last {SCAN_DAYS_BACK} days of recordings", flush=True)
     print(f"Scan interval: {SCAN_INTERVAL}s | Delay between files: {DELAY_BETWEEN_FILES}s", flush=True)

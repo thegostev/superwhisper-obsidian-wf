@@ -172,9 +172,7 @@ Examples:
         print("\n⚠️  Please specify --catchup [DAYS] to auto-discover folders.")
         sys.exit(1)
 
-    print("=" * 60)
-    print("📼 On-Demand Audio Transcription & Analysis (Superwhisper)")
-    print("=" * 60)
+    print(f"{'=' * 60}\n📼 On-Demand Audio Transcription & Analysis (Superwhisper)\n{'=' * 60}")
 
     # Discover folders and audio files
     scan_subfolders = [Path(p).name for p in discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)]
@@ -213,9 +211,7 @@ Examples:
             complete += 1
 
     # Summary
-    print(f"\n{'=' * 60}")
-    print("📊 Status Summary")
-    print(f"{'=' * 60}")
+    print(f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}")
     print(f"   ✅ Complete (transcript + analysis):  {complete}")
     print(f"   📝 Transcript only (missing analysis): {len(transcript_only)}")
     print(f"   🆕 Unprocessed:                        {len(unprocessed)}")
@@ -231,8 +227,7 @@ Examples:
 
     # Process unprocessed files
     if unprocessed:
-        print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...")
-        print("-" * 60)
+        print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...\n{'-' * 60}")
         results = process_batch(unprocessed, state, dry_run=args.dry_run)
         print(f"\n{'-' * 60}")
         print(f"  ✅ Success: {results['success']}")
@@ -245,9 +240,7 @@ Examples:
         print(f"\n💡 Tip: {len(transcript_only)} file(s) have transcripts but no analysis.")
         print("   Re-process the original audio files to regenerate analysis via Superwhisper.")
 
-    print(f"\n{'=' * 60}")
-    print("✅ Done!")
-    print(f"{'=' * 60}")
+    print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 
 
 if __name__ == "__main__":

@@ -195,17 +195,14 @@ def main():
         print("\n⚠️  Please specify at least one operation: --generate-missing-analysis or --reclassify")
         sys.exit(1)
 
-    print("=" * 60)
-    print("🔧 RecordingAnalyser Maintenance")
-    print("=" * 60)
+    print(f"{'=' * 60}\n🔧 RecordingAnalyser Maintenance\n{'=' * 60}")
 
     if args.dry_run:
         print("⚠️  DRY RUN MODE - No files will be modified\n")
 
     # Task 1: Generate Missing Analysis
     if args.generate_missing_analysis:
-        print("\n📊 Task 1: Generating Missing Analysis Files")
-        print("-" * 60)
+        print(f"\n📊 Task 1: Generating Missing Analysis Files\n{'-' * 60}")
 
         missing = find_missing_analysis(FOLDERS, verbose=args.verbose)
 
@@ -232,8 +229,7 @@ def main():
 
     # Task 2: Reclassify and Move
     if args.reclassify:
-        print("\n📁 Task 2: Reclassifying and Moving Files")
-        print("-" * 60)
+        print(f"\n📁 Task 2: Reclassifying and Moving Files\n{'-' * 60}")
 
         transcripts = scan_default_folder(verbose=args.verbose)
         unknown_meetings = [t for t in transcripts if "Unknown Meeting" in Path(t).name]
@@ -270,9 +266,7 @@ def main():
 
             print(f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {failed_count} failed")
 
-    print(f"\n{'=' * 60}")
-    print("✅ Done!")
-    print(f"{'=' * 60}")
+    print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 
 
 if __name__ == "__main__":
