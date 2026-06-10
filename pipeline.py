@@ -262,10 +262,8 @@ def _read_superwhisper_entry(path: Path) -> str | None:
     The AI-processed Custom Mode output is in the "llmResult" field.
     """
     try:
-        if not path.is_dir():
-            return None
         meta = path / "meta.json"
-        if not meta.exists():
+        if not path.is_dir() or not meta.exists():
             return None
         return json.loads(meta.read_text(encoding="utf-8")).get("llmResult") or ""
     except (OSError, ValueError):
