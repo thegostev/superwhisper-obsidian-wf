@@ -89,11 +89,8 @@ def discover_audio_files(watch_folder, state, transcript_index):
     audio_files.sort(key=lambda x: x[1])
 
     if len(audio_files) > MAX_FILES_PER_CYCLE:
-        print(
-            f"   📋 {len(audio_files)} files found, processing {MAX_FILES_PER_CYCLE} "
-            f"this cycle ({len(audio_files) - MAX_FILES_PER_CYCLE} deferred to next cycle)",
-            flush=True,
-        )
+        print(f"   📋 {len(audio_files)} files found, processing {MAX_FILES_PER_CYCLE} "
+              f"this cycle ({len(audio_files) - MAX_FILES_PER_CYCLE} deferred to next cycle)", flush=True)
         audio_files = audio_files[:MAX_FILES_PER_CYCLE]
 
     return audio_files
@@ -113,10 +110,7 @@ def run_scan_cycle(state, transcript_index, cycle_number):
             print(f"[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - No new files", flush=True)
         return 0
 
-    print(
-        f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process",
-        flush=True,
-    )
+    print(f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process", flush=True)
 
     success_count = 0
     fail_count = 0
