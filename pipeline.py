@@ -102,10 +102,9 @@ def get_audio_timestamp(audio_path):
             timeout=MDLS_TIMEOUT_SECONDS,
         )
         if result.returncode == 0 and result.stdout.strip():
-            timestamp_str = result.stdout.strip()
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
                 try:
-                    return datetime.strptime(timestamp_str, fmt)
+                    return datetime.strptime(result.stdout.strip(), fmt)
                 except ValueError:
                     continue
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception):

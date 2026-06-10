@@ -92,9 +92,7 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
     if not match:
         print(f"  ❌ Could not extract timestamp from: {old_filename}", flush=True)
         return False
-    timestamp = match.group(1)
-
-    new_full_filename = f"{timestamp} - {new_filename}{'' if new_filename.endswith('.md') else '.md'}"
+    new_full_filename = f"{match.group(1)} - {new_filename}{'' if new_filename.endswith('.md') else '.md'}"
 
     dest = Path(FOLDERS.get(new_category, FOLDERS["DEFAULT"]))
     transcripts_dir = dest / "transcripts"

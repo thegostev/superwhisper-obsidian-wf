@@ -123,8 +123,7 @@ def run_scan_cycle(state, transcript_index, cycle_number):
 
         if success:
             success_count += 1
-            ts_key = timestamp.strftime(TIMESTAMP_FORMAT)
-            transcript_index[ts_key] = {"category": category}
+            transcript_index[timestamp.strftime(TIMESTAMP_FORMAT)] = {"category": category}
         else:
             fail_count += 1
 
