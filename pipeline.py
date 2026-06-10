@@ -183,12 +183,9 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
                     continue
                 if filename.endswith(ANALYSIS_SUFFIX):
                     continue
-                if len(filename) >= TIMESTAMP_KEY_LENGTH:
-                    timestamp_key = filename[:TIMESTAMP_KEY_LENGTH]
-                    index[timestamp_key] = {
-                        "category": category,
-                        "output_path": str(filepath),
-                    }
+                if len(filename) < TIMESTAMP_KEY_LENGTH:
+                    continue
+                index[filename[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
         except (OSError, PermissionError) as e:
             print(f"⚠️  Warning: Could not scan {base_path}: {e}", flush=True)
 
