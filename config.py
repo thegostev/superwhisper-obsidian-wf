@@ -26,8 +26,7 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
     if "superwhisper_recordings_dir" in cfg:
         cfg["superwhisper_recordings_dir"] = str(Path(cfg["superwhisper_recordings_dir"]).expanduser())
 
-    for cat in cfg.get("folders", {}):
-        cfg["folders"][cat] = str(Path(cfg["folders"][cat]).expanduser())
+    cfg["folders"] = {cat: str(Path(p).expanduser()) for cat, p in cfg.get("folders", {}).items()}
 
     return cfg
 
