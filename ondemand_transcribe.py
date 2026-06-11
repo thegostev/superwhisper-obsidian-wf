@@ -42,8 +42,9 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
                 print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
             continue
 
-        for file_path in map(str, subfolder_path.glob("*.m4a")):
-            if ".icloud" in file_path or ".tmp" in file_path or Path(file_path).name.startswith("."):
+        for fp in subfolder_path.glob("*.m4a"):
+            file_path = str(fp)  # str boundary: is_file_stable, get_audio_timestamp expect str
+            if ".icloud" in file_path or ".tmp" in file_path or fp.name.startswith("."):
                 continue
             if not is_file_stable(file_path, wait_seconds=1):
                 continue

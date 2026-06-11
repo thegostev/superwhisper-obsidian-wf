@@ -50,9 +50,10 @@ def discover_audio_files(watch_folder, state, transcript_index):
     state_dirty = False
 
     for folder_path in folders:
-        for file_path in map(str, Path(folder_path).glob("*.m4a")):
+        for fp in Path(folder_path).glob("*.m4a"):
+            file_path = str(fp)  # str boundary: state dict key
             # Skip iCloud placeholders, temp files, hidden files
-            if ".icloud" in file_path or ".tmp" in file_path or Path(file_path).name.startswith("."):
+            if ".icloud" in file_path or ".tmp" in file_path or fp.name.startswith("."):
                 continue
 
             # Skip if already processed or permanently failed
