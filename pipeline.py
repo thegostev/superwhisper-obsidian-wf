@@ -175,11 +175,8 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
         try:
             for filepath in base.iterdir():
                 filename = filepath.name
-                if not filename.endswith(MARKDOWN_EXT):
-                    continue
-                if filename.endswith(ANALYSIS_SUFFIX):
-                    continue
-                if len(filename) < TIMESTAMP_KEY_LENGTH:
+                if (not filename.endswith(MARKDOWN_EXT) or filename.endswith(ANALYSIS_SUFFIX)
+                        or len(filename) < TIMESTAMP_KEY_LENGTH):
                     continue
                 index[filename[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
         except (OSError, PermissionError) as e:
@@ -209,9 +206,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
 
     try:
         for child in Path(watch_folder).iterdir():
-            if not date_pattern.match(child.name):
-                continue
-            if not child.is_dir():
+            if not date_pattern.match(child.name) or not child.is_dir():
                 continue
             try:
                 folder_date = datetime.strptime(child.name, "%Y-%m-%d")
