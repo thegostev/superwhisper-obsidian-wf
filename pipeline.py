@@ -5,10 +5,7 @@ All entry points (daemon, on-demand CLI, maintenance CLI) import from here.
 
 from __future__ import annotations
 
-import json
-import re
-import subprocess
-import time
+import json, re, subprocess, time
 from datetime import datetime, timedelta
 from pathlib import Path
 
