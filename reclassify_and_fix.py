@@ -35,9 +35,7 @@ def find_missing_analysis(folders, verbose=False):
             continue
 
         for fp in transcripts_dir.iterdir():
-            if fp.suffix != ".md":
-                continue
-            if not (base / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists():
+            if fp.suffix == ".md" and not (base / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists():
                 missing.append((str(fp), category))
                 if verbose:
                     print(f"  Missing analysis: {category}/{fp.name}", flush=True)
