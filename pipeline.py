@@ -20,7 +20,6 @@ from config import (
     SUPERWHISPER_TIMEOUT,
 )
 
-# Shared timestamp format for filenames: "YY-MM-DD HH.MM"
 TIMESTAMP_FORMAT = "%y-%m-%d %H.%M"
 
 # Output-contract markers emitted by the Superwhisper Custom Mode prompt.
@@ -104,7 +103,7 @@ def get_audio_timestamp(audio_path):
                     return datetime.strptime(result.stdout.strip(), fmt)
                 except ValueError:
                     continue
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+    except Exception:
         pass
 
     # Strategy 2: directory + filename parse
@@ -179,7 +178,7 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
                         or len(filename) < TIMESTAMP_KEY_LENGTH):
                     continue
                 index[filename[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             print(f"⚠️  Warning: Could not scan {base_path}: {e}", flush=True)
 
     return index
