@@ -106,7 +106,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
             print(f"❌ Exception processing {filename}: {e}", flush=True)
             failed_files.append(audio_path)
 
-        if i < total and not dry_run:
+        if i < total:
             print(f"   ⏸️  Pausing {DELAY_BETWEEN_FILES}s before next file...", flush=True)
             time.sleep(DELAY_BETWEEN_FILES)
 

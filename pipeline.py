@@ -407,14 +407,13 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     except Exception as e:
         print(f"   ❌ Failed to process {basename}: {e}", flush=True)
         attempts += 1
-        permanent = attempts >= MAX_RETRIES
         state.setdefault("processed", {})[file_path] = {
-            "status": "failed_permanent" if permanent else "failed_retry",
+            "status": "failed_permanent" if attempts >= MAX_RETRIES else "failed_retry",
             "error": str(e),
             "processed_at": datetime.now().isoformat(),
             "attempts": attempts,
         }
-        if permanent:
+        if attempts >= MAX_RETRIES:
             print(f"   🛑 Permanently failed after {attempts} attempts", flush=True)
         else:
             print(f"   🔄 Will retry on next cycle (attempt {attempts}/{MAX_RETRIES})", flush=True)
