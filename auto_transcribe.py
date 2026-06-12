@@ -45,11 +45,10 @@ def discover_audio_files(watch_folder, state, transcript_index):
     Returns list of (audio_path, timestamp) tuples, oldest first.
     Capped at MAX_FILES_PER_CYCLE to prevent stampedes.
     """
-    folders = discover_recent_folders(watch_folder, SCAN_DAYS_BACK)
     audio_files = []
     state_dirty = False
 
-    for folder_path in folders:
+    for folder_path in discover_recent_folders(watch_folder, SCAN_DAYS_BACK):
         for fp in Path(folder_path).glob("*.m4a"):
             file_path = str(fp)  # str boundary: state dict key
             # Skip iCloud placeholders, temp files, hidden files

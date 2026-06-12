@@ -73,8 +73,7 @@ def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
     Reclassification requires re-running the full Superwhisper pipeline on the
     original audio file; it cannot be done from the transcript text alone.
     """
-    filename = Path(transcript_path).name
-    print(f"  ⚠️  Cannot reclassify {filename} — Superwhisper pipeline not yet implemented.\n"
+    print(f"  ⚠️  Cannot reclassify {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
           "     Re-process the original audio file to get updated category + filename.", flush=True)
     return None
 
