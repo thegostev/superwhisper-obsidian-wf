@@ -43,9 +43,7 @@ FAILED_ANALYSIS_LOG: str = _cfg["failed_analysis_log"]
 # Superwhisper integration
 SUPERWHISPER_MODE_KEY: str = _cfg.get("superwhisper_mode_key", "meeting")
 SUPERWHISPER_TIMEOUT: int = _cfg.get("superwhisper_timeout", 300)
-SUPERWHISPER_RECORDINGS_DIR: str = str(Path(
-    _cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")
-).expanduser())
+SUPERWHISPER_RECORDINGS_DIR: str = _cfg.get("superwhisper_recordings_dir", str(Path("~/Documents/superwhisper/recordings").expanduser()))
 SUPERWHISPER_POLL_INTERVAL: int = _cfg.get("superwhisper_poll_interval", 3)
 
 # Service behavior
