@@ -15,9 +15,7 @@ by_date = defaultdict(lambda: defaultdict(int))
 fail_by_date = defaultdict(list)
 
 for path, info in processed.items():
-    parts = path.split("/")
-    date = parts[-2]
-    fname = parts[-1]
+    *_, date, fname = path.split("/")
     cat = info.get("category") or "UNKNOWN"
     status = info.get("status", "unknown")
     if status == "complete":
