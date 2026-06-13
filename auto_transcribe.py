@@ -61,20 +61,18 @@ def discover_audio_files(watch_folder, state, transcript_index):
 
             # Check transcript index before stability check
             timestamp = get_audio_timestamp(file_path)
-            timestamp_key = timestamp.strftime(TIMESTAMP_FORMAT)
-            if timestamp_key in transcript_index:
-                existing = transcript_index[timestamp_key]
-                if existing.get("output_path"):
-                    state.setdefault("processed", {})[file_path] = {
-                        "status": "complete",
-                        "category": existing["category"],
-                        "timestamp": timestamp.isoformat(),
-                        "processed_at": datetime.now().isoformat(),
-                        "attempts": 0,
-                        "note": "found in transcript index",
-                    }
-                    state_dirty = True
-                    continue
+            existing = transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))
+            if existing and existing.get("output_path"):
+                state.setdefault("processed", {})[file_path] = {
+                    "status": "complete",
+                    "category": existing["category"],
+                    "timestamp": timestamp.isoformat(),
+                    "processed_at": datetime.now().isoformat(),
+                    "attempts": 0,
+                    "note": "found in transcript index",
+                }
+                state_dirty = True
+                continue
 
             # Check file stability (only for genuinely new files)
             if not is_file_stable(file_path, wait_seconds=1):
