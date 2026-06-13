@@ -332,8 +332,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
             analysis_start = i + 1
         elif line.startswith(FILENAME_HEADER):
             fn = line.split(FILENAME_HEADER, 1)[1].strip().replace("/", "-").replace("\\", "-").replace(":", ".").replace("?", "").replace("*", "").replace('"', "")
-            if fn:
-                filename = fn
+            filename = fn or filename
             analysis_start = i + 1
 
     # Skip blank lines between headers and body
