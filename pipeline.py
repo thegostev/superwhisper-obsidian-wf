@@ -279,11 +279,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
     while time.time() < deadline:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
         try:
-            entries = sorted(
-                recordings_dir.iterdir(),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
+            entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
         except OSError:
             continue
 
