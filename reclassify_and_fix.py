@@ -216,8 +216,7 @@ def main():
     if args.reclassify:
         print(f"\n📁 Task 2: Reclassifying and Moving Files\n{'-' * 60}")
 
-        transcripts = scan_default_folder(verbose=args.verbose)
-        unknown_meetings = [t for t in transcripts if "Unknown Meeting" in Path(t).name]
+        unknown_meetings = [t for t in scan_default_folder(verbose=args.verbose) if "Unknown Meeting" in Path(t).name]
 
         if not unknown_meetings:
             print("✅ No 'Unknown Meeting' files found in DEFAULT folder!")
