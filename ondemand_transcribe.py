@@ -233,8 +233,7 @@ Examples:
     if transcript_only and args.reprocess_partial:
         reprocess_analysis_only(transcript_only, dry_run=args.dry_run)
     elif transcript_only:
-        print(f"\n💡 Tip: {len(transcript_only)} file(s) have transcripts but no analysis.")
-        print("   Re-process the original audio files to regenerate analysis via Superwhisper.")
+        print(f"\n💡 Tip: {len(transcript_only)} file(s) have transcripts but no analysis.\n   Re-process the original audio files to regenerate analysis via Superwhisper.")
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 

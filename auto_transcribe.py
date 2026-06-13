@@ -157,12 +157,10 @@ def main():
         try:
             run_scan_cycle(state, transcript_index, cycle)
         except FatalAPIError as e:
-            print(f"\n🛑 FATAL: {e}", flush=True)
-            print("   Unrecoverable error. Service stopping.", flush=True)
+            print(f"\n🛑 FATAL: {e}\n   Unrecoverable error. Service stopping.", flush=True)
             sys.exit(1)
         except Exception as e:
-            print(f"\n❌ Scan cycle {cycle} error: {e}", flush=True)
-            print("   Continuing to next cycle...", flush=True)
+            print(f"\n❌ Scan cycle {cycle} error: {e}\n   Continuing to next cycle...", flush=True)
 
         time.sleep(SCAN_INTERVAL)
 
