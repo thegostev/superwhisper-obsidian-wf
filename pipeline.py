@@ -32,12 +32,10 @@ CATEGORY_SECTION_MARKER = "---CATEGORY---"  # section-marker fallback format
 DEFAULT_CATEGORY = "DEFAULT"
 DEFAULT_FILENAME = "Unknown Meeting"
 
-# Output file naming.
 MARKDOWN_EXT = ".md"
 ANALYSIS_SUFFIX = " - Analysis.md"  # legacy two-file output, skipped during indexing
 TIMESTAMP_KEY_LENGTH = 14  # leading chars of a filename forming the "YY-MM-DD HH.MM" key
 
-# Timeouts and delays (seconds).
 MDLS_TIMEOUT_SECONDS = 5  # macOS metadata lookup
 MODE_SWITCH_SETTLE_SECONDS = 1.0  # let Superwhisper apply the mode before handoff
 FILE_STABILITY_WAIT_SECONDS = 2  # iCloud sync settle check
