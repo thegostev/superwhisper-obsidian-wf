@@ -53,8 +53,7 @@ for date in all_dates:
     un = by_date[date].get("UNKNOWN", 0)
     fa = len(fail_by_date[date])
     audio = audio_by_date.get(date)
-    processed_count = pe + mn + mu + un + fa
-    coverage = f"{processed_count/audio*100:.0f}%" if audio else "?"
+    coverage = f"{(pe + mn + mu + un + fa)/audio*100:.0f}%" if audio else "?"
     audio_str = str(audio) if audio else "?"
     tp += pe; tm += mn; tmu += mu; tu += un; tf += fa
     if audio:
