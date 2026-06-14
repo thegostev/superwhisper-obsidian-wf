@@ -38,7 +38,6 @@ for day_dir in sorted(WATCH.iterdir()):
             if str(m4a) not in state_paths:
                 untracked[day_dir.name].append(m4a.name)
 
-# All dates
 all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in src if d >= "2026"})
 
 # Print table
@@ -65,15 +64,11 @@ for date in all_dates:
 print(f"|{'-'*14}|{'-'*7}|{'-'*11}|{'-'*13}|{'-'*11}|{'-'*9}|{'-'*8}|{'-'*10}|")
 print(f"| {'TOTAL':<12} | {ta:>5} | {tp:>9} | {tm:>11} | {tmu:>9} | {tu:>7} | {tf:>6} | {'':>8} |")
 
-# Untracked audio
-total_untracked = sum(len(v) for v in untracked.values())
-print(f"\n=== UNTRACKED AUDIO (in folder, not in state): {total_untracked} files ===")
+print(f"\n=== UNTRACKED AUDIO (in folder, not in state): {sum(len(v) for v in untracked.values())} files ===")
 for date in sorted(untracked):
     print(f"  {date}: {', '.join(untracked[date])}")
 
-# Failed details
-total_failed = sum(len(v) for v in fail_by_date.values())
-print(f"\n=== FAILED ENTRIES: {total_failed} files ===")
+print(f"\n=== FAILED ENTRIES: {sum(len(v) for v in fail_by_date.values())} files ===")
 for date in sorted(fail_by_date):
     for entry in fail_by_date[date]:
         print(f"  {date}: {entry}")
