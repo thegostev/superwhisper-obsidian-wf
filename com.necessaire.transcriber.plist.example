@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent template for the auto-transcription daemon.
+
+  Setup:
+    1. Replace every /ABSOLUTE/PATH/TO/superwhisper-obsidian-wf below with the
+       real absolute path to your checkout (run `pwd` inside it).
+    2. Copy to ~/Library/LaunchAgents/com.necessaire.transcriber.plist
+    3. Load it:    launchctl load ~/Library/LaunchAgents/com.necessaire.transcriber.plist
+       Unload:     launchctl unload ~/Library/LaunchAgents/com.necessaire.transcriber.plist
+
+  KeepAlive restarts the daemon if it exits; RunAtLoad starts it on login.
+  Note: auto_transcribe.py exits(1) on a FatalAPIError (e.g. bad config) — with
+  KeepAlive set, launchd will keep relaunching it, so fix the config and check
+  transcriber.log if it loops.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.necessaire.transcriber</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/ABSOLUTE/PATH/TO/superwhisper-obsidian-wf/venv/bin/python3</string>
+        <string>/ABSOLUTE/PATH/TO/superwhisper-obsidian-wf/auto_transcribe.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/ABSOLUTE/PATH/TO/superwhisper-obsidian-wf</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/ABSOLUTE/PATH/TO/superwhisper-obsidian-wf/transcriber.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/ABSOLUTE/PATH/TO/superwhisper-obsidian-wf/transcriber.log</string>
+
+    <!-- Mirrors run_transcriber.sh: XetHub download protocol is incompatible
+         with the Python 3.9 threading used by some dependencies. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HF_HUB_DISABLE_XET</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
