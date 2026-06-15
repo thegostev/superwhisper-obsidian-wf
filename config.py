@@ -10,14 +10,43 @@ from typing import Any
 
 import yaml
 
+# Keys without which the service cannot run. The README documents these as
+# required; validation enforces that contract at load time instead of letting
+# a missing key surface as a cryptic KeyError deep inside the pipeline.
+REQUIRED_KEYS = ("watch_folder", "folders")
+DEFAULT_CATEGORY = "DEFAULT"  # the fallback folder for unknown/unparsed categories
+
+
+def _config_error(message: str) -> None:
+    """Print a config error pointing at the template, then exit."""
+    print(f"ERROR: {message}\nSee config.example.yaml for the expected format.", flush=True)
+    sys.exit(1)
+
+
+def validate_config(cfg: Any, config_path: Path) -> dict[str, Any]:
+    """Fail fast (with a helpful message) if the config is missing required fields."""
+    if not isinstance(cfg, dict):
+        _config_error(f"Config file is empty or malformed: {config_path}")
+
+    if missing := [k for k in REQUIRED_KEYS if not cfg.get(k)]:
+        _config_error(f"Config is missing required field(s): {', '.join(missing)}")
+
+    if DEFAULT_CATEGORY not in cfg["folders"]:
+        _config_error(
+            f"Config 'folders' must include a '{DEFAULT_CATEGORY}' entry — "
+            "it is the fallback folder for unknown or unparsed categories"
+        )
+
+    return cfg
+
 
 def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict[str, Any]:
-    """Load and return configuration from YAML file."""
+    """Load, validate, and return configuration from YAML file."""
     if not config_path.exists():
         print(f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.", flush=True)
         sys.exit(1)
 
-    cfg: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    cfg: dict[str, Any] = validate_config(yaml.safe_load(config_path.read_text(encoding="utf-8")), config_path)
 
     # Expand ~ in path values
     cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
