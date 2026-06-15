@@ -192,8 +192,7 @@ def main():
             print("✅ No missing analysis files found!")
         else:
             print(f"Found {len(missing)} transcripts without analysis\n")
-            success_count = 0
-            failed_count = 0
+            success_count = failed_count = 0
 
             for i, (transcript_path, category) in enumerate(missing, 1):
                 print(f"[{i}/{len(missing)}] {category}/{Path(transcript_path).name}")
@@ -219,9 +218,7 @@ def main():
             print("✅ No 'Unknown Meeting' files found in DEFAULT folder!")
         else:
             print(f"Found {len(unknown_meetings)} 'Unknown Meeting' files\n")
-            moved_count = 0
-            skipped_count = 0
-            failed_count = 0
+            moved_count = skipped_count = failed_count = 0
 
             for i, transcript_path in enumerate(unknown_meetings, 1):
                 print(f"[{i}/{len(unknown_meetings)}] {Path(transcript_path).name}")
