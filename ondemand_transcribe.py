@@ -86,9 +86,8 @@ def process_batch(unprocessed_files, state, dry_run=False):
         print(f"\n[{i}/{total}] Processing {filename}...", flush=True)
 
         if dry_run:
-            print(f"  📁 Path: {audio_path}", flush=True)
-            print(f"  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-            print("  ⚠️  DRY RUN - Would process this file", flush=True)
+            print(f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                  "  ⚠️  DRY RUN - Would process this file", flush=True)
             success_count += 1
             continue
 
@@ -225,9 +224,7 @@ Examples:
     if unprocessed:
         print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...\n{'-' * 60}")
         results = process_batch(unprocessed, state, dry_run=args.dry_run)
-        print(f"\n{'-' * 60}")
-        print(f"  ✅ Success: {results['success']}")
-        print(f"  ❌ Failed:  {len(results['failed'])}")
+        print(f"\n{'-' * 60}\n  ✅ Success: {results['success']}\n  ❌ Failed:  {len(results['failed'])}")
 
     # Reprocess partial (not supported)
     if transcript_only and args.reprocess_partial:

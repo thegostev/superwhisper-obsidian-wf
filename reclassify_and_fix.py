@@ -111,12 +111,9 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
     has_analysis = Path(old_analysis_path).exists()
 
     if dry_run:
-        print("  [DRY RUN] Would move:", flush=True)
-        print(f"    FROM: {old_transcript_path}", flush=True)
-        print(f"    TO:   {new_transcript_path}", flush=True)
+        print(f"  [DRY RUN] Would move:\n    FROM: {old_transcript_path}\n    TO:   {new_transcript_path}", flush=True)
         if has_analysis:
-            print(f"    AND:  {old_analysis_path}", flush=True)
-            print(f"    TO:   {new_analysis_path}", flush=True)
+            print(f"    AND:  {old_analysis_path}\n    TO:   {new_analysis_path}", flush=True)
         return True
 
     try:
