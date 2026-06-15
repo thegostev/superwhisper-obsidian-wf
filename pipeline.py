@@ -166,8 +166,7 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
     index: dict[str, dict] = {}
 
     for category, base_path in folders.items():
-        base = Path(base_path)
-        if not base.exists():
+        if not (base := Path(base_path)).exists():
             continue
         try:
             for filepath in base.iterdir():
@@ -206,8 +205,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
             if not date_pattern.match(child.name) or not child.is_dir():
                 continue
             try:
-                folder_date = datetime.strptime(child.name, "%Y-%m-%d")
-                if folder_date >= cutoff:
+                if (folder_date := datetime.strptime(child.name, "%Y-%m-%d")) >= cutoff:
                     recent_folders.append((folder_date, str(child)))
             except ValueError:
                 continue
