@@ -6,18 +6,17 @@ is handled by Superwhisper running locally on the same machine.
 
 import sys
 from pathlib import Path
-from typing import Any
 
 import yaml
 
 
-def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict[str, Any]:
+def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict:
     """Load and return configuration from YAML file."""
     if not config_path.exists():
         print(f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.", flush=True)
         sys.exit(1)
 
-    cfg: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     # Expand ~ in path values
     cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
