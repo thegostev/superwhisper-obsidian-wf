@@ -56,8 +56,7 @@ for date in all_dates:
     coverage = f"{(pe + mn + mu + un + fa)/audio*100:.0f}%" if audio else "?"
     audio_str = str(audio) if audio else "?"
     tp += pe; tm += mn; tmu += mu; tu += un; tf += fa
-    if audio:
-        ta += audio
+    ta += audio or 0
     print(f"| {date:<12} | {audio_str:>5} | {pe:>9} | {mn:>11} | {mu:>9} | {un:>7} | {fa:>6} | {coverage:>8} |")
 
 print(f"|{'-'*14}|{'-'*7}|{'-'*11}|{'-'*13}|{'-'*11}|{'-'*9}|{'-'*8}|{'-'*10}|")
