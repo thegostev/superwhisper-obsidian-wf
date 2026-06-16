@@ -99,8 +99,7 @@ def get_audio_timestamp(audio_path):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
                 try:
                     return datetime.strptime(result.stdout.strip(), fmt)
-                except ValueError:
-                    continue
+                except ValueError: pass
     except Exception:
         pass
 
@@ -113,8 +112,7 @@ def get_audio_timestamp(audio_path):
                     year, month, day = part.split("-")
                     hour, minute, second = (p.stem.split()[0] if " " in p.stem else p.stem).split("-")
                     return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
-                except (ValueError, IndexError):
-                    continue
+                except (ValueError, IndexError): pass
     except Exception:
         pass
 
@@ -207,8 +205,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
             try:
                 if (folder_date := datetime.strptime(child.name, "%Y-%m-%d")) >= cutoff:
                     recent_folders.append((folder_date, str(child)))
-            except ValueError:
-                continue
+            except ValueError: pass
     except OSError as e:
         print(f"❌ Cannot list watch folder: {e}", flush=True)
         return []
