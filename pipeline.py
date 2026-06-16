@@ -315,10 +315,11 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
             if category not in FOLDERS:
                 print(f"   ⚠️  Unknown category '{category}', falling back to DEFAULT", flush=True)
                 category = DEFAULT_CATEGORY
-            analysis_start = i + 1
         elif line.startswith(FILENAME_HEADER):
             filename = line.split(FILENAME_HEADER, 1)[1].strip().replace("/", "-").replace("\\", "-").replace(":", ".").replace("?", "").replace("*", "").replace('"', "") or filename
-            analysis_start = i + 1
+        else:
+            continue
+        analysis_start = i + 1
 
     # Skip blank lines between headers and body
     while analysis_start < len(lines) and not lines[analysis_start].strip():
