@@ -64,9 +64,8 @@ def check_processing_status(audio_file, timestamp, transcript_index):
 
     Single-file output: presence in the index implies the analysis file exists.
     """
-    timestamp_key = timestamp.strftime(TIMESTAMP_FORMAT)
-    if timestamp_key in transcript_index:
-        return ("complete", transcript_index[timestamp_key]["category"], transcript_index[timestamp_key]["output_path"], None)
+    if (entry := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))):
+        return ("complete", entry["category"], entry["output_path"], None)
     return ("unprocessed", None, None, None)
 
 

@@ -183,8 +183,7 @@ def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -
     """Check if file has finished syncing (not still downloading from iCloud)."""
     p = Path(path)
     try:
-        size1 = p.stat().st_size
-        if size1 == 0:
+        if not (size1 := p.stat().st_size):
             return False
         time.sleep(wait_seconds)
         return size1 == p.stat().st_size
@@ -279,8 +278,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
                     break  # all remaining entries are older than our handoff
             except OSError:
                 continue
-            text = _read_superwhisper_entry(entry)
-            if text and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
+            if (text := _read_superwhisper_entry(entry)) and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text
 

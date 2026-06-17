@@ -81,8 +81,7 @@ def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
 def move_transcript_and_analysis(old_transcript_path, new_category, new_filename, dry_run=False, verbose=False):
     """Move both transcript and analysis files to new category folder."""
     old_filename = Path(old_transcript_path).name
-    match = re.match(r"^(\d{2}-\d{2}-\d{2}\s+\d{2}\.\d{2})", old_filename)
-    if not match:
+    if not (match := re.match(r"^(\d{2}-\d{2}-\d{2}\s+\d{2}\.\d{2})", old_filename)):
         print(f"  ❌ Could not extract timestamp from: {old_filename}", flush=True)
         return False
     new_full_filename = f"{match.group(1)} - {new_filename}{'' if new_filename.endswith('.md') else '.md'}"
