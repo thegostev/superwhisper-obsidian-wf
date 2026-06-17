@@ -11,8 +11,8 @@ data = json.loads(STATE.read_text())
 processed = data["processed"]
 
 # Build per-date breakdowns from state
-by_date = defaultdict(lambda: defaultdict(int))
-fail_by_date = defaultdict(list)
+by_date: defaultdict = defaultdict(lambda: defaultdict(int))
+fail_by_date: defaultdict = defaultdict(list)
 
 for path, info in processed.items():
     *_, date, fname = path.split("/")

@@ -94,7 +94,13 @@ Run the service via the shell wrapper:
 ./run_transcriber.sh logs      # tail live log (Ctrl+C exits the tail, not the service)
 ```
 
-To make it start automatically on login, register with launchd by creating `~/Library/LaunchAgents/com.necessaire.transcriber.plist` pointing at `venv/bin/python3` and `auto_transcribe.py`, then `launchctl load` it.
+To make it start automatically on login, register with launchd using the bundled template:
+
+```bash
+# Edit the file first: replace every /ABSOLUTE/PATH/TO/... with your clone's path
+cp com.necessaire.transcriber.plist.example ~/Library/LaunchAgents/com.necessaire.transcriber.plist
+launchctl load ~/Library/LaunchAgents/com.necessaire.transcriber.plist
+```
 
 ### Catchup
 
@@ -154,8 +160,8 @@ run_transcriber.sh     Shell wrapper for all common operations
 config.py              Loads config.yaml
 config.yaml            Active configuration (gitignored)
 config.example.yaml    Template
-ARCHITECTURE.md        WBS decomposition (S1–S3)
-docs/adr/              Architectural decision records (ADR 0007 = Superwhisper switch)
+audit_coverage.py      One-shot audit: audio files vs. processed state, per day
+com.necessaire.transcriber.plist.example  launchd agent template
 tests/                 Test suite
 ```
 

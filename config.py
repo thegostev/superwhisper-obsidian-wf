@@ -16,7 +16,7 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
         print(f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.", flush=True)
         sys.exit(1)
 
-    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    cfg: dict = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     # Expand ~ in path values
     cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
