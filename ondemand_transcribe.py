@@ -118,12 +118,9 @@ def reprocess_analysis_only(transcript_only_files, dry_run=False):
     Re-running analysis in isolation is not supported — re-process the original
     audio file through the full pipeline instead (use --catchup without --reprocess-partial).
     """
-    print(
-        "⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
-        "   Superwhisper combines transcription + analysis in one pass.\n"
-        "   To regenerate analysis, re-process the original audio file via --catchup.",
-        flush=True,
-    )
+    print("⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
+          "   Superwhisper combines transcription + analysis in one pass.\n"
+          "   To regenerate analysis, re-process the original audio file via --catchup.", flush=True)
     return {"success": 0, "failed": [f for f, *_ in transcript_only_files], "total": len(transcript_only_files)}
 
 

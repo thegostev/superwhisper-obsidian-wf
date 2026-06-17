@@ -220,9 +220,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
 def switch_superwhisper_mode() -> None:
     """Switch Superwhisper to the configured Custom Mode via deep link."""
     if not SUPERWHISPER_MODE_KEY:
-        raise FatalAPIError(
-            "superwhisper_mode_key is not set in config.yaml. Default value is 'meeting' — verify in ~/Documents/superwhisper/modes."
-        )
+        raise FatalAPIError("superwhisper_mode_key is not set in config.yaml. Default value is 'meeting' — verify in ~/Documents/superwhisper/modes.")
     subprocess.run(["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"], check=True)
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
@@ -258,9 +256,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
-        raise FatalAPIError(
-            f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once."
-        )
+        raise FatalAPIError(f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once.")
 
     deadline = time.time() + SUPERWHISPER_TIMEOUT
     print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
@@ -282,9 +278,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text
 
-    raise TimeoutError(
-        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
-    )
+    raise TimeoutError(f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}")
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
@@ -326,9 +320,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     analysis = "\n".join(lines[analysis_start:]).strip()
 
     if not analysis:
-        raise PermanentFileError(
-            "Superwhisper output has no analysis body. Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content."
-        )
+        raise PermanentFileError("Superwhisper output has no analysis body. Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content.")
 
     return category, filename, analysis
 
