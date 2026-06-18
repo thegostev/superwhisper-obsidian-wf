@@ -192,9 +192,7 @@ Examples:
     complete = 0
 
     for audio_path, timestamp in all_audio_files:
-        status, category, transcript_path, analysis_path = check_processing_status(
-            audio_path, timestamp, transcript_index
-        )
+        status, category, transcript_path, analysis_path = check_processing_status(audio_path, timestamp, transcript_index)
         if status == "unprocessed":
             unprocessed.append((audio_path, timestamp))
         elif status == "transcript_only":

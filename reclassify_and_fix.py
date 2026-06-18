@@ -234,9 +234,7 @@ def main():
                     skipped_count += 1
                     continue
 
-                if move_transcript_and_analysis(
-                    transcript_path, new_category, new_filename, args.dry_run, args.verbose
-                ):
+                if move_transcript_and_analysis(transcript_path, new_category, new_filename, args.dry_run, args.verbose):
                     moved_count += 1
                 else:
                     failed_count += 1
