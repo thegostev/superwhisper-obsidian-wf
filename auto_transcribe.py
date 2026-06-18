@@ -109,8 +109,7 @@ def run_scan_cycle(state, transcript_index, cycle_number):
     success_count = fail_count = 0
 
     for i, (audio_path, timestamp) in enumerate(new_files, 1):
-        p = Path(audio_path)
-        print(f"\n📂 [{i}/{len(new_files)}] {p.parent.name}/{p.name}", flush=True)
+        print(f"\n📂 [{i}/{len(new_files)}] {Path(audio_path).parent.name}/{Path(audio_path).name}", flush=True)
 
         success, category = process_audio(audio_path, timestamp, state)
 
