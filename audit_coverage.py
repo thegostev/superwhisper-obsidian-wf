@@ -6,9 +6,7 @@ from collections import defaultdict
 STATE = Path.home() / ".meeting_transcriber_state.json"
 WATCH = Path.home() / "Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
 
-data = json.loads(STATE.read_text())
-
-processed = data["processed"]
+processed = json.loads(STATE.read_text())["processed"]
 
 # Build per-date breakdowns from state
 by_date = defaultdict(lambda: defaultdict(int))
