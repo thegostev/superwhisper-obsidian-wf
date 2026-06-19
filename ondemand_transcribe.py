@@ -57,13 +57,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
 
 
 def check_processing_status(audio_file, timestamp, transcript_index):
-    """Check if audio file has been processed.
-
-    Returns: (status, category, output_path, _unused)
-    where status is "complete" | "unprocessed"
-
-    Single-file output: presence in the index implies the analysis file exists.
-    """
+    """Return ("complete"|"unprocessed", category, output_path, None) for the given audio file."""
     if (entry := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))):
         return ("complete", entry["category"], entry["output_path"], None)
     return ("unprocessed", None, None, None)

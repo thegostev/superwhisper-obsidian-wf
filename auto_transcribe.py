@@ -40,11 +40,7 @@ IDLE_HEARTBEAT_EVERY_N_CYCLES = 10
 
 
 def discover_audio_files(watch_folder, state, transcript_index):
-    """Find unprocessed .m4a files in recent date folders.
-
-    Returns list of (audio_path, timestamp) tuples, oldest first.
-    Capped at MAX_FILES_PER_CYCLE to prevent stampedes.
-    """
+    """Find unprocessed .m4a files; return (path, timestamp) tuples oldest-first, capped at MAX_FILES_PER_CYCLE."""
     audio_files = []
     state_dirty = False
 

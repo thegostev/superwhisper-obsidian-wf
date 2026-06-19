@@ -83,10 +83,7 @@ def save_state(state):
 
 
 def get_audio_timestamp(audio_path):
-    """Extract recording timestamp from audio file.
-
-    Strategy: 1) macOS mdls  2) directory/filename parse  3) file ctime
-    """
+    """Extract recording timestamp via mdls → dir/filename parse → file ctime."""
     # Strategy 1: macOS metadata
     try:
         result = subprocess.run(
@@ -156,11 +153,7 @@ def log_failed_analysis(transcript_path: str, category: str, filename: str) -> N
 
 
 def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
-    """Scan all category folders, build lookup dict keyed by "YY-MM-DD HH.MM".
-
-    With single-file output, files live directly in FOLDERS[category] (not in
-    a transcripts/ subfolder). The index is used for deduplication only.
-    """
+    """Scan category folders; return lookup dict keyed by "YY-MM-DD HH.MM" for deduplication."""
     index: dict[str, dict] = {}
 
     for category, base_path in folders.items():
@@ -236,11 +229,7 @@ def handoff_to_superwhisper(file_path: str) -> None:
 
 
 def _read_superwhisper_entry(path: Path) -> str | None:
-    """Read llmResult from a Superwhisper recording directory.
-
-    Each recording is a directory containing meta.json + output.wav.
-    The AI-processed Custom Mode output is in the "llmResult" field.
-    """
+    """Return the llmResult field from a Superwhisper recording directory's meta.json."""
     try:
         return json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult") or ""
     except (OSError, ValueError):
@@ -248,11 +237,9 @@ def _read_superwhisper_entry(path: Path) -> str | None:
 
 
 def wait_for_superwhisper_result(file_path: str, since: float) -> str:
-    """Poll until Superwhisper finishes processing this file. Returns raw output text.
+    """Poll until Superwhisper finishes; return raw output text.
 
-    since: time.time() value captured just before handoff_to_superwhisper() was called.
-    Raises TimeoutError if no result appears within SUPERWHISPER_TIMEOUT seconds.
-    Raises FatalAPIError if the recordings folder does not exist.
+    since: time.time() captured just before handoff_to_superwhisper() was called.
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
@@ -282,19 +269,10 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
-    """Parse Superwhisper Custom Mode output into (category, filename, analysis).
+    """Parse Superwhisper output → (category, filename, analysis).
 
-    Supports the header format output by the current prompt:
-        CATEGORY: <name>
-        FILENAME: <title>
-
-        <analysis body>
-
-    Also supports the section-marker format as a fallback:
-        ---CATEGORY--- / ---FILENAME--- / ---ANALYSIS---
-
-    Falls back to DEFAULT / 'Unknown Meeting' on parse failures.
-    Raises PermanentFileError if no analysis body is found.
+    Expects CATEGORY:<name> / FILENAME:<title> header lines followed by the analysis body.
+    Falls back to DEFAULT/'Unknown Meeting'; raises PermanentFileError if no body.
     """
     lines = raw_output.strip().split("\n")
     category = DEFAULT_CATEGORY
@@ -330,11 +308,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
 
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
-    """Full pipeline: Superwhisper handoff → parse result → save analysis file.
-
-    Returns (success: bool, category: str | None).
-    Raises FatalAPIError to stop the service on unrecoverable errors.
-    """
+    """Full pipeline: mode switch → handoff → parse → save; returns (success, category|None)."""
     basename = Path(file_path).name
     attempts = state.get("processed", {}).get(file_path, {}).get("attempts", 0)
 
