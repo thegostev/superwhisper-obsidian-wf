@@ -193,12 +193,11 @@ Examples:
         else:
             complete += 1
 
-    # Summary
-    print(f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}")
-    print(f"   ✅ Complete (transcript + analysis):  {complete}")
-    print(f"   📝 Transcript only (missing analysis): {len(transcript_only)}")
-    print(f"   🆕 Unprocessed:                        {len(unprocessed)}")
-    print(f"   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
+    print(f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
+          f"\n   ✅ Complete (transcript + analysis):  {complete}"
+          f"\n   📝 Transcript only (missing analysis): {len(transcript_only)}"
+          f"\n   🆕 Unprocessed:                        {len(unprocessed)}"
+          f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
 
     if not unprocessed and not transcript_only:
         print("\n✨ All files are fully processed!")
