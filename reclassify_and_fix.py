@@ -19,10 +19,6 @@ from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS
 
-# ============================================================================
-# MISSING ANALYSIS
-# ============================================================================
-
 
 def find_missing_analysis(folders, verbose=False):
     """Scan all category folders, return list of transcripts without analysis."""
@@ -59,11 +55,6 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
     print(f"  ⚠️  Cannot generate analysis for {filename} — Superwhisper pipeline not yet implemented.\n"
           "     Re-process the original audio file to regenerate transcript + analysis together.", flush=True)
     return False
-
-
-# ============================================================================
-# RECLASSIFICATION
-# ============================================================================
 
 
 def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
@@ -155,11 +146,6 @@ def scan_default_folder(verbose=False):
     if verbose:
         print(f"Found {len(transcripts)} transcripts in DEFAULT folder", flush=True)
     return transcripts
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
 
 
 def main():

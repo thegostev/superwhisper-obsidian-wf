@@ -34,11 +34,6 @@ from pipeline import (
 IDLE_HEARTBEAT_EVERY_N_CYCLES = 10
 
 
-# ============================================================================
-# AUDIO DISCOVERY (daemon-specific: state filtering, index dedup, per-cycle cap)
-# ============================================================================
-
-
 def discover_audio_files(watch_folder, state, transcript_index):
     """Find unprocessed .m4a files; return (path, timestamp) tuples oldest-first, capped at MAX_FILES_PER_CYCLE."""
     audio_files = []
@@ -84,11 +79,6 @@ def discover_audio_files(watch_folder, state, transcript_index):
         print(f"   📋 {len(audio_files)} files found, processing {MAX_FILES_PER_CYCLE} "
               f"this cycle ({len(audio_files) - MAX_FILES_PER_CYCLE} deferred to next cycle)", flush=True)
     return audio_files[:MAX_FILES_PER_CYCLE]
-
-
-# ============================================================================
-# SCAN CYCLE & MAIN LOOP
-# ============================================================================
 
 
 def run_scan_cycle(state, transcript_index, cycle_number):

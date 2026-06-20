@@ -20,10 +20,6 @@ from pipeline import (
     process_audio,
 )
 
-# ============================================================================
-# DISCOVERY (on-demand specific: explicit subfolder list, no state filtering)
-# ============================================================================
-
 
 def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     """Scan specific subfolders for .m4a files. Returns list of (path, timestamp) tuples."""
@@ -61,11 +57,6 @@ def check_processing_status(audio_file, timestamp, transcript_index):
     if (entry := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))):
         return ("complete", entry["category"], entry["output_path"], None)
     return ("unprocessed", None, None, None)
-
-
-# ============================================================================
-# BATCH PROCESSING
-# ============================================================================
 
 
 def process_batch(unprocessed_files, state, dry_run=False):
@@ -116,11 +107,6 @@ def reprocess_analysis_only(transcript_only_files, dry_run=False):
           "   Superwhisper combines transcription + analysis in one pass.\n"
           "   To regenerate analysis, re-process the original audio file via --catchup.", flush=True)
     return {"success": 0, "failed": [f for f, *_ in transcript_only_files], "total": len(transcript_only_files)}
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
 
 
 def main():
