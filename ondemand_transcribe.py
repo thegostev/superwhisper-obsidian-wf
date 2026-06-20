@@ -52,7 +52,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     return sorted(audio_files, key=lambda x: x[1])
 
 
-def check_processing_status(audio_file, timestamp, transcript_index):
+def check_processing_status(timestamp, transcript_index):
     """Return ("complete"|"unprocessed", category, output_path, None) for the given audio file."""
     if (entry := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))):
         return ("complete", entry["category"], entry["output_path"], None)
@@ -171,7 +171,7 @@ Examples:
     complete = 0
 
     for audio_path, timestamp in all_audio_files:
-        status, category, transcript_path, analysis_path = check_processing_status(audio_path, timestamp, transcript_index)
+        status, category, transcript_path, analysis_path = check_processing_status(timestamp, transcript_index)
         if status == "unprocessed":
             unprocessed.append((audio_path, timestamp))
         elif status == "transcript_only":
