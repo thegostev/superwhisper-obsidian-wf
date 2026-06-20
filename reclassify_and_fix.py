@@ -135,7 +135,6 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
 
 
 def scan_default_folder(verbose=False):
-    """Scan DEFAULT folder for transcript files."""
     transcripts_dir = Path(FOLDERS["DEFAULT"]) / "transcripts"
 
     if not transcripts_dir.exists():

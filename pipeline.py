@@ -58,7 +58,6 @@ class PermanentFileError(Exception):
 
 
 def load_state():
-    """Load processed files state from disk."""
     if Path(STATE_FILE).exists():
         try:
             return json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
@@ -68,7 +67,6 @@ def load_state():
 
 
 def save_state(state):
-    """Save processed files state to disk."""
     try:
         Path(STATE_FILE).write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
     except OSError as e:
