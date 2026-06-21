@@ -92,7 +92,7 @@ def run_scan_cycle(state, transcript_index, cycle_number):
 
     print(f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process", flush=True)
 
-    success_count = fail_count = 0
+    success_count = 0
 
     for i, (audio_path, timestamp) in enumerate(new_files, 1):
         print(f"\n📂 [{i}/{len(new_files)}] {Path(audio_path).parent.name}/{Path(audio_path).name}", flush=True)
@@ -102,14 +102,12 @@ def run_scan_cycle(state, transcript_index, cycle_number):
         if success:
             success_count += 1
             transcript_index[timestamp.strftime(TIMESTAMP_FORMAT)] = {"category": category}
-        else:
-            fail_count += 1
 
         if i < len(new_files):
             print(f"   ⏸️  Pausing {DELAY_BETWEEN_FILES}s before next file...", flush=True)
             time.sleep(DELAY_BETWEEN_FILES)
 
-    print(f"\n{'=' * 50}\nCycle {cycle_number} complete: {success_count} succeeded, {fail_count} failed\n{'=' * 50}", flush=True)
+    print(f"\n{'=' * 50}\nCycle {cycle_number} complete: {success_count} succeeded, {len(new_files) - success_count} failed\n{'=' * 50}", flush=True)
 
     return success_count
 

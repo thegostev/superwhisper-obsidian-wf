@@ -174,21 +174,19 @@ def main():
             print("✅ No missing analysis files found!")
         else:
             print(f"Found {len(missing)} transcripts without analysis\n")
-            success_count = failed_count = 0
+            success_count = 0
 
             for i, (transcript_path, category) in enumerate(missing, 1):
                 print(f"[{i}/{len(missing)}] {category}/{Path(transcript_path).name}")
 
                 if generate_missing_analysis(transcript_path, category, args.dry_run, args.verbose):
                     success_count += 1
-                else:
-                    failed_count += 1
 
                 if i < len(missing) and not args.dry_run:
                     print(f"  ⏸️  Pausing {DELAY_BETWEEN_FILES}s between files...", flush=True)
                     time.sleep(DELAY_BETWEEN_FILES)
 
-            print(f"\n📊 Results: ✅ {success_count} success, ❌ {failed_count} failed")
+            print(f"\n📊 Results: ✅ {success_count} success, ❌ {len(missing) - success_count} failed")
 
     # Task 2: Reclassify and Move
     if args.reclassify:
@@ -200,7 +198,7 @@ def main():
             print("✅ No 'Unknown Meeting' files found in DEFAULT folder!")
         else:
             print(f"Found {len(unknown_meetings)} 'Unknown Meeting' files\n")
-            moved_count = skipped_count = failed_count = 0
+            moved_count = skipped_count = 0
 
             for i, transcript_path in enumerate(unknown_meetings, 1):
                 print(f"[{i}/{len(unknown_meetings)}] {Path(transcript_path).name}")
@@ -208,7 +206,6 @@ def main():
                 result = reclassify_transcript(transcript_path, args.dry_run, args.verbose)
                 if result is None:
                     print("  ❌ Classification failed")
-                    failed_count += 1
                     continue
 
                 new_category, new_filename = result
@@ -219,10 +216,8 @@ def main():
 
                 if move_transcript_and_analysis(transcript_path, new_category, new_filename, args.dry_run, args.verbose):
                     moved_count += 1
-                else:
-                    failed_count += 1
 
-            print(f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {failed_count} failed")
+            print(f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed")
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 

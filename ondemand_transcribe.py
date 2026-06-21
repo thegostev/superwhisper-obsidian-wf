@@ -168,7 +168,6 @@ Examples:
     print("\n🔎 Checking processing status...", flush=True)
     unprocessed = []
     transcript_only = []
-    complete = 0
 
     for audio_path, timestamp in all_audio_files:
         status, category, transcript_path, analysis_path = check_processing_status(timestamp, transcript_index)
@@ -176,11 +175,9 @@ Examples:
             unprocessed.append((audio_path, timestamp))
         elif status == "transcript_only":
             transcript_only.append((audio_path, timestamp, category, transcript_path))
-        else:
-            complete += 1
 
     print(f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
-          f"\n   ✅ Complete (transcript + analysis):  {complete}"
+          f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed) - len(transcript_only)}"
           f"\n   📝 Transcript only (missing analysis): {len(transcript_only)}"
           f"\n   🆕 Unprocessed:                        {len(unprocessed)}"
           f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
