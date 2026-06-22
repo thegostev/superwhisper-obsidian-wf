@@ -30,9 +30,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     nonexistent = []
 
     for subfolder in scan_subfolders:
-        subfolder_path = Path(watch_folder) / subfolder
-
-        if not subfolder_path.is_dir():
+        if not (subfolder_path := Path(watch_folder) / subfolder).is_dir():
             nonexistent.append(subfolder)
             if verbose:
                 print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
