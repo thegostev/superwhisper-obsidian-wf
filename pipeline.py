@@ -176,8 +176,7 @@ def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -
             return False
         time.sleep(wait_seconds)
         return size1 == p.stat().st_size
-    except OSError:
-        return False
+    except OSError: return False
 
 
 def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
@@ -248,8 +247,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
         try:
             entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            continue
+        except OSError: continue
 
         for entry in entries:
             try:
@@ -328,8 +326,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         save_state(state)
         return True, category
 
-    except FatalAPIError:
-        raise
+    except FatalAPIError: raise
 
     except PermanentFileError as e:
         print(f"   🛑 Permanent error for {basename}: {e}", flush=True)
