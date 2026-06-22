@@ -14,10 +14,9 @@ fail_by_date = defaultdict(list)
 
 for path, info in processed.items():
     *_, date, fname = path.split("/")
-    cat = info.get("category") or "UNKNOWN"
     status = info.get("status", "unknown")
     if status == "complete":
-        by_date[date][cat] += 1
+        by_date[date][info.get("category") or "UNKNOWN"] += 1
     else:
         fail_by_date[date].append(f"{fname} [{status}]")
 
@@ -52,10 +51,9 @@ for date in all_dates:
     fa = len(fail_by_date[date])
     audio = audio_by_date.get(date)
     coverage = f"{(pe + mn + mu + un + fa)/audio*100:.0f}%" if audio else "?"
-    audio_str = str(audio) if audio else "?"
     tp += pe; tm += mn; tmu += mu; tu += un; tf += fa
     ta += audio or 0
-    print(f"| {date:<12} | {audio_str:>5} | {pe:>9} | {mn:>11} | {mu:>9} | {un:>7} | {fa:>6} | {coverage:>8} |")
+    print(f"| {date:<12} | {audio or '?':>5} | {pe:>9} | {mn:>11} | {mu:>9} | {un:>7} | {fa:>6} | {coverage:>8} |")
 
 print(f"|{'-'*14}|{'-'*7}|{'-'*11}|{'-'*13}|{'-'*11}|{'-'*9}|{'-'*8}|{'-'*10}|")
 print(f"| {'TOTAL':<12} | {ta:>5} | {tp:>9} | {tm:>11} | {tmu:>9} | {tu:>7} | {tf:>6} | {'':>8} |")
