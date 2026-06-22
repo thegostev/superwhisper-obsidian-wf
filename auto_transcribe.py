@@ -74,11 +74,10 @@ def discover_audio_files(watch_folder, state, transcript_index):
     if state_dirty:
         save_state(state)
 
-    audio_files.sort(key=lambda x: x[1])
     if len(audio_files) > MAX_FILES_PER_CYCLE:
         print(f"   📋 {len(audio_files)} files found, processing {MAX_FILES_PER_CYCLE} "
               f"this cycle ({len(audio_files) - MAX_FILES_PER_CYCLE} deferred to next cycle)", flush=True)
-    return audio_files[:MAX_FILES_PER_CYCLE]
+    return sorted(audio_files, key=lambda x: x[1])[:MAX_FILES_PER_CYCLE]
 
 
 def run_scan_cycle(state, transcript_index, cycle_number):
