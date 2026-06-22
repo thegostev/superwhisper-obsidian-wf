@@ -163,7 +163,6 @@ def main():
     if args.dry_run:
         print("⚠️  DRY RUN MODE - No files will be modified\n")
 
-    # Task 1: Generate Missing Analysis
     if args.generate_missing_analysis:
         print(f"\n📊 Task 1: Generating Missing Analysis Files\n{'-' * 60}")
 
@@ -187,7 +186,6 @@ def main():
 
             print(f"\n📊 Results: ✅ {success_count} success, ❌ {len(missing) - success_count} failed")
 
-    # Task 2: Reclassify and Move
     if args.reclassify:
         print(f"\n📁 Task 2: Reclassifying and Moving Files\n{'-' * 60}")
 
@@ -202,8 +200,7 @@ def main():
             for i, transcript_path in enumerate(unknown_meetings, 1):
                 print(f"[{i}/{len(unknown_meetings)}] {Path(transcript_path).name}")
 
-                result = reclassify_transcript(transcript_path, args.dry_run, args.verbose)
-                if result is None:
+                if (result := reclassify_transcript(transcript_path, args.dry_run, args.verbose)) is None:
                     print("  ❌ Classification failed")
                     continue
 
