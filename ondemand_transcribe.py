@@ -5,7 +5,9 @@ Usage:
     python ondemand_transcribe.py --catchup 14              # Process last 14 days
 """
 
-import argparse, sys, time
+import argparse
+import sys
+import time
 from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS, WATCH_FOLDER
@@ -24,7 +26,9 @@ from pipeline import (
 def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     """Scan specific subfolders for .m4a files. Returns list of (path, timestamp) tuples."""
     if not scan_subfolders:
-        raise ValueError("scan_subfolders must contain at least one subfolder. Use --catchup to auto-discover date folders.")
+        raise ValueError(
+            "scan_subfolders must contain at least one subfolder. Use --catchup to auto-discover date folders."
+        )
 
     audio_files = []
     nonexistent = []
@@ -52,7 +56,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
 
 def check_processing_status(timestamp, transcript_index):
     """Return ("complete"|"unprocessed", category, output_path, None) for the given audio file."""
-    if (entry := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))):
+    if entry := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT)):
         return ("complete", entry["category"], entry["output_path"], None)
     return ("unprocessed", None, None, None)
 
@@ -67,8 +71,11 @@ def process_batch(unprocessed_files, state, dry_run=False):
         print(f"\n[{i}/{total}] Processing {Path(audio_path).name}...", flush=True)
 
         if dry_run:
-            print(f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                  "  ⚠️  DRY RUN - Would process this file", flush=True)
+            print(
+                f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "  ⚠️  DRY RUN - Would process this file",
+                flush=True,
+            )
             success_count += 1
             continue
 
@@ -100,9 +107,12 @@ def reprocess_analysis_only(transcript_only_files, dry_run=False):
     Re-running analysis in isolation is not supported — re-process the original
     audio file through the full pipeline instead (use --catchup without --reprocess-partial).
     """
-    print("⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
-          "   Superwhisper combines transcription + analysis in one pass.\n"
-          "   To regenerate analysis, re-process the original audio file via --catchup.", flush=True)
+    print(
+        "⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
+        "   Superwhisper combines transcription + analysis in one pass.\n"
+        "   To regenerate analysis, re-process the original audio file via --catchup.",
+        flush=True,
+    )
     return {"success": 0, "failed": [f for f, *_ in transcript_only_files], "total": len(transcript_only_files)}
 
 
@@ -145,7 +155,10 @@ Examples:
 
     # Discover folders and audio files
     scan_subfolders = [Path(p).name for p in discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)]
-    print(f"\n🔄 Catchup mode: scanning last {args.catchup} days\n📁 Target subfolders: {', '.join(scan_subfolders)}", flush=True)
+    print(
+        f"\n🔄 Catchup mode: scanning last {args.catchup} days\n📁 Target subfolders: {', '.join(scan_subfolders)}",
+        flush=True,
+    )
 
     if not scan_subfolders:
         print("No date folders found in the specified range.", flush=True)
@@ -173,11 +186,13 @@ Examples:
         elif status == "transcript_only":
             transcript_only.append((audio_path, timestamp, category, transcript_path))
 
-    print(f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
-          f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed) - len(transcript_only)}"
-          f"\n   📝 Transcript only (missing analysis): {len(transcript_only)}"
-          f"\n   🆕 Unprocessed:                        {len(unprocessed)}"
-          f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
+    print(
+        f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
+        f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed) - len(transcript_only)}"
+        f"\n   📝 Transcript only (missing analysis): {len(transcript_only)}"
+        f"\n   🆕 Unprocessed:                        {len(unprocessed)}"
+        f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}"
+    )
 
     if not unprocessed and not transcript_only:
         print("\n✨ All files are fully processed!")
@@ -196,7 +211,10 @@ Examples:
     if transcript_only and args.reprocess_partial:
         reprocess_analysis_only(transcript_only, dry_run=args.dry_run)
     elif transcript_only:
-        print(f"\n💡 Tip: {len(transcript_only)} file(s) have transcripts but no analysis.\n   Re-process the original audio files to regenerate analysis via Superwhisper.")
+        print(
+            f"\n💡 Tip: {len(transcript_only)} file(s) have transcripts but no analysis.\n"
+            "   Re-process the original audio files to regenerate analysis via Superwhisper."
+        )
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 

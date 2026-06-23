@@ -14,7 +14,11 @@ the Superwhisper pipeline (switch_superwhisper_mode / handoff_to_superwhisper /
 wait_for_superwhisper_result / parse_superwhisper_output) is implemented in pipeline.py.
 """
 
-import argparse, re, shutil, sys, time
+import argparse
+import re
+import shutil
+import sys
+import time
 from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS
@@ -30,7 +34,10 @@ def find_missing_analysis(folders, verbose=False):
             continue
 
         for fp in transcripts_dir.iterdir():
-            if fp.suffix == ".md" and not (transcripts_dir.parent / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists():
+            if (
+                fp.suffix == ".md"
+                and not (transcripts_dir.parent / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists()
+            ):
                 missing.append((str(fp), category))
                 if verbose:
                     print(f"  Missing analysis: {category}/{fp.name}", flush=True)
@@ -49,8 +56,11 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
         print(f"  [DRY RUN] Would generate analysis for: {category}/{Path(transcript_path).name}", flush=True)
         return True
 
-    print(f"  ⚠️  Cannot generate analysis for {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
-          "     Re-process the original audio file to regenerate transcript + analysis together.", flush=True)
+    print(
+        f"  ⚠️  Cannot generate analysis for {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
+        "     Re-process the original audio file to regenerate transcript + analysis together.",
+        flush=True,
+    )
     return False
 
 
@@ -61,8 +71,11 @@ def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
     Reclassification requires re-running the full Superwhisper pipeline on the
     original audio file; it cannot be done from the transcript text alone.
     """
-    print(f"  ⚠️  Cannot reclassify {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
-          "     Re-process the original audio file to get updated category + filename.", flush=True)
+    print(
+        f"  ⚠️  Cannot reclassify {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
+        "     Re-process the original audio file to get updated category + filename.",
+        flush=True,
+    )
     return None
 
 
@@ -123,7 +136,8 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
             if new_transcript_path.exists() and not Path(old_transcript_path).exists():
                 shutil.move(new_transcript_path, old_transcript_path)
                 print("  🔄 Rolled back transcript move", flush=True)
-        except Exception: pass
+        except Exception:
+            pass
         return False
 
 
@@ -206,10 +220,15 @@ def main():
                     skipped_count += 1
                     continue
 
-                if move_transcript_and_analysis(transcript_path, new_category, new_filename, args.dry_run, args.verbose):
+                if move_transcript_and_analysis(
+                    transcript_path, new_category, new_filename, args.dry_run, args.verbose
+                ):
                     moved_count += 1
 
-            print(f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed")
+            print(
+                f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, "
+                f"❌ {len(unknown_meetings) - moved_count - skipped_count} failed"
+            )
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 

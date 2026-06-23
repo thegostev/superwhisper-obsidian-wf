@@ -3,7 +3,10 @@
 All entry points (daemon, on-demand CLI, maintenance CLI) import from here.
 """
 
-import json, re, subprocess, time
+import json
+import re
+import subprocess
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -92,7 +95,8 @@ def get_audio_timestamp(audio_path):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
                 try:
                     return datetime.strptime(result.stdout.strip(), fmt)
-                except ValueError: pass
+                except ValueError:
+                    pass
     except Exception:
         pass
 
@@ -105,7 +109,8 @@ def get_audio_timestamp(audio_path):
                     year, month, day = part.split("-")
                     hour, minute, second = p.stem.split()[0].split("-")
                     return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
-                except (ValueError, IndexError): pass
+                except (ValueError, IndexError):
+                    pass
     except Exception:
         pass
 
@@ -157,8 +162,11 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
         try:
             for filepath in base.iterdir():
                 filename = filepath.name
-                if (not filename.endswith(MARKDOWN_EXT) or filename.endswith(ANALYSIS_SUFFIX)
-                        or len(filename) < TIMESTAMP_KEY_LENGTH):
+                if (
+                    not filename.endswith(MARKDOWN_EXT)
+                    or filename.endswith(ANALYSIS_SUFFIX)
+                    or len(filename) < TIMESTAMP_KEY_LENGTH
+                ):
                     continue
                 index[filename[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
         except OSError as e:
@@ -174,7 +182,8 @@ def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -
             return False
         time.sleep(wait_seconds)
         return size1 == Path(path).stat().st_size
-    except OSError: return False
+    except OSError:
+        return False
 
 
 def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
@@ -189,7 +198,8 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
             try:
                 if (folder_date := datetime.strptime(child.name, "%Y-%m-%d")) >= cutoff:
                     recent_folders.append((folder_date, str(child)))
-            except ValueError: pass
+            except ValueError:
+                pass
     except OSError as e:
         print(f"❌ Cannot list watch folder: {e}", flush=True)
         return []
@@ -205,7 +215,10 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
 def switch_superwhisper_mode() -> None:
     """Switch Superwhisper to the configured Custom Mode via deep link."""
     if not SUPERWHISPER_MODE_KEY:
-        raise FatalAPIError("superwhisper_mode_key is not set in config.yaml. Default value is 'meeting' — verify in ~/Documents/superwhisper/modes.")
+        raise FatalAPIError(
+            "superwhisper_mode_key is not set in config.yaml. "
+            "Default value is 'meeting' — verify in ~/Documents/superwhisper/modes."
+        )
     subprocess.run(["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"], check=True)
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
@@ -223,7 +236,8 @@ def handoff_to_superwhisper(file_path: str) -> None:
 def _read_superwhisper_entry(path: Path) -> str | None:
     """Return the llmResult field from a Superwhisper recording directory's meta.json."""
     try:
-        return json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
+        result: str | None = json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
+        return result
     except (OSError, ValueError):
         return None
 
@@ -235,7 +249,10 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
-        raise FatalAPIError(f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once.")
+        raise FatalAPIError(
+            f"Superwhisper recordings folder not found: {recordings_dir}. "
+            "Verify Superwhisper is installed and has been used at least once."
+        )
 
     deadline = time.time() + SUPERWHISPER_TIMEOUT
     print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
@@ -244,7 +261,8 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
         try:
             entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError: continue
+        except OSError:
+            continue
 
         for entry in entries:
             try:
@@ -252,11 +270,15 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
                     break  # all remaining entries are older than our handoff
             except OSError:
                 continue
-            if (text := _read_superwhisper_entry(entry)) and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
+            if (text := _read_superwhisper_entry(entry)) and (
+                CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text
+            ):
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text
 
-    raise TimeoutError(f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}")
+    raise TimeoutError(
+        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+    )
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
@@ -272,13 +294,23 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
     for i, line in enumerate(lines):
         if line.startswith(CATEGORY_HEADER):
-            category = re.sub(r'[^\x00-\x7F]', '', line.split(CATEGORY_HEADER, 1)[1].strip().upper()).strip()
+            category = re.sub(r"[^\x00-\x7F]", "", line.split(CATEGORY_HEADER, 1)[1].strip().upper()).strip()
             if category not in FOLDERS:
                 print(f"   ⚠️  Unknown category '{category}', falling back to DEFAULT", flush=True)
                 category = DEFAULT_CATEGORY
             analysis_start = i + 1
         elif line.startswith(FILENAME_HEADER):
-            filename = line.split(FILENAME_HEADER, 1)[1].strip().replace("/", "-").replace("\\", "-").replace(":", ".").replace("?", "").replace("*", "").replace('"', "") or filename
+            filename = (
+                line.split(FILENAME_HEADER, 1)[1]
+                .strip()
+                .replace("/", "-")
+                .replace("\\", "-")
+                .replace(":", ".")
+                .replace("?", "")
+                .replace("*", "")
+                .replace('"', "")
+                or filename
+            )
             analysis_start = i + 1
 
     # Skip blank lines between headers and body
@@ -286,7 +318,10 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
         analysis_start += 1
 
     if not (analysis := "\n".join(lines[analysis_start:]).strip()):
-        raise PermanentFileError("Superwhisper output has no analysis body. Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content.")
+        raise PermanentFileError(
+            "Superwhisper output has no analysis body. "
+            "Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content."
+        )
     return category, filename, analysis
 
 
@@ -323,7 +358,8 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         save_state(state)
         return True, category
 
-    except FatalAPIError: raise
+    except FatalAPIError:
+        raise
 
     except PermanentFileError as e:
         print(f"   🛑 Permanent error for {basename}: {e}", flush=True)

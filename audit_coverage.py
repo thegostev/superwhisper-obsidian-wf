@@ -1,7 +1,8 @@
 """One-shot audit: match audio files to transcripts per category."""
+
 import json
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
 
 STATE = Path.home() / ".meeting_transcriber_state.json"
 WATCH = Path.home() / "Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
@@ -9,7 +10,7 @@ WATCH = Path.home() / "Library/Mobile Documents/iCloud~com~openplanetsoftware~ju
 processed = json.loads(STATE.read_text())["processed"]
 
 # Build per-date breakdowns from state
-by_date = defaultdict(lambda: defaultdict(int))
+by_date: defaultdict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
 fail_by_date = defaultdict(list)
 
 for path, info in processed.items():
@@ -38,8 +39,11 @@ for day_dir in sorted(WATCH.iterdir()):
 all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in src if d >= "2026"})
 
 # Print table
-print(f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | {'MUSIKKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |")
-print(f"|{'-'*14}|{'-'*7}|{'-'*11}|{'-'*13}|{'-'*11}|{'-'*9}|{'-'*8}|{'-'*10}|")
+print(
+    f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | "
+    f"{'MUSIKKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |"
+)
+print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 8}|{'-' * 10}|")
 
 tp = tm = tmu = tu = tf = ta = 0
 
@@ -50,12 +54,16 @@ for date in all_dates:
     un = by_date[date].get("UNKNOWN", 0)
     fa = len(fail_by_date[date])
     audio = audio_by_date.get(date)
-    coverage = f"{(pe + mn + mu + un + fa)/audio*100:.0f}%" if audio else "?"
-    tp += pe; tm += mn; tmu += mu; tu += un; tf += fa
+    coverage = f"{(pe + mn + mu + un + fa) / audio * 100:.0f}%" if audio else "?"
+    tp += pe
+    tm += mn
+    tmu += mu
+    tu += un
+    tf += fa
     ta += audio or 0
     print(f"| {date:<12} | {audio or '?':>5} | {pe:>9} | {mn:>11} | {mu:>9} | {un:>7} | {fa:>6} | {coverage:>8} |")
 
-print(f"|{'-'*14}|{'-'*7}|{'-'*11}|{'-'*13}|{'-'*11}|{'-'*9}|{'-'*8}|{'-'*10}|")
+print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 8}|{'-' * 10}|")
 print(f"| {'TOTAL':<12} | {ta:>5} | {tp:>9} | {tm:>11} | {tmu:>9} | {tu:>7} | {tf:>6} | {'':>8} |")
 
 print(f"\n=== UNTRACKED AUDIO (in folder, not in state): {sum(len(v) for v in untracked.values())} files ===")
