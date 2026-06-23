@@ -64,8 +64,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
     total = len(unprocessed_files)
 
     for i, (audio_path, timestamp) in enumerate(unprocessed_files, 1):
-        filename = Path(audio_path).name
-        print(f"\n[{i}/{total}] Processing {filename}...", flush=True)
+        print(f"\n[{i}/{total}] Processing {Path(audio_path).name}...", flush=True)
 
         if dry_run:
             print(f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -84,7 +83,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
             failed_files.append(audio_path)
             break
         except Exception as e:
-            print(f"❌ Exception processing {filename}: {e}", flush=True)
+            print(f"❌ Exception processing {Path(audio_path).name}: {e}", flush=True)
             failed_files.append(audio_path)
 
         if i < total:

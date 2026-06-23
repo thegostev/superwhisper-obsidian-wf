@@ -46,13 +46,11 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
     With Superwhisper, analysis cannot be run in isolation on an existing transcript.
     The original audio file must be re-processed through the full pipeline.
     """
-    filename = Path(transcript_path).name
-
     if dry_run:
-        print(f"  [DRY RUN] Would generate analysis for: {category}/{filename}", flush=True)
+        print(f"  [DRY RUN] Would generate analysis for: {category}/{Path(transcript_path).name}", flush=True)
         return True
 
-    print(f"  ⚠️  Cannot generate analysis for {filename} — Superwhisper pipeline not yet implemented.\n"
+    print(f"  ⚠️  Cannot generate analysis for {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
           "     Re-process the original audio file to regenerate transcript + analysis together.", flush=True)
     return False
 
@@ -71,9 +69,8 @@ def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
 
 def move_transcript_and_analysis(old_transcript_path, new_category, new_filename, dry_run=False, verbose=False):
     """Move both transcript and analysis files to new category folder."""
-    old_filename = Path(old_transcript_path).name
-    if not (match := re.match(r"^(\d{2}-\d{2}-\d{2}\s+\d{2}\.\d{2})", old_filename)):
-        print(f"  ❌ Could not extract timestamp from: {old_filename}", flush=True)
+    if not (match := re.match(r"^(\d{2}-\d{2}-\d{2}\s+\d{2}\.\d{2})", Path(old_transcript_path).name)):
+        print(f"  ❌ Could not extract timestamp from: {Path(old_transcript_path).name}", flush=True)
         return False
     new_full_filename = f"{match.group(1)} - {new_filename}{'' if new_filename.endswith('.md') else '.md'}"
 
