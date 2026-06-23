@@ -124,10 +124,9 @@ def save_output(category: str, filename: str, content: str) -> str | None:
     except OSError as e:
         print(f"⚠️  Warning: Could not create output folder: {e}", flush=True)
 
-    p = dest / filename
     try:
-        p.write_text(content, encoding="utf-8")
-        return str(p)
+        (dest / filename).write_text(content, encoding="utf-8")
+        return str(dest / filename)
     except OSError as e:
         print(f"⚠️  Warning: Failed to save output: {e}", flush=True)
         return None
@@ -170,12 +169,11 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
 
 def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -> bool:
     """Check if file has finished syncing (not still downloading from iCloud)."""
-    p = Path(path)
     try:
-        if not (size1 := p.stat().st_size):
+        if not (size1 := Path(path).stat().st_size):
             return False
         time.sleep(wait_seconds)
-        return size1 == p.stat().st_size
+        return size1 == Path(path).stat().st_size
     except OSError: return False
 
 
