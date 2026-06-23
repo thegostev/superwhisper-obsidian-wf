@@ -25,13 +25,12 @@ def find_missing_analysis(folders, verbose=False):
     missing = []
 
     for category, base_path in folders.items():
-        base = Path(base_path)
-        transcripts_dir = base / "transcripts"
+        transcripts_dir = Path(base_path) / "transcripts"
         if not transcripts_dir.exists():
             continue
 
         for fp in transcripts_dir.iterdir():
-            if fp.suffix == ".md" and not (base / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists():
+            if fp.suffix == ".md" and not (transcripts_dir.parent / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists():
                 missing.append((str(fp), category))
                 if verbose:
                     print(f"  Missing analysis: {category}/{fp.name}", flush=True)
@@ -84,11 +83,11 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
     # Handle collisions
     if new_transcript_path.exists():
         print(f"  ⚠️  File already exists at destination: {new_transcript_path}", flush=True)
-        base, ext = Path(new_full_filename).stem, Path(new_full_filename).suffix
+        base = new_full_filename.removesuffix(".md")
         counter = 2
-        while (transcripts_dir / f"{base} ({counter}){ext}").exists():
+        while (transcripts_dir / f"{base} ({counter}).md").exists():
             counter += 1
-        new_full_filename = f"{base} ({counter}){ext}"
+        new_full_filename = f"{base} ({counter}).md"
         new_transcript_path = transcripts_dir / new_full_filename
         new_analysis_path = analysis_dir / new_full_filename.replace(".md", " - Analysis.md")
 
