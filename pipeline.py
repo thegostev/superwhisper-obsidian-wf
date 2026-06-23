@@ -179,13 +179,12 @@ def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -
 
 def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
     """Find date-based subfolders from the last N days, sorted oldest-first."""
-    date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
     cutoff = datetime.now() - timedelta(days=days_back)
     recent_folders = []
 
     try:
         for child in Path(watch_folder).iterdir():
-            if not date_pattern.match(child.name) or not child.is_dir():
+            if not child.is_dir():
                 continue
             try:
                 if (folder_date := datetime.strptime(child.name, "%Y-%m-%d")) >= cutoff:
