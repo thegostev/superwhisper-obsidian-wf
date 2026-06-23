@@ -4,10 +4,8 @@ Loads settings from config.yaml. No external API keys required — processing
 is handled by Superwhisper running locally on the same machine.
 """
 
-import sys
+import sys, yaml
 from pathlib import Path
-
-import yaml
 
 
 def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict:
