@@ -30,8 +30,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
             "scan_subfolders must contain at least one subfolder. Use --catchup to auto-discover date folders."
         )
 
-    audio_files = []
-    nonexistent = []
+    audio_files, nonexistent = [], []
 
     for subfolder in scan_subfolders:
         if not (subfolder_path := Path(watch_folder) / subfolder).is_dir():
@@ -63,8 +62,7 @@ def check_processing_status(timestamp, transcript_index):
 
 def process_batch(unprocessed_files, state, dry_run=False):
     """Process list of audio files. Returns {"success": int, "failed": list}."""
-    success_count = 0
-    failed_files = []
+    success_count, failed_files = 0, []
     total = len(unprocessed_files)
 
     for i, (audio_path, timestamp) in enumerate(unprocessed_files, 1):

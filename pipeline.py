@@ -288,9 +288,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     Falls back to DEFAULT/'Unknown Meeting'; raises PermanentFileError if no body.
     """
     lines = raw_output.strip().split("\n")
-    category = DEFAULT_CATEGORY
-    filename = DEFAULT_FILENAME
-    analysis_start = 0
+    category, filename, analysis_start = DEFAULT_CATEGORY, DEFAULT_FILENAME, 0
 
     for i, line in enumerate(lines):
         if line.startswith(CATEGORY_HEADER):
