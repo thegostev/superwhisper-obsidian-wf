@@ -6,8 +6,22 @@ is handled by Superwhisper running locally on the same machine.
 
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import yaml
+
+# Keys the service cannot start without; everything else has a safe default below.
+REQUIRED_KEYS = ("watch_folder", "folders")
+# The category folders dict must contain this entry — it is the fallback output
+# folder for unknown/unparseable categories. Accessed eagerly in the pipeline
+# (save_output), so a missing entry crashes mid-processing rather than at startup.
+DEFAULT_CATEGORY = "DEFAULT"
+
+
+def _config_error(message: str, config_path: Path) -> NoReturn:
+    """Print a clear, actionable config error and stop before the service runs."""
+    print(f"ERROR: {message}\n  Config file: {config_path}", flush=True)
+    sys.exit(1)
 
 
 def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict:
@@ -19,7 +33,22 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
         )
         sys.exit(1)
 
-    cfg: dict = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(cfg, dict):
+        _config_error("Config file is empty or not a YAML mapping.", config_path)
+
+    for key in REQUIRED_KEYS:
+        if not cfg.get(key):
+            _config_error(f"Required config key '{key}' is missing or empty.", config_path)
+
+    if not isinstance(cfg["folders"], dict):
+        _config_error("Config key 'folders' must be a mapping of CATEGORY -> folder path.", config_path)
+    if DEFAULT_CATEGORY not in cfg["folders"]:
+        _config_error(
+            f"Config key 'folders' must include a '{DEFAULT_CATEGORY}' entry "
+            "(the fallback output folder for unknown categories).",
+            config_path,
+        )
 
     cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
     cfg["state_file"] = str(Path(cfg.get("state_file", "~/.meeting_transcriber_state.json")).expanduser())
