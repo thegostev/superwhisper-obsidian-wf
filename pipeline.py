@@ -28,6 +28,7 @@ TIMESTAMP_FORMAT = "%y-%m-%d %H.%M"
 CATEGORY_HEADER = "CATEGORY:"
 FILENAME_HEADER = "FILENAME:"
 CATEGORY_SECTION_MARKER = "---CATEGORY---"  # section-marker fallback format
+_FILENAME_SANITIZE = str.maketrans("/\\:", "--.", '?"*')
 
 # Sentinel defaults used when parsing fails or a category is unknown.
 DEFAULT_CATEGORY = "DEFAULT"
@@ -299,17 +300,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
                 category = DEFAULT_CATEGORY
             analysis_start = i + 1
         elif line.startswith(FILENAME_HEADER):
-            filename = (
-                line.split(FILENAME_HEADER, 1)[1]
-                .strip()
-                .replace("/", "-")
-                .replace("\\", "-")
-                .replace(":", ".")
-                .replace("?", "")
-                .replace("*", "")
-                .replace('"', "")
-                or filename
-            )
+            filename = line.split(FILENAME_HEADER, 1)[1].strip().translate(_FILENAME_SANITIZE) or filename
             analysis_start = i + 1
 
     # Skip blank lines between headers and body
