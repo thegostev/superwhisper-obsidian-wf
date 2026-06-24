@@ -15,8 +15,7 @@ fail_by_date = defaultdict(list)
 
 for path, info in processed.items():
     *_, date, fname = path.split("/")
-    status = info.get("status", "unknown")
-    if status == "complete":
+    if (status := info.get("status", "unknown")) == "complete":
         by_date[date][info.get("category") or "UNKNOWN"] += 1
     else:
         fail_by_date[date].append(f"{fname} [{status}]")
