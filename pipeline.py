@@ -212,10 +212,8 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
 def switch_superwhisper_mode() -> None:
     """Switch Superwhisper to the configured Custom Mode via deep link."""
     if not SUPERWHISPER_MODE_KEY:
-        raise FatalAPIError(
-            "superwhisper_mode_key is not set in config.yaml. "
-            "Default value is 'meeting' — verify in ~/Documents/superwhisper/modes."
-        )
+        raise FatalAPIError("superwhisper_mode_key is not set in config.yaml. "
+                            "Default value is 'meeting' — verify in ~/Documents/superwhisper/modes.")
     subprocess.run(["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"], check=True)
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
