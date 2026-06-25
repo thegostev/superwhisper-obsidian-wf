@@ -133,8 +133,7 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
             if new_transcript_path.exists() and not Path(old_transcript_path).exists():
                 shutil.move(new_transcript_path, old_transcript_path)
                 print("  🔄 Rolled back transcript move", flush=True)
-        except Exception:
-            pass
+        except Exception: pass
         return False
 
 

@@ -253,15 +253,13 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
         try:
             entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            continue
+        except OSError: continue
 
         for entry in entries:
             try:
                 if entry.stat().st_mtime <= since:
                     break  # all remaining entries are older than our handoff
-            except OSError:
-                continue
+            except OSError: continue
             if (text := _read_superwhisper_entry(entry)) and (
                 CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text
             ):
