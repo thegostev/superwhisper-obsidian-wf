@@ -133,11 +133,8 @@ def main():
 
     state = load_state()
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
-    print(
-        f"\n📚 Loaded state: {statuses.count('complete')} completed, "
-        f"{statuses.count('failed_permanent')} permanently failed",
-        flush=True,
-    )
+    print(f"\n📚 Loaded state: {statuses.count('complete')} completed, "
+          f"{statuses.count('failed_permanent')} permanently failed", flush=True)
 
     print("📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)
