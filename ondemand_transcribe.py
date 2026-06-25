@@ -153,10 +153,8 @@ Examples:
 
     # Discover folders and audio files
     scan_subfolders = [Path(p).name for p in discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)]
-    print(
-        f"\n🔄 Catchup mode: scanning last {args.catchup} days\n📁 Target subfolders: {', '.join(scan_subfolders)}",
-        flush=True,
-    )
+    print(f"\n🔄 Catchup mode: scanning last {args.catchup} days"
+          f"\n📁 Target subfolders: {', '.join(scan_subfolders)}", flush=True)
 
     if not scan_subfolders:
         print("No date folders found in the specified range.", flush=True)
