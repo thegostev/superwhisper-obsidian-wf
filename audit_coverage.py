@@ -47,10 +47,7 @@ print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 
 tp = tm = tmu = tu = tf = ta = 0
 
 for date in all_dates:
-    pe = by_date[date].get("PERSONLIG", 0)
-    mn = by_date[date].get("MINNESOTERE", 0)
-    mu = by_date[date].get("MUSIKKERE", 0)
-    un = by_date[date].get("UNKNOWN", 0)
+    pe, mn, mu, un = (by_date[date].get(k, 0) for k in ("PERSONLIG", "MINNESOTERE", "MUSIKKERE", "UNKNOWN"))
     fa = len(fail_by_date[date])
     audio = audio_by_date.get(date)
     coverage = f"{(pe + mn + mu + un + fa) / audio * 100:.0f}%" if audio else "?"
