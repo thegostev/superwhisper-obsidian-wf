@@ -161,13 +161,9 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
         if not (base := Path(base_path)).exists():
             continue
         try:
-            for filepath in base.iterdir():
+            for filepath in base.glob(f"*{MARKDOWN_EXT}"):
                 filename = filepath.name
-                if (
-                    not filename.endswith(MARKDOWN_EXT)
-                    or filename.endswith(ANALYSIS_SUFFIX)
-                    or len(filename) < TIMESTAMP_KEY_LENGTH
-                ):
+                if filename.endswith(ANALYSIS_SUFFIX) or len(filename) < TIMESTAMP_KEY_LENGTH:
                     continue
                 index[filename[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
         except OSError as e:
