@@ -148,7 +148,6 @@ Examples:
 
     print(f"{'=' * 60}\n📼 On-Demand Audio Transcription & Analysis (Superwhisper)\n{'=' * 60}")
 
-    # Discover folders and audio files
     scan_subfolders = [Path(p).name for p in discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)]
     print(f"\n🔄 Catchup mode: scanning last {args.catchup} days"
           f"\n📁 Target subfolders: {', '.join(scan_subfolders)}", flush=True)
@@ -160,14 +159,12 @@ Examples:
     all_audio_files = discover_audio_files(WATCH_FOLDER, scan_subfolders, verbose=args.verbose)
     print(f"Found {len(all_audio_files)} audio files", flush=True)
 
-    # Build index and load state
     print("\n📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)
     print(f"Found {len(transcript_index)} existing transcripts", flush=True)
 
     state = load_state()
 
-    # Check processing status
     print("\n🔎 Checking processing status...", flush=True)
     unprocessed = []
     transcript_only = []
@@ -194,7 +191,6 @@ Examples:
     if args.dry_run:
         print("\n⚠️  DRY RUN MODE - No files will be processed")
 
-    # Process unprocessed files
     if unprocessed:
         print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...\n{'-' * 60}")
         results = process_batch(unprocessed, state, dry_run=args.dry_run)
