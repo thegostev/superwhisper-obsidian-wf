@@ -33,11 +33,8 @@ def find_missing_analysis(folders, verbose=False):
         if not transcripts_dir.exists():
             continue
 
-        for fp in transcripts_dir.iterdir():
-            if (
-                fp.suffix == ".md"
-                and not (transcripts_dir.parent / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists()
-            ):
+        for fp in transcripts_dir.glob("*.md"):
+            if not (transcripts_dir.parent / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists():
                 missing.append((str(fp), category))
                 if verbose:
                     print(f"  Missing analysis: {category}/{fp.name}", flush=True)
@@ -148,7 +145,7 @@ def scan_default_folder(verbose=False):
         print(f"⚠️  DEFAULT transcripts folder not found: {transcripts_dir}", flush=True)
         return []
 
-    transcripts = [str(f) for f in transcripts_dir.iterdir() if f.suffix == ".md"]
+    transcripts = [str(f) for f in transcripts_dir.glob("*.md")]
     if verbose:
         print(f"Found {len(transcripts)} transcripts in DEFAULT folder", flush=True)
     return transcripts
