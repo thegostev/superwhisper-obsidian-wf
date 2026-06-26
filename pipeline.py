@@ -162,10 +162,9 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
             continue
         try:
             for filepath in base.glob(f"*{MARKDOWN_EXT}"):
-                filename = filepath.name
-                if filename.endswith(ANALYSIS_SUFFIX) or len(filename) < TIMESTAMP_KEY_LENGTH:
+                if (name := filepath.name).endswith(ANALYSIS_SUFFIX) or len(name) < TIMESTAMP_KEY_LENGTH:
                     continue
-                index[filename[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
+                index[name[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
         except OSError as e:
             print(f"⚠️  Warning: Could not scan {base_path}: {e}", flush=True)
 
@@ -260,9 +259,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
                 if entry.stat().st_mtime <= since:
                     break  # all remaining entries are older than our handoff
             except OSError: continue
-            if (text := _read_superwhisper_entry(entry)) and (
-                CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text
-            ):
+            if (text := _read_superwhisper_entry(entry)) and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text
 
