@@ -69,11 +69,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
         print(f"\n[{i}/{total}] Processing {Path(audio_path).name}...", flush=True)
 
         if dry_run:
-            print(
-                f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "  ⚠️  DRY RUN - Would process this file",
-                flush=True,
-            )
+            print(f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n  ⚠️  DRY RUN - Would process this file", flush=True)
             success_count += 1
             continue
 

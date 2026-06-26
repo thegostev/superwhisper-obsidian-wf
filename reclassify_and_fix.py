@@ -215,10 +215,7 @@ def main():
                 ):
                     moved_count += 1
 
-            print(
-                f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, "
-                f"❌ {len(unknown_meetings) - moved_count - skipped_count} failed"
-            )
+            print(f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed")
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 
