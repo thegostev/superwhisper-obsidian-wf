@@ -82,7 +82,6 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
     analysis_dir = dest / "analysis"
 
     new_transcript_path = transcripts_dir / new_full_filename
-    new_analysis_path = analysis_dir / new_full_filename.replace(".md", " - Analysis.md")
 
     # Handle collisions
     if new_transcript_path.exists():
@@ -93,7 +92,8 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
             counter += 1
         new_full_filename = f"{base} ({counter}).md"
         new_transcript_path = transcripts_dir / new_full_filename
-        new_analysis_path = analysis_dir / new_full_filename.replace(".md", " - Analysis.md")
+
+    new_analysis_path = analysis_dir / new_full_filename.replace(".md", " - Analysis.md")
 
     old_analysis_path = old_transcript_path.replace("/transcripts/", "/analysis/").replace(".md", " - Analysis.md")
     has_analysis = Path(old_analysis_path).exists()
@@ -132,9 +132,7 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
 
 
 def scan_default_folder(verbose=False):
-    transcripts_dir = Path(FOLDERS["DEFAULT"]) / "transcripts"
-
-    if not transcripts_dir.exists():
+    if not (transcripts_dir := Path(FOLDERS["DEFAULT"]) / "transcripts").exists():
         print(f"⚠️  DEFAULT transcripts folder not found: {transcripts_dir}", flush=True)
         return []
 
