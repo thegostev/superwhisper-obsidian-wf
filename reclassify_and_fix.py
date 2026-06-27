@@ -53,8 +53,11 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
         print(f"  [DRY RUN] Would generate analysis for: {category}/{Path(transcript_path).name}", flush=True)
         return True
 
-    print(f"  ⚠️  Cannot generate analysis for {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
-          "     Re-process the original audio file to regenerate transcript + analysis together.", flush=True)
+    print(
+        f"  ⚠️  Cannot generate analysis for {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
+        "     Re-process the original audio file to regenerate transcript + analysis together.",
+        flush=True,
+    )
     return False
 
 
@@ -65,8 +68,11 @@ def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
     Reclassification requires re-running the full Superwhisper pipeline on the
     original audio file; it cannot be done from the transcript text alone.
     """
-    print(f"  ⚠️  Cannot reclassify {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
-          "     Re-process the original audio file to get updated category + filename.", flush=True)
+    print(
+        f"  ⚠️  Cannot reclassify {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
+        "     Re-process the original audio file to get updated category + filename.",
+        flush=True,
+    )
     return None
 
 
@@ -127,7 +133,8 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
             if new_transcript_path.exists() and not Path(old_transcript_path).exists():
                 shutil.move(new_transcript_path, old_transcript_path)
                 print("  🔄 Rolled back transcript move", flush=True)
-        except Exception: pass
+        except Exception:
+            pass
         return False
 
 
@@ -213,7 +220,9 @@ def main():
                 ):
                     moved_count += 1
 
-            print(f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed")
+            print(
+                f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed"
+            )
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 

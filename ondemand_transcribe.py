@@ -41,7 +41,12 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
 
         for fp in subfolder_path.glob("*.m4a"):
             file_path = str(fp)  # str boundary: is_file_stable, get_audio_timestamp expect str
-            if ".icloud" in file_path or ".tmp" in file_path or fp.name.startswith(".") or not is_file_stable(file_path, wait_seconds=1):
+            if (
+                ".icloud" in file_path
+                or ".tmp" in file_path
+                or fp.name.startswith(".")
+                or not is_file_stable(file_path, wait_seconds=1)
+            ):
                 continue
             audio_files.append((file_path, get_audio_timestamp(file_path)))
 
@@ -67,7 +72,10 @@ def process_batch(unprocessed_files, state, dry_run=False):
         print(f"\n[{i}/{total}] Processing {Path(audio_path).name}...", flush=True)
 
         if dry_run:
-            print(f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n  ⚠️  DRY RUN - Would process this file", flush=True)
+            print(
+                f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n  ⚠️  DRY RUN - Would process this file",
+                flush=True,
+            )
             success_count += 1
             continue
 
@@ -99,9 +107,12 @@ def reprocess_analysis_only(transcript_only_files, dry_run=False):
     Re-running analysis in isolation is not supported — re-process the original
     audio file through the full pipeline instead (use --catchup without --reprocess-partial).
     """
-    print("⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
-          "   Superwhisper combines transcription + analysis in one pass.\n"
-          "   To regenerate analysis, re-process the original audio file via --catchup.", flush=True)
+    print(
+        "⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
+        "   Superwhisper combines transcription + analysis in one pass.\n"
+        "   To regenerate analysis, re-process the original audio file via --catchup.",
+        flush=True,
+    )
     return {"success": 0, "failed": [f for f, *_ in transcript_only_files], "total": len(transcript_only_files)}
 
 
@@ -143,8 +154,10 @@ Examples:
     print(f"{'=' * 60}\n📼 On-Demand Audio Transcription & Analysis (Superwhisper)\n{'=' * 60}")
 
     scan_subfolders = [Path(p).name for p in discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)]
-    print(f"\n🔄 Catchup mode: scanning last {args.catchup} days"
-          f"\n📁 Target subfolders: {', '.join(scan_subfolders)}", flush=True)
+    print(
+        f"\n🔄 Catchup mode: scanning last {args.catchup} days\n📁 Target subfolders: {', '.join(scan_subfolders)}",
+        flush=True,
+    )
 
     if not scan_subfolders:
         print("No date folders found in the specified range.", flush=True)
@@ -175,7 +188,8 @@ Examples:
         f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed) - len(transcript_only)}"
         f"\n   📝 Transcript only (missing analysis): {len(transcript_only)}"
         f"\n   🆕 Unprocessed:                        {len(unprocessed)}"
-        f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
+        f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}"
+    )
 
     if not unprocessed and not transcript_only:
         print("\n✨ All files are fully processed!")

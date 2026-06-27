@@ -1,0 +1,10 @@
+# Local gate that mirrors the CI `lint` job. Install once with `pre-commit install`
+# (CI does NOT depend on this — it is the fast feedback loop for humans and agents).
+# Ruff is pinned to the exact version CI uses so local and CI never disagree.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.18
+    hooks:
+      - id: ruff             # lint, with autofix
+        args: [--fix]
+      - id: ruff-format      # the single source of truth for layout

@@ -12,7 +12,10 @@ import yaml
 
 def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict:
     if not config_path.exists():
-        print(f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.", flush=True)
+        print(
+            f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.",
+            flush=True,
+        )
         sys.exit(1)
 
     cfg: dict = yaml.safe_load(config_path.read_text(encoding="utf-8"))
