@@ -177,8 +177,7 @@ Examples:
         f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed) - len(transcript_only)}"
         f"\n   📝 Transcript only (missing analysis): {len(transcript_only)}"
         f"\n   🆕 Unprocessed:                        {len(unprocessed)}"
-        f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}"
-    )
+        f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
 
     if not unprocessed and not transcript_only:
         print("\n✨ All files are fully processed!")

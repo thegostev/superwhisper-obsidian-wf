@@ -116,9 +116,7 @@ def main():
         f"Watch folder: {WATCH_FOLDER}\nScanning last {SCAN_DAYS_BACK} days of recordings\n"
         f"Scan interval: {SCAN_INTERVAL}s | Delay between files: {DELAY_BETWEEN_FILES}s\n"
         f"Max retries: {MAX_RETRIES} per file | Max files/cycle: {MAX_FILES_PER_CYCLE}\n"
-        f"Superwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}\n{'=' * 60}",
-        flush=True,
-    )
+        f"Superwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}\n{'=' * 60}", flush=True)
 
     state = load_state()
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
