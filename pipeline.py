@@ -264,8 +264,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
                 return text
 
     raise TimeoutError(
-        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
-    )
+        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}")
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
