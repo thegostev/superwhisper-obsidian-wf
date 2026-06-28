@@ -160,8 +160,7 @@ Examples:
     state = load_state()
 
     print("\n🔎 Checking processing status...", flush=True)
-    unprocessed = []
-    transcript_only = []
+    unprocessed, transcript_only = [], []
 
     for audio_path, timestamp in all_audio_files:
         status, category, transcript_path, analysis_path = check_processing_status(timestamp, transcript_index)

@@ -28,8 +28,7 @@ def find_missing_analysis(folders, verbose=False):
     """Scan all category folders, return list of transcripts without analysis."""
     missing = []
     for category, base_path in folders.items():
-        transcripts_dir = Path(base_path) / "transcripts"
-        if not transcripts_dir.exists():
+        if not (transcripts_dir := Path(base_path) / "transcripts").exists():
             continue
 
         for fp in transcripts_dir.glob("*.md"):

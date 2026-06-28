@@ -332,8 +332,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         save_state(state)
         return True, category
 
-    except FatalAPIError:
-        raise
+    except FatalAPIError: raise
 
     except PermanentFileError as e:
         print(f"   🛑 Permanent error for {basename}: {e}", flush=True)
