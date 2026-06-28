@@ -27,14 +27,13 @@ from config import DELAY_BETWEEN_FILES, FOLDERS
 def find_missing_analysis(folders, verbose=False):
     """Scan all category folders, return list of transcripts without analysis."""
     missing = []
-
     for category, base_path in folders.items():
         transcripts_dir = Path(base_path) / "transcripts"
         if not transcripts_dir.exists():
             continue
 
         for fp in transcripts_dir.glob("*.md"):
-            if not (transcripts_dir.parent / "analysis" / fp.name.replace(".md", " - Analysis.md")).exists():
+            if not (transcripts_dir.parent / "analysis" / f"{fp.stem} - Analysis.md").exists():
                 missing.append((str(fp), category))
                 if verbose:
                     print(f"  Missing analysis: {category}/{fp.name}", flush=True)
@@ -75,7 +74,7 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
     if not (match := re.match(r"^(\d{2}-\d{2}-\d{2}\s+\d{2}\.\d{2})", Path(old_transcript_path).name)):
         print(f"  ❌ Could not extract timestamp from: {Path(old_transcript_path).name}", flush=True)
         return False
-    new_full_filename = f"{match.group(1)} - {new_filename}{'' if new_filename.endswith('.md') else '.md'}"
+    new_full_filename = f"{match.group(1)} - {new_filename.removesuffix('.md')}.md"
 
     dest = Path(FOLDERS.get(new_category, FOLDERS["DEFAULT"]))
     transcripts_dir = dest / "transcripts"
@@ -93,7 +92,7 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
         new_full_filename = f"{base} ({counter}).md"
         new_transcript_path = transcripts_dir / new_full_filename
 
-    new_analysis_path = analysis_dir / new_full_filename.replace(".md", " - Analysis.md")
+    new_analysis_path = analysis_dir / f"{new_full_filename.removesuffix('.md')} - Analysis.md"
 
     old_analysis_path = old_transcript_path.replace("/transcripts/", "/analysis/").replace(".md", " - Analysis.md")
     has_analysis = Path(old_analysis_path).exists()
