@@ -303,7 +303,6 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
     """Full pipeline: mode switch → handoff → parse → save; returns (success, category|None)."""
-    basename = Path(file_path).name
     attempts = state.get("processed", {}).get(file_path, {}).get("attempts", 0)
 
     try:
@@ -332,7 +331,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     except FatalAPIError: raise
 
     except PermanentFileError as e:
-        print(f"   🛑 Permanent error for {basename}: {e}", flush=True)
+        print(f"   🛑 Permanent error for {Path(file_path).name}: {e}", flush=True)
         state.setdefault("processed", {})[file_path] = {
             "status": "failed_permanent",
             "error": str(e),
@@ -343,7 +342,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         return False, None
 
     except Exception as e:
-        print(f"   ❌ Failed to process {basename}: {e}", flush=True)
+        print(f"   ❌ Failed to process {Path(file_path).name}: {e}", flush=True)
         attempts += 1
         state.setdefault("processed", {})[file_path] = {
             "status": "failed_permanent" if attempts >= MAX_RETRIES else "failed_retry",
