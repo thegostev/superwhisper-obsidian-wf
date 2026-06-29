@@ -287,10 +287,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
             filename = line.split(FILENAME_HEADER, 1)[1].strip().translate(_FILENAME_SANITIZE) or filename
             analysis_start = i + 1
 
-    # Skip blank lines between headers and body
-    while analysis_start < len(lines) and not lines[analysis_start].strip():
-        analysis_start += 1
-
+    analysis_start = next((i for i in range(analysis_start, len(lines)) if lines[i].strip()), len(lines))
     if not (analysis := "\n".join(lines[analysis_start:]).strip()):
         raise PermanentFileError(
             "Superwhisper output has no analysis body. "
