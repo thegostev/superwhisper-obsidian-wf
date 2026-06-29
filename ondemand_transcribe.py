@@ -188,7 +188,6 @@ Examples:
         results = process_batch(unprocessed, state, dry_run=args.dry_run)
         print(f"\n{'-' * 60}\n  ✅ Success: {results['success']}\n  ❌ Failed:  {len(results['failed'])}")
 
-    # Reprocess partial (not supported)
     if transcript_only and args.reprocess_partial:
         reprocess_analysis_only(transcript_only, dry_run=args.dry_run)
     elif transcript_only:

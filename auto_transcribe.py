@@ -43,11 +43,9 @@ def discover_audio_files(watch_folder, state, transcript_index):
         for fp in Path(folder_path).glob("*.m4a"):
             file_path = str(fp)  # str boundary: state dict key
 
-            # Skip iCloud placeholders, temp files, hidden files
             if ".icloud" in file_path or ".tmp" in file_path or fp.name.startswith("."):
                 continue
 
-            # Skip if already processed or permanently failed
             if state.get("processed", {}).get(file_path, {}).get("status") in ("complete", "failed_permanent"):
                 continue
 
@@ -65,7 +63,6 @@ def discover_audio_files(watch_folder, state, transcript_index):
                 state_dirty = True
                 continue
 
-            # Check file stability (only for genuinely new files)
             if not is_file_stable(file_path, wait_seconds=1):
                 continue
 
