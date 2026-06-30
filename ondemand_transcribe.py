@@ -93,12 +93,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
 
 
 def reprocess_analysis_only(transcript_only_files, dry_run=False):
-    """Regenerate analysis for files with transcripts but no analysis.
-
-    TODO: With Superwhisper, transcription and analysis are a single pass.
-    Re-running analysis in isolation is not supported — re-process the original
-    audio file through the full pipeline instead (use --catchup without --reprocess-partial).
-    """
+    """TODO: not supported; Superwhisper combines transcription+analysis — re-process original audio via --catchup."""
     print("⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
           "   Superwhisper combines transcription + analysis in one pass.\n"
           "   To regenerate analysis, re-process the original audio file via --catchup.", flush=True)

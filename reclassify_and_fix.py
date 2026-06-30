@@ -41,12 +41,7 @@ def find_missing_analysis(folders, verbose=False):
 
 
 def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=False):
-    """Generate analysis for a single transcript.
-
-    TODO: Implement once Superwhisper pipeline is complete.
-    With Superwhisper, analysis cannot be run in isolation on an existing transcript.
-    The original audio file must be re-processed through the full pipeline.
-    """
+    """TODO: not yet implemented; re-process the original audio file to regenerate analysis."""
     if dry_run:
         print(f"  [DRY RUN] Would generate analysis for: {category}/{Path(transcript_path).name}", flush=True)
         return True
@@ -57,12 +52,7 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
 
 
 def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
-    """Re-classify a transcript. Returns (new_category, new_filename) or None.
-
-    TODO: Implement once Superwhisper pipeline is complete.
-    Reclassification requires re-running the full Superwhisper pipeline on the
-    original audio file; it cannot be done from the transcript text alone.
-    """
+    """TODO: not yet implemented; returns (new_category, new_filename) or None when complete."""
     print(f"  ⚠️  Cannot reclassify {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n"
           "     Re-process the original audio file to get updated category + filename.", flush=True)
     return None
