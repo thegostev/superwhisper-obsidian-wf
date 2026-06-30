@@ -71,7 +71,6 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
 
     new_transcript_path = transcripts_dir / new_full_filename
 
-    # Handle collisions
     if new_transcript_path.exists():
         print(f"  ⚠️  File already exists at destination: {new_transcript_path}", flush=True)
         base = new_full_filename.removesuffix(".md")

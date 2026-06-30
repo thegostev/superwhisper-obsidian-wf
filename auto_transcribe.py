@@ -49,7 +49,6 @@ def discover_audio_files(watch_folder, state, transcript_index):
             if state.get("processed", {}).get(file_path, {}).get("status") in ("complete", "failed_permanent"):
                 continue
 
-            # Check transcript index before stability check
             timestamp = get_audio_timestamp(file_path)
             if (existing := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))) and existing.get("output_path"):
                 state.setdefault("processed", {})[file_path] = {
