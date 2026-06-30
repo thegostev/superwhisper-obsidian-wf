@@ -11,7 +11,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import (
-    FAILED_ANALYSIS_LOG,
     FOLDERS,
     MAX_RETRIES,
     STATE_FILE,
@@ -136,16 +135,6 @@ def save_output(category: str, filename: str, content: str) -> str | None:
     except OSError as e:
         print(f"⚠️  Warning: Failed to save output: {e}", flush=True)
         return None
-
-
-def log_failed_analysis(transcript_path: str, category: str, filename: str) -> None:
-    """Append a NEEDS_ANALYSIS entry to the persistent failure log."""
-    try:
-        with open(FAILED_ANALYSIS_LOG, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().isoformat()} | NEEDS_ANALYSIS | {category} | {filename} | {transcript_path}\n")
-        print(f"   📝 Logged to failed_analysis.log: {filename}", flush=True)
-    except OSError as e:
-        print(f"⚠️  Warning: Could not write to failed_analysis.log: {e}", flush=True)
 
 
 # ============================================================================
