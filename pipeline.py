@@ -316,7 +316,6 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         return True, category
 
     except FatalAPIError: raise
-
     except PermanentFileError as e:
         print(f"   🛑 Permanent error for {Path(file_path).name}: {e}", flush=True)
         state.setdefault("processed", {})[file_path] = {
@@ -330,13 +329,12 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
 
     except Exception as e:
         print(f"   ❌ Failed to process {Path(file_path).name}: {e}", flush=True)
-        attempts += 1
         state.setdefault("processed", {})[file_path] = {
-            "status": "failed_permanent" if attempts >= MAX_RETRIES else "failed_retry",
+            "status": "failed_permanent" if attempts + 1 >= MAX_RETRIES else "failed_retry",
             "error": str(e),
             "processed_at": datetime.now().isoformat(),
-            "attempts": attempts,
+            "attempts": attempts + 1,
         }
-        print(f"   🛑 Permanently failed after {attempts} attempts" if attempts >= MAX_RETRIES else f"   🔄 Will retry on next cycle (attempt {attempts}/{MAX_RETRIES})", flush=True)
+        print(f"   🛑 Permanently failed after {attempts + 1} attempts" if attempts + 1 >= MAX_RETRIES else f"   🔄 Will retry on next cycle (attempt {attempts + 1}/{MAX_RETRIES})", flush=True)
         save_state(state)
         return False, None
