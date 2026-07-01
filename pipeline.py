@@ -279,9 +279,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     analysis_start = next((i for i in range(analysis_start, len(lines)) if lines[i].strip()), len(lines))
     if not (analysis := "\n".join(lines[analysis_start:]).strip()):
         raise PermanentFileError(
-            "Superwhisper output has no analysis body. "
-            "Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content."
-        )
+            "Superwhisper output has no analysis body. Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content.")
     return category, filename, analysis
 
 
