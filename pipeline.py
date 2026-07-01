@@ -189,7 +189,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
         print(f"❌ Cannot list watch folder: {e}", flush=True)
         return []
 
-    return [path for _, path in sorted(recent_folders, key=lambda x: x[0])]
+    return [path for _, path in sorted(recent_folders)]
 
 
 # ============================================================================

@@ -65,9 +65,8 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
         return False
     new_full_filename = f"{match.group(1)} - {new_filename.removesuffix('.md')}.md"
 
-    dest = Path(FOLDERS.get(new_category, FOLDERS["DEFAULT"]))
-    transcripts_dir = dest / "transcripts"
-    analysis_dir = dest / "analysis"
+    transcripts_dir = Path(FOLDERS.get(new_category, FOLDERS["DEFAULT"])) / "transcripts"
+    analysis_dir = transcripts_dir.parent / "analysis"
 
     new_transcript_path = transcripts_dir / new_full_filename
 
