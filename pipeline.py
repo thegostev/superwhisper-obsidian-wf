@@ -83,7 +83,6 @@ def save_state(state):
 
 def get_audio_timestamp(audio_path):
     """Extract recording timestamp via mdls → dir/filename parse → file ctime."""
-    # Strategy 1: macOS metadata
     try:
         result = subprocess.run(
             ["mdls", "-name", "kMDItemContentCreationDate", "-raw", audio_path],
@@ -100,7 +99,6 @@ def get_audio_timestamp(audio_path):
     except Exception:
         pass
 
-    # Strategy 2: directory + filename parse
     try:
         p = Path(audio_path)
         for part in reversed(p.parts):
@@ -114,7 +112,6 @@ def get_audio_timestamp(audio_path):
     except Exception:
         pass
 
-    # Strategy 3: file creation time
     try:
         return datetime.fromtimestamp(Path(audio_path).stat().st_ctime)
     except Exception:
