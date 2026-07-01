@@ -12,7 +12,11 @@ import yaml
 
 def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict:
     if not config_path.exists():
-        print(f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.", flush=True)
+        print(
+            f"ERROR: Config file not found: {config_path}\n"
+            "Copy config.example.yaml to config.yaml and fill in your values.",
+            flush=True,
+        )
         sys.exit(1)
 
     cfg: dict = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -21,7 +25,8 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
     cfg["state_file"] = str(Path(cfg.get("state_file", "~/.meeting_transcriber_state.json")).expanduser())
     cfg["failed_analysis_log"] = str(Path(cfg.get("failed_analysis_log", "failed_analysis.log")).expanduser())
     cfg["superwhisper_recordings_dir"] = str(
-        Path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")).expanduser())
+        Path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")).expanduser()
+    )
 
     cfg["folders"] = {cat: str(Path(p).expanduser()) for cat, p in cfg.get("folders", {}).items()}
 

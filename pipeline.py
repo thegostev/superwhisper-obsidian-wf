@@ -200,8 +200,10 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
 def switch_superwhisper_mode() -> None:
     """Switch Superwhisper to the configured Custom Mode via deep link."""
     if not SUPERWHISPER_MODE_KEY:
-        raise FatalAPIError("superwhisper_mode_key is not set in config.yaml. "
-                            "Default value is 'meeting' — verify in ~/Documents/superwhisper/modes.")
+        raise FatalAPIError(
+            "superwhisper_mode_key is not set in config.yaml. "
+            "Default value is 'meeting' — verify in ~/Documents/superwhisper/modes."
+        )
     subprocess.run(["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"], check=True)
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
@@ -219,9 +221,10 @@ def handoff_to_superwhisper(file_path: str) -> None:
 def _read_superwhisper_entry(path: Path) -> str | None:
     """Return the llmResult field from a Superwhisper recording directory's meta.json."""
     try:
-        return json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
+        result = json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
     except (OSError, ValueError):
         return None
+    return result if isinstance(result, str) else None
 
 
 def wait_for_superwhisper_result(file_path: str, since: float) -> str:
@@ -231,8 +234,10 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
-        raise FatalAPIError(f"Superwhisper recordings folder not found: {recordings_dir}. "
-                            "Verify Superwhisper is installed and has been used at least once.")
+        raise FatalAPIError(
+            f"Superwhisper recordings folder not found: {recordings_dir}. "
+            "Verify Superwhisper is installed and has been used at least once."
+        )
 
     deadline = time.time() + SUPERWHISPER_TIMEOUT
     print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
@@ -241,19 +246,24 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
         try:
             entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError: continue
+        except OSError:
+            continue
 
         for entry in entries:
             try:
                 if entry.stat().st_mtime <= since:
                     break  # all remaining entries are older than our handoff
-            except OSError: continue
-            if (text := _read_superwhisper_entry(entry)) and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
+            except OSError:
+                continue
+            if (text := _read_superwhisper_entry(entry)) and (
+                CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text
+            ):
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text
 
     raise TimeoutError(
-        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}")
+        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+    )
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
@@ -317,7 +327,8 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         save_state(state)
         return True, category
 
-    except FatalAPIError: raise
+    except FatalAPIError:
+        raise
 
     except PermanentFileError as e:
         print(f"   🛑 Permanent error for {Path(file_path).name}: {e}", flush=True)
@@ -339,6 +350,11 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "processed_at": datetime.now().isoformat(),
             "attempts": attempts,
         }
-        print(f"   🛑 Permanently failed after {attempts} attempts" if attempts >= MAX_RETRIES else f"   🔄 Will retry on next cycle (attempt {attempts}/{MAX_RETRIES})", flush=True)
+        print(
+            f"   🛑 Permanently failed after {attempts} attempts"
+            if attempts >= MAX_RETRIES
+            else f"   🔄 Will retry on next cycle (attempt {attempts}/{MAX_RETRIES})",
+            flush=True,
+        )
         save_state(state)
         return False, None
