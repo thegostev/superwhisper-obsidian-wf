@@ -19,7 +19,6 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
 
     cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
     cfg["state_file"] = str(Path(cfg.get("state_file", "~/.meeting_transcriber_state.json")).expanduser())
-    cfg["failed_analysis_log"] = str(Path(cfg.get("failed_analysis_log", "failed_analysis.log")).expanduser())
     cfg["superwhisper_recordings_dir"] = str(
         Path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")).expanduser())
 
@@ -35,7 +34,6 @@ _cfg = load_config()
 WATCH_FOLDER: str = _cfg["watch_folder"]
 FOLDERS: dict[str, str] = _cfg["folders"]
 STATE_FILE: str = _cfg["state_file"]
-FAILED_ANALYSIS_LOG: str = _cfg["failed_analysis_log"]
 
 # Superwhisper integration
 SUPERWHISPER_MODE_KEY: str = _cfg.get("superwhisper_mode_key", "meeting")
