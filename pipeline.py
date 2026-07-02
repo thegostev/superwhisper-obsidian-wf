@@ -3,10 +3,7 @@
 All entry points (daemon, on-demand CLI, maintenance CLI) import from here.
 """
 
-import json
-import re
-import subprocess
-import time
+import json, re, subprocess, time
 from datetime import datetime, timedelta
 from pathlib import Path
 

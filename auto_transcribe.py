@@ -3,8 +3,7 @@
 Runs as a launchd service. See README.md for setup instructions.
 """
 
-import sys
-import time
+import sys, time
 from datetime import datetime
 from pathlib import Path
 

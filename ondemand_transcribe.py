@@ -5,9 +5,7 @@ Usage:
     python ondemand_transcribe.py --catchup 14              # Process last 14 days
 """
 
-import argparse
-import sys
-import time
+import argparse, sys, time
 from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS, WATCH_FOLDER
