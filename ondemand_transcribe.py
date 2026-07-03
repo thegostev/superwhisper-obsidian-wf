@@ -10,14 +10,8 @@ from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS, WATCH_FOLDER
 from pipeline import (
-    TIMESTAMP_FORMAT,
-    FatalAPIError,
-    build_transcript_index,
-    discover_recent_folders,
-    get_audio_timestamp,
-    is_file_stable,
-    load_state,
-    process_audio,
+    TIMESTAMP_FORMAT, FatalAPIError, build_transcript_index, discover_recent_folders,
+    get_audio_timestamp, is_file_stable, load_state, process_audio,
 )
 
 

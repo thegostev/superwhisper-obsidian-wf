@@ -8,26 +8,12 @@ from datetime import datetime
 from pathlib import Path
 
 from config import (
-    DELAY_BETWEEN_FILES,
-    FOLDERS,
-    MAX_FILES_PER_CYCLE,
-    MAX_RETRIES,
-    SCAN_DAYS_BACK,
-    SCAN_INTERVAL,
-    STATE_FILE,
-    SUPERWHISPER_TIMEOUT,
-    WATCH_FOLDER,
+    DELAY_BETWEEN_FILES, FOLDERS, MAX_FILES_PER_CYCLE, MAX_RETRIES,
+    SCAN_DAYS_BACK, SCAN_INTERVAL, STATE_FILE, SUPERWHISPER_TIMEOUT, WATCH_FOLDER,
 )
 from pipeline import (
-    TIMESTAMP_FORMAT,
-    FatalAPIError,
-    build_transcript_index,
-    discover_recent_folders,
-    get_audio_timestamp,
-    is_file_stable,
-    load_state,
-    process_audio,
-    save_state,
+    TIMESTAMP_FORMAT, FatalAPIError, build_transcript_index, discover_recent_folders,
+    get_audio_timestamp, is_file_stable, load_state, process_audio, save_state,
 )
 
 # Emit a heartbeat log line every Nth idle cycle (keeps logs quiet but alive).
