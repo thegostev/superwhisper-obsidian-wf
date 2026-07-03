@@ -213,10 +213,7 @@ def _read_superwhisper_entry(path: Path) -> str | None:
 
 
 def wait_for_superwhisper_result(file_path: str, since: float) -> str:
-    """Poll until Superwhisper finishes; return raw output text.
-
-    since: time.time() captured just before handoff_to_superwhisper() was called.
-    """
+    """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper()."""
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
         raise FatalAPIError(f"Superwhisper recordings folder not found: {recordings_dir}. "
