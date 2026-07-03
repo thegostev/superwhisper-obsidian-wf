@@ -63,7 +63,6 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
 
     transcripts_dir = Path(FOLDERS.get(new_category, FOLDERS["DEFAULT"])) / "transcripts"
     analysis_dir = transcripts_dir.parent / "analysis"
-
     new_transcript_path = transcripts_dir / new_full_filename
 
     if new_transcript_path.exists():
@@ -76,7 +75,6 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
         new_transcript_path = transcripts_dir / new_full_filename
 
     new_analysis_path = analysis_dir / f"{new_full_filename.removesuffix('.md')} - Analysis.md"
-
     old_analysis_path = old_transcript_path.replace("/transcripts/", "/analysis/").replace(".md", " - Analysis.md")
     has_analysis = Path(old_analysis_path).exists()
 

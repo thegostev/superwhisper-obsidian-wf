@@ -68,7 +68,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
             continue
 
         try:
-            success, category = process_audio(audio_path, timestamp, state)
+            success, _ = process_audio(audio_path, timestamp, state)
             if success:
                 success_count += 1
             else:
