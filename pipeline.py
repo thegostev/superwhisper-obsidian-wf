@@ -124,8 +124,8 @@ def save_output(category: str, filename: str, content: str) -> str | None:
         print(f"⚠️  Warning: Could not create output folder: {e}", flush=True)
 
     try:
-        (dest / filename).write_text(content, encoding="utf-8")
-        return str(dest / filename)
+        (out := dest / filename).write_text(content, encoding="utf-8")
+        return str(out)
     except OSError as e:
         print(f"⚠️  Warning: Failed to save output: {e}", flush=True)
         return None
@@ -283,7 +283,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
     """Full pipeline: mode switch → handoff → parse → save; returns (success, category|None)."""
-    attempts = state.get("processed", {}).get(file_path, {}).get("attempts", 0)
+    attempts = (processed := state.setdefault("processed", {})).get(file_path, {}).get("attempts", 0)
 
     try:
         since = time.time()
@@ -293,12 +293,11 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         category, ai_filename, analysis = parse_superwhisper_output(raw_output)
 
         filename = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
-
         output_path = save_output(category, filename, analysis)
         if output_path:
             print(f"   ✅ Analysis saved: {output_path}", flush=True)
 
-        state.setdefault("processed", {})[file_path] = {
+        processed[file_path] = {
             "status": "complete",
             "category": category,
             "timestamp": timestamp.isoformat(),
@@ -311,7 +310,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     except FatalAPIError: raise
     except PermanentFileError as e:
         print(f"   🛑 Permanent error for {Path(file_path).name}: {e}", flush=True)
-        state.setdefault("processed", {})[file_path] = {
+        processed[file_path] = {
             "status": "failed_permanent",
             "error": str(e),
             "processed_at": datetime.now().isoformat(),
@@ -322,7 +321,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
 
     except Exception as e:
         print(f"   ❌ Failed to process {Path(file_path).name}: {e}", flush=True)
-        state.setdefault("processed", {})[file_path] = {
+        processed[file_path] = {
             "status": "failed_permanent" if attempts + 1 >= MAX_RETRIES else "failed_retry",
             "error": str(e),
             "processed_at": datetime.now().isoformat(),
