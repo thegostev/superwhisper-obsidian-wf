@@ -19,8 +19,7 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
 
     cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
     cfg["state_file"] = str(Path(cfg.get("state_file", "~/.meeting_transcriber_state.json")).expanduser())
-    cfg["superwhisper_recordings_dir"] = str(
-        Path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")).expanduser())
+    cfg["superwhisper_recordings_dir"] = str(Path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")).expanduser())
 
     cfg["folders"] = {cat: str(Path(p).expanduser()) for cat, p in cfg.get("folders", {}).items()}
 
