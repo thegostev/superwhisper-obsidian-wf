@@ -78,9 +78,7 @@ def get_audio_timestamp(audio_path):
     try:
         result = subprocess.run(
             ["mdls", "-name", "kMDItemContentCreationDate", "-raw", audio_path],
-            capture_output=True,
-            text=True,
-            timeout=MDLS_TIMEOUT_SECONDS,
+            capture_output=True, text=True, timeout=MDLS_TIMEOUT_SECONDS,
         )
         if result.returncode == 0 and result.stdout.strip():
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
