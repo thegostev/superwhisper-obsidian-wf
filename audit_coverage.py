@@ -22,7 +22,6 @@ for path, info in processed.items():
 
 # Count audio files per day from watch folder
 audio_by_date = {}
-state_paths = set(processed.keys())
 untracked = defaultdict(list)
 
 for day_dir in sorted(WATCH.iterdir()):
@@ -32,7 +31,7 @@ for day_dir in sorted(WATCH.iterdir()):
     if m4as:
         audio_by_date[day_dir.name] = len(m4as)
         for m4a in m4as:
-            if str(m4a) not in state_paths:
+            if str(m4a) not in processed:
                 untracked[day_dir.name].append(m4a.name)
 
 all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in src if d >= "2026"})
