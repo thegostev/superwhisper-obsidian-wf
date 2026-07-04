@@ -143,11 +143,9 @@ Examples:
     unprocessed, transcript_only = [], []
 
     for audio_path, timestamp in all_audio_files:
-        status, category, transcript_path, analysis_path = check_processing_status(timestamp, transcript_index)
+        status, *_ = check_processing_status(timestamp, transcript_index)
         if status == "unprocessed":
             unprocessed.append((audio_path, timestamp))
-        elif status == "transcript_only":
-            transcript_only.append((audio_path, timestamp, category, transcript_path))
 
     print(
         f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
