@@ -21,7 +21,6 @@ FILENAME_HEADER = "FILENAME:"
 CATEGORY_SECTION_MARKER = "---CATEGORY---"  # section-marker fallback format
 _FILENAME_SANITIZE = str.maketrans("/\\:", "--.", '?"*')
 
-# Sentinel defaults used when parsing fails or a category is unknown.
 DEFAULT_CATEGORY = "DEFAULT"
 DEFAULT_FILENAME = "Unknown Meeting"
 
@@ -197,9 +196,6 @@ def handoff_to_superwhisper(file_path: str) -> None:
     if not Path(file_path).exists():
         raise PermanentFileError(f"Audio file not found: {file_path}")
     subprocess.run(["open", file_path, "-a", "Superwhisper"], check=True)
-    # .m4a is an MPEG-4 audio container — accepted by Superwhisper.
-    # If transcription fails silently, convert first:
-    #   ffmpeg -i input.m4a -ar 16000 -ac 1 output.wav
 
 
 def _read_superwhisper_entry(path: Path) -> str | None:
