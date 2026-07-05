@@ -278,8 +278,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         category, ai_filename, analysis = parse_superwhisper_output(raw_output)
 
         filename = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
-        output_path = save_output(category, filename, analysis)
-        if output_path:
+        if output_path := save_output(category, filename, analysis):
             print(f"   ✅ Analysis saved: {output_path}", flush=True)
 
         processed[file_path] = {
