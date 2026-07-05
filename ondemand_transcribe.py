@@ -41,13 +41,6 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     return sorted(audio_files, key=lambda x: x[1])
 
 
-def check_processing_status(timestamp, transcript_index):
-    """Return ("complete"|"unprocessed", category, output_path, None) for the given audio file."""
-    if entry := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT)):
-        return ("complete", entry["category"], entry["output_path"], None)
-    return ("unprocessed", None, None, None)
-
-
 def process_batch(unprocessed_files, state, dry_run=False):
     """Process list of audio files. Returns {"success": int, "failed": list}."""
     success_count, failed_files = 0, []
@@ -138,8 +131,7 @@ Examples:
     unprocessed, transcript_only = [], []
 
     for audio_path, timestamp in all_audio_files:
-        status, *_ = check_processing_status(timestamp, transcript_index)
-        if status == "unprocessed":
+        if not transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT)):
             unprocessed.append((audio_path, timestamp))
 
     print(
