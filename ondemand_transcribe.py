@@ -94,13 +94,10 @@ Examples:
         """,
     )
     parser.add_argument("--dry-run", action="store_true", help="Show what would be processed without actually processing")
-    parser.add_argument(
-        "--reprocess-partial", action="store_true",
-        help="(Not supported with Superwhisper — re-process audio files instead)")
+    parser.add_argument("--reprocess-partial", action="store_true", help="(Not supported with Superwhisper — re-process audio files instead)")
     parser.add_argument("--verbose", action="store_true", help="Show detailed progress")
     parser.add_argument(
-        "--catchup", type=int, metavar="DAYS", nargs="?", const=7,
-        help="Auto-discover date folders from last N days (default: 7)")
+        "--catchup", type=int, metavar="DAYS", nargs="?", const=7, help="Auto-discover date folders from last N days (default: 7)")
 
     args = parser.parse_args()
 
