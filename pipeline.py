@@ -79,10 +79,10 @@ def get_audio_timestamp(audio_path):
             ["mdls", "-name", "kMDItemContentCreationDate", "-raw", audio_path],
             capture_output=True, text=True, timeout=MDLS_TIMEOUT_SECONDS,
         )
-        if result.returncode == 0 and result.stdout.strip():
+        if result.returncode == 0 and (raw := result.stdout.strip()):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
                 try:
-                    return datetime.strptime(result.stdout.strip(), fmt)
+                    return datetime.strptime(raw, fmt)
                 except ValueError:
                     pass
     except Exception:
@@ -243,8 +243,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
     for i, line in enumerate(lines):
         if line.startswith(CATEGORY_HEADER):
-            category = re.sub(r"[^\x00-\x7F]", "", line.split(CATEGORY_HEADER, 1)[1].strip().upper()).strip()
-            if category not in FOLDERS:
+            if (category := re.sub(r"[^\x00-\x7F]", "", line.split(CATEGORY_HEADER, 1)[1].strip().upper()).strip()) not in FOLDERS:
                 print(f"   ⚠️  Unknown category '{category}', falling back to DEFAULT", flush=True)
                 category = DEFAULT_CATEGORY
         elif line.startswith(FILENAME_HEADER):
