@@ -125,11 +125,9 @@ Examples:
     state = load_state()
 
     print("\n🔎 Checking processing status...", flush=True)
-    unprocessed, transcript_only = [], []
-
-    for audio_path, timestamp in all_audio_files:
-        if not transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT)):
-            unprocessed.append((audio_path, timestamp))
+    transcript_only = []
+    unprocessed = [(ap, ts) for ap, ts in all_audio_files
+                   if not transcript_index.get(ts.strftime(TIMESTAMP_FORMAT))]
 
     print(
         f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
