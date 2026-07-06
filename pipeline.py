@@ -93,9 +93,7 @@ def get_audio_timestamp(audio_path):
         for part in reversed(p.parts):
             if len(part) == 10 and part[4] == "-" and part[7] == "-":
                 try:
-                    year, month, day = part.split("-")
-                    hour, minute, second = p.stem.split()[0].split("-")
-                    return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
+                    return datetime(*map(int, part.split("-")), *map(int, p.stem.split()[0].split("-")))
                 except (ValueError, IndexError):
                     pass
     except Exception:
@@ -249,10 +247,11 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
             if category not in FOLDERS:
                 print(f"   ⚠️  Unknown category '{category}', falling back to DEFAULT", flush=True)
                 category = DEFAULT_CATEGORY
-            analysis_start = i + 1
         elif line.startswith(FILENAME_HEADER):
             filename = line.split(FILENAME_HEADER, 1)[1].strip().translate(_FILENAME_SANITIZE) or filename
-            analysis_start = i + 1
+        else:
+            continue
+        analysis_start = i + 1
 
     analysis_start = next((i for i in range(analysis_start, len(lines)) if lines[i].strip()), len(lines))
     if not (analysis := "\n".join(lines[analysis_start:]).strip()):
