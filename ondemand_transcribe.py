@@ -122,16 +122,15 @@ Examples:
     state = load_state()
 
     print("\n🔎 Checking processing status...", flush=True)
-    transcript_only = []
     unprocessed = [(ap, ts) for ap, ts in all_audio_files if not transcript_index.get(ts.strftime(TIMESTAMP_FORMAT))]
 
     print(
         f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
-        f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed) - len(transcript_only)}"
-        f"\n   📝 Transcript only (missing analysis): {len(transcript_only)}"
+        f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed)}"
+        f"\n   📝 Transcript only (missing analysis): {0}"
         f"\n   🆕 Unprocessed:                        {len(unprocessed)}\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
 
-    if not unprocessed and not transcript_only:
+    if not unprocessed:
         print("\n✨ All files are fully processed!")
         return
 
@@ -142,12 +141,6 @@ Examples:
         print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...\n{'-' * 60}")
         results = process_batch(unprocessed, state, dry_run=args.dry_run)
         print(f"\n{'-' * 60}\n  ✅ Success: {results['success']}\n  ❌ Failed:  {len(results['failed'])}")
-
-    if transcript_only and args.reprocess_partial:
-        reprocess_analysis_only(transcript_only, dry_run=args.dry_run)
-    elif transcript_only:
-        print(f"\n💡 Tip: {len(transcript_only)} file(s) have transcripts but no analysis.\n"
-              "   Re-process the original audio files to regenerate analysis via Superwhisper.")
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 
