@@ -37,10 +37,7 @@ for day_dir in sorted(WATCH.iterdir()):
 all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in src if d >= "2026"})
 
 # Print table
-print(
-    f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | "
-    f"{'MUSIKKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |"
-)
+print(f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | {'MUSIKKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |")
 print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 8}|{'-' * 10}|")
 
 tp = tm = tmu = tu = tf = ta = 0

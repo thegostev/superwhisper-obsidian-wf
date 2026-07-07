@@ -76,9 +76,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
 
 def reprocess_analysis_only(transcript_only_files, dry_run=False):
     """TODO: not supported; Superwhisper combines transcription+analysis — re-process original audio via --catchup."""
-    print("⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n"
-          "   Superwhisper combines transcription + analysis in one pass.\n"
-          "   To regenerate analysis, re-process the original audio file via --catchup.", flush=True)
+    print("⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n   Superwhisper combines transcription + analysis in one pass.\n   To regenerate analysis, re-process the original audio file via --catchup.", flush=True)
     return {"success": 0, "failed": [f for f, *_ in transcript_only_files], "total": len(transcript_only_files)}
 
 
@@ -125,15 +123,13 @@ Examples:
 
     print("\n🔎 Checking processing status...", flush=True)
     transcript_only = []
-    unprocessed = [(ap, ts) for ap, ts in all_audio_files
-                   if not transcript_index.get(ts.strftime(TIMESTAMP_FORMAT))]
+    unprocessed = [(ap, ts) for ap, ts in all_audio_files if not transcript_index.get(ts.strftime(TIMESTAMP_FORMAT))]
 
     print(
         f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
         f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed) - len(transcript_only)}"
         f"\n   📝 Transcript only (missing analysis): {len(transcript_only)}"
-        f"\n   🆕 Unprocessed:                        {len(unprocessed)}"
-        f"\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
+        f"\n   🆕 Unprocessed:                        {len(unprocessed)}\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
 
     if not unprocessed and not transcript_only:
         print("\n✨ All files are fully processed!")
