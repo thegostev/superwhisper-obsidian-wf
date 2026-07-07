@@ -30,8 +30,7 @@ def find_missing_analysis(folders, verbose=False):
         for fp in transcripts_dir.glob("*.md"):
             if not (transcripts_dir.parent / "analysis" / f"{fp.stem} - Analysis.md").exists():
                 missing.append((str(fp), category))
-                if verbose:
-                    print(f"  Missing analysis: {category}/{fp.name}", flush=True)
+                if verbose: print(f"  Missing analysis: {category}/{fp.name}", flush=True)
 
     return missing
 
@@ -89,15 +88,12 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
         analysis_dir.mkdir(parents=True, exist_ok=True)
 
         shutil.move(old_transcript_path, new_transcript_path)
-        if verbose:
-            print(f"  ✅ Moved transcript: {new_full_filename}", flush=True)
+        if verbose: print(f"  ✅ Moved transcript: {new_full_filename}", flush=True)
 
         if has_analysis:
             shutil.move(old_analysis_path, new_analysis_path)
-            if verbose:
-                print(f"  ✅ Moved analysis: {new_analysis_path.name}", flush=True)
-        elif verbose:
-            print("  ⚠️  No analysis file to move", flush=True)
+            if verbose: print(f"  ✅ Moved analysis: {new_analysis_path.name}", flush=True)
+        elif verbose: print("  ⚠️  No analysis file to move", flush=True)
 
         return True
 
@@ -117,8 +113,7 @@ def scan_default_folder(verbose=False):
         return []
 
     transcripts = [str(f) for f in transcripts_dir.glob("*.md")]
-    if verbose:
-        print(f"Found {len(transcripts)} transcripts in DEFAULT folder", flush=True)
+    if verbose: print(f"Found {len(transcripts)} transcripts in DEFAULT folder", flush=True)
     return transcripts
 
 

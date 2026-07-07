@@ -25,8 +25,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     for subfolder in scan_subfolders:
         if not (subfolder_path := Path(watch_folder) / subfolder).is_dir():
             nonexistent.append(subfolder)
-            if verbose:
-                print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
+            if verbose: print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
             continue
 
         for fp in subfolder_path.glob("*.m4a"):
