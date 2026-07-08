@@ -131,15 +131,14 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
     index: dict[str, dict] = {}
 
     for category, base_path in folders.items():
-        if not (base := Path(base_path)).exists():
-            continue
-        try:
-            for filepath in base.glob(f"*{MARKDOWN_EXT}"):
-                if (name := filepath.name).endswith(ANALYSIS_SUFFIX) or len(name) < TIMESTAMP_KEY_LENGTH:
-                    continue
-                index[name[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
-        except OSError as e:
-            print(f"⚠️  Warning: Could not scan {base_path}: {e}", flush=True)
+        if (base := Path(base_path)).exists():
+            try:
+                for filepath in base.glob(f"*{MARKDOWN_EXT}"):
+                    if (name := filepath.name).endswith(ANALYSIS_SUFFIX) or len(name) < TIMESTAMP_KEY_LENGTH:
+                        continue
+                    index[name[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
+            except OSError as e:
+                print(f"⚠️  Warning: Could not scan {base_path}: {e}", flush=True)
 
     return index
 
@@ -161,13 +160,12 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
     dated = []
     try:
         for child in Path(watch_folder).iterdir():
-            if not child.is_dir():
-                continue
-            try:
-                if (d := datetime.strptime(child.name, "%Y-%m-%d")) >= cutoff:
-                    dated.append((d, str(child)))
-            except ValueError:
-                pass
+            if child.is_dir():
+                try:
+                    if (d := datetime.strptime(child.name, "%Y-%m-%d")) >= cutoff:
+                        dated.append((d, str(child)))
+                except ValueError:
+                    pass
     except OSError as e:
         print(f"❌ Cannot list watch folder: {e}", flush=True)
         return []

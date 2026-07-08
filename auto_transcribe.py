@@ -47,10 +47,8 @@ def discover_audio_files(watch_folder, state, transcript_index):
                 state_dirty = True
                 continue
 
-            if not is_file_stable(file_path, wait_seconds=1):
-                continue
-
-            audio_files.append((file_path, timestamp))
+            if is_file_stable(file_path, wait_seconds=1):
+                audio_files.append((file_path, timestamp))
 
     if state_dirty:
         save_state(state)

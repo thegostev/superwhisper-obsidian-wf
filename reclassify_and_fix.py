@@ -24,13 +24,11 @@ def find_missing_analysis(folders, verbose=False):
     """Scan all category folders, return list of transcripts without analysis."""
     missing = []
     for category, base_path in folders.items():
-        if not (transcripts_dir := Path(base_path) / "transcripts").exists():
-            continue
-
-        for fp in transcripts_dir.glob("*.md"):
-            if not (transcripts_dir.parent / "analysis" / f"{fp.stem} - Analysis.md").exists():
-                missing.append((str(fp), category))
-                if verbose: print(f"  Missing analysis: {category}/{fp.name}", flush=True)
+        if (transcripts_dir := Path(base_path) / "transcripts").exists():
+            for fp in transcripts_dir.glob("*.md"):
+                if not (transcripts_dir.parent / "analysis" / f"{fp.stem} - Analysis.md").exists():
+                    missing.append((str(fp), category))
+                    if verbose: print(f"  Missing analysis: {category}/{fp.name}", flush=True)
 
     return missing
 
