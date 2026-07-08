@@ -261,10 +261,6 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 # ============================================================================
 
 
-def _record_failure(processed, file_path, status, e, attempts):
-    processed[file_path] = {"status": status, "error": str(e), "processed_at": datetime.now().isoformat(), "attempts": attempts + 1}
-
-
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
     """Full pipeline: mode switch → handoff → parse → save; returns (success, category|None)."""
     attempts = (processed := state.setdefault("processed", {})).get(file_path, {}).get("attempts", 0)
@@ -293,13 +289,13 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     except FatalAPIError: raise
     except PermanentFileError as e:
         print(f"   🛑 Permanent error for {Path(file_path).name}: {e}", flush=True)
-        _record_failure(processed, file_path, "failed_permanent", e, attempts)
+        processed[file_path] = {"status": "failed_permanent", "error": str(e), "processed_at": datetime.now().isoformat(), "attempts": attempts + 1}
         save_state(state)
         return False, None
 
     except Exception as e:
         print(f"   ❌ Failed to process {Path(file_path).name}: {e}", flush=True)
-        _record_failure(processed, file_path, "failed_permanent" if attempts + 1 >= MAX_RETRIES else "failed_retry", e, attempts)
+        processed[file_path] = {"status": "failed_permanent" if attempts + 1 >= MAX_RETRIES else "failed_retry", "error": str(e), "processed_at": datetime.now().isoformat(), "attempts": attempts + 1}
         print(f"   🛑 Permanently failed after {attempts + 1} attempts" if attempts + 1 >= MAX_RETRIES else f"   🔄 Will retry on next cycle (attempt {attempts + 1}/{MAX_RETRIES})", flush=True)
         save_state(state)
         return False, None
