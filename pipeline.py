@@ -198,7 +198,8 @@ def handoff_to_superwhisper(file_path: str) -> None:
 def _read_superwhisper_entry(path: Path) -> str | None:
     """Return the llmResult field from a Superwhisper recording directory's meta.json."""
     try:
-        return json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
+        result = json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
+        return result if isinstance(result, str) else None
     except (OSError, ValueError):
         return None
 
