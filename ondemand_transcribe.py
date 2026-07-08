@@ -137,10 +137,9 @@ Examples:
     if args.dry_run:
         print("\n⚠️  DRY RUN MODE - No files will be processed")
 
-    if unprocessed:
-        print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...\n{'-' * 60}")
-        results = process_batch(unprocessed, state, dry_run=args.dry_run)
-        print(f"\n{'-' * 60}\n  ✅ Success: {results['success']}\n  ❌ Failed:  {len(results['failed'])}")
+    print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...\n{'-' * 60}")
+    results = process_batch(unprocessed, state, dry_run=args.dry_run)
+    print(f"\n{'-' * 60}\n  ✅ Success: {results['success']}\n  ❌ Failed:  {len(results['failed'])}")
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 
