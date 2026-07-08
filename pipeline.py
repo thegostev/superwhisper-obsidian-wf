@@ -242,11 +242,10 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
             if (category := re.sub(r"[^\x00-\x7F]", "", line.split(CATEGORY_HEADER, 1)[1].strip().upper()).strip()) not in FOLDERS:
                 print(f"   ⚠️  Unknown category '{category}', falling back to DEFAULT", flush=True)
                 category = DEFAULT_CATEGORY
+            analysis_start = i + 1
         elif line.startswith(FILENAME_HEADER):
             filename = line.split(FILENAME_HEADER, 1)[1].strip().translate(_FILENAME_SANITIZE) or filename
-        else:
-            continue
-        analysis_start = i + 1
+            analysis_start = i + 1
 
     analysis_start = next((i for i in range(analysis_start, len(lines)) if lines[i].strip()), len(lines))
     if not (analysis := "\n".join(lines[analysis_start:]).strip()):
