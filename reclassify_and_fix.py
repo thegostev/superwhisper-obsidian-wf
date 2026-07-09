@@ -64,11 +64,10 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
 
     if new_transcript_path.exists():
         print(f"  ⚠️  File already exists at destination: {new_transcript_path}", flush=True)
-        base = new_full_filename.removesuffix(".md")
-        counter = 2
-        while (transcripts_dir / f"{base} ({counter}).md").exists():
+        stem, counter = new_full_filename.removesuffix(".md"), 2
+        while (transcripts_dir / f"{stem} ({counter}).md").exists():
             counter += 1
-        new_full_filename = f"{base} ({counter}).md"
+        new_full_filename = f"{stem} ({counter}).md"
         new_transcript_path = transcripts_dir / new_full_filename
 
     new_analysis_path = analysis_dir / f"{new_full_filename.removesuffix('.md')} - Analysis.md"
