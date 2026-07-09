@@ -3,7 +3,7 @@
 Runs as a launchd service. See README.md for setup instructions.
 """
 
-import sys, time
+import itertools, sys, time
 from datetime import datetime
 from pathlib import Path
 
@@ -106,9 +106,7 @@ def main():
 
     print(f"\n🔄 Starting scan loop (every {SCAN_INTERVAL}s)...\n", flush=True)
 
-    cycle = 0
-    while True:
-        cycle += 1
+    for cycle in itertools.count(1):
         try:
             run_scan_cycle(state, transcript_index, cycle)
         except FatalAPIError as e:
