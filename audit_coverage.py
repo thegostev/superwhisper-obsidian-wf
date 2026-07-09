@@ -27,8 +27,7 @@ untracked = defaultdict(list)
 for day_dir in sorted(WATCH.iterdir()):
     if not day_dir.is_dir() or not day_dir.name.startswith("2026"):
         continue
-    m4as = sorted(day_dir.glob("*.m4a"))
-    if m4as:
+    if m4as := sorted(day_dir.glob("*.m4a")):
         audio_by_date[day_dir.name] = len(m4as)
         for m4a in m4as:
             if str(m4a) not in processed:
