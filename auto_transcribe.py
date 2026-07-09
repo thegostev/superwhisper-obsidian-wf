@@ -70,7 +70,6 @@ def run_scan_cycle(state, transcript_index, cycle_number):
     print(f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process", flush=True)
 
     success_count = 0
-
     for i, (audio_path, timestamp) in enumerate(new_files, 1):
         print(f"\n📂 [{i}/{len(new_files)}] {Path(audio_path).parent.name}/{Path(audio_path).name}", flush=True)
 

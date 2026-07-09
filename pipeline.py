@@ -129,7 +129,6 @@ def save_output(category: str, filename: str, content: str) -> str | None:
 def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
     """Scan category folders; return lookup dict keyed by "YY-MM-DD HH.MM" for deduplication."""
     index: dict[str, dict] = {}
-
     for category, base_path in folders.items():
         if (base := Path(base_path)).exists():
             try:
@@ -139,7 +138,6 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
                     index[name[:TIMESTAMP_KEY_LENGTH]] = {"category": category, "output_path": str(filepath)}
             except OSError as e:
                 print(f"⚠️  Warning: Could not scan {base_path}: {e}", flush=True)
-
     return index
 
 

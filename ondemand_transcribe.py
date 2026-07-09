@@ -44,7 +44,6 @@ def process_batch(unprocessed_files, state, dry_run=False):
     """Process list of audio files. Returns {"success": int, "failed": list}."""
     success_count, failed_files = 0, []
     total = len(unprocessed_files)
-
     for i, (audio_path, timestamp) in enumerate(unprocessed_files, 1):
         print(f"\n[{i}/{total}] Processing {Path(audio_path).name}...", flush=True)
 
