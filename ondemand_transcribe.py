@@ -54,10 +54,8 @@ def process_batch(unprocessed_files, state, dry_run=False):
 
         try:
             success, _ = process_audio(audio_path, timestamp, state)
-            if success:
-                success_count += 1
-            else:
-                failed_files.append(audio_path)
+            success_count += success
+            if not success: failed_files.append(audio_path)
         except FatalAPIError as e:
             print(f"\n🛑 FATAL: {e}", flush=True)
             failed_files.append(audio_path)

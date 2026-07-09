@@ -75,9 +75,8 @@ def run_scan_cycle(state, transcript_index, cycle_number):
 
         success, category = process_audio(audio_path, timestamp, state)
 
-        if success:
-            success_count += 1
-            transcript_index[timestamp.strftime(TIMESTAMP_FORMAT)] = {"category": category}
+        success_count += success
+        if success: transcript_index[timestamp.strftime(TIMESTAMP_FORMAT)] = {"category": category}
 
         if i < len(new_files):
             print(f"   ⏸️  Pausing {DELAY_BETWEEN_FILES}s before next file...", flush=True)
