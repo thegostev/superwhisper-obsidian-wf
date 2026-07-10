@@ -264,13 +264,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         if output_path := save_output(category, filename, analysis):
             print(f"   ✅ Analysis saved: {output_path}", flush=True)
 
-        processed[file_path] = {
-            "status": "complete",
-            "category": category,
-            "timestamp": timestamp.isoformat(),
-            "processed_at": datetime.now().isoformat(),
-            "attempts": attempts + 1,
-        }
+        processed[file_path] = {"status": "complete", "category": category, "timestamp": timestamp.isoformat(), "processed_at": datetime.now().isoformat(), "attempts": attempts + 1}
         save_state(state)
         return True, category
 
