@@ -83,10 +83,8 @@ def get_audio_timestamp(audio_path):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
                 try:
                     return datetime.strptime(raw, fmt)
-                except ValueError:
-                    pass
-    except Exception:
-        pass
+                except ValueError: pass
+    except Exception: pass
 
     try:
         p = Path(audio_path)
@@ -94,15 +92,12 @@ def get_audio_timestamp(audio_path):
             if len(part) == 10 and part[4] == "-" and part[7] == "-":
                 try:
                     return datetime(*map(int, part.split("-")), *map(int, p.stem.split()[0].split("-")))
-                except (ValueError, IndexError):
-                    pass
-    except Exception:
-        pass
+                except (ValueError, IndexError): pass
+    except Exception: pass
 
     try:
         return datetime.fromtimestamp(Path(audio_path).stat().st_ctime)
-    except Exception:
-        return datetime.now()
+    except Exception: return datetime.now()
 
 
 def save_output(category: str, filename: str, content: str) -> str | None:
@@ -195,8 +190,7 @@ def _read_superwhisper_entry(path: Path) -> str | None:
     """Return the llmResult field from a Superwhisper recording directory's meta.json."""
     try:
         return json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError): pass
 
 
 def wait_for_superwhisper_result(file_path: str, since: float) -> str:
