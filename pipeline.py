@@ -157,8 +157,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
                 try:
                     if (d := datetime.strptime(child.name, "%Y-%m-%d")) >= cutoff:
                         dated.append((d, str(child)))
-                except ValueError:
-                    pass
+                except ValueError: pass
     except OSError as e:
         print(f"❌ Cannot list watch folder: {e}", flush=True)
         return []
