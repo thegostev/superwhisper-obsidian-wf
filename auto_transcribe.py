@@ -37,13 +37,8 @@ def discover_audio_files(watch_folder, state, transcript_index):
             timestamp = get_audio_timestamp(file_path)
             if (existing := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))) and existing.get("output_path"):
                 state.setdefault("processed", {})[file_path] = {
-                    "status": "complete",
-                    "category": existing["category"],
-                    "timestamp": timestamp.isoformat(),
-                    "processed_at": datetime.now().isoformat(),
-                    "attempts": 0,
-                    "note": "found in transcript index",
-                }
+                    "status": "complete", "category": existing["category"], "timestamp": timestamp.isoformat(),
+                    "processed_at": datetime.now().isoformat(), "attempts": 0, "note": "found in transcript index"}
                 state_dirty = True
                 continue
 
