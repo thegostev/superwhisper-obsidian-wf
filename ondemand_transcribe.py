@@ -71,12 +71,6 @@ def process_batch(unprocessed_files, state, dry_run=False):
     return {"success": success_count, "failed": failed_files, "total": total}
 
 
-def reprocess_analysis_only(transcript_only_files, dry_run=False):
-    """TODO: not supported; Superwhisper combines transcription+analysis — re-process original audio via --catchup."""
-    print("⚠️  --reprocess-partial is not supported with the Superwhisper pipeline.\n   Superwhisper combines transcription + analysis in one pass.\n   To regenerate analysis, re-process the original audio file via --catchup.", flush=True)
-    return {"success": 0, "failed": [f for f, *_ in transcript_only_files], "total": len(transcript_only_files)}
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Process unprocessed audio recordings on-demand",
