@@ -87,11 +87,10 @@ def get_audio_timestamp(audio_path):
     except Exception: pass
 
     try:
-        p = Path(audio_path)
-        for part in reversed(p.parts):
+        for part in reversed(Path(audio_path).parts):
             if len(part) == 10 and part[4] == "-" and part[7] == "-":
                 try:
-                    return datetime(*map(int, part.split("-")), *map(int, p.stem.split()[0].split("-")))
+                    return datetime(*map(int, part.split("-")), *map(int, Path(audio_path).stem.split()[0].split("-")))
                 except (ValueError, IndexError): pass
     except Exception: pass
 
