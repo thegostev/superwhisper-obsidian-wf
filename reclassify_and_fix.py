@@ -67,8 +67,7 @@ def move_transcript_and_analysis(old_transcript_path, new_category, new_filename
         stem, counter = new_full_filename.removesuffix(".md"), 2
         while (transcripts_dir / f"{stem} ({counter}).md").exists():
             counter += 1
-        new_full_filename = f"{stem} ({counter}).md"
-        new_transcript_path = transcripts_dir / new_full_filename
+        new_transcript_path = transcripts_dir / (new_full_filename := f"{stem} ({counter}).md")
 
     new_analysis_path = analysis_dir / f"{new_full_filename.removesuffix('.md')} - Analysis.md"
     has_analysis = Path(old_analysis_path := old_transcript_path.replace("/transcripts/", "/analysis/").replace(".md", " - Analysis.md")).exists()
