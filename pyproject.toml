@@ -2,9 +2,22 @@
 name = "meeting-transcriber"
 version = "0.1.0"
 description = "Automated audio transcription and analysis via Superwhisper"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.7.0",
+    "mypy>=1.11",
+    "types-PyYAML",
+    "pip-audit",
+    "vulture",
+    "radon",
+    "pydeps",
 ]
 
 [tool.setuptools]
@@ -14,20 +27,80 @@ py-modules = ["auto_transcribe", "reclassify_and_fix", "ondemand_transcribe", "p
 testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests requiring external services",
+    "integration: marks tests requiring external services or real Superwhisper",
+    "contract: marks contract tests validating external interfaces",
 ]
 addopts = "-v --tb=short"
+minversion = "8.0"
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    ".venv/*",
+    ".github/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 15
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
 
 [tool.ruff]
 target-version = "py313"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "C90",
+    "N",
+    "UP",
+    "B",
+    "SIM",
+    "PIE",
+]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
 
 [tool.mypy]
 python_version = "3.13"
+check_untyped_defs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_redundant_casts = true
+warn_unused_ignores = true
 warn_return_any = true
-warn_unused_configs = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
 ignore_missing_imports = true
-exclude = ["utils/"]
+exclude = ["utils/", "tests/"]
+
+[tool.vulture]
+min_confidence = 80
+paths = ["auto_transcribe.py", "reclassify_and_fix.py", "ondemand_transcribe.py", "pipeline.py", "config.py"]

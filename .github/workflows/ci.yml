@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-fast:
+    name: Fast tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" pytest-cov
+
+      - name: Run fast tests with coverage
+        run: |
+          python -m pytest tests/ -m "not slow and not integration" \
+            --cov=. --cov-report=term-missing --cov-report=xml \
+            --cov-fail-under=15
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 7
+
+  test-slow:
+    name: Slow tests
+    runs-on: macos-latest
+    needs: test-fast
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" pytest-cov
+
+      - name: Run slow tests
+        run: |
+          python -m pytest tests/ -m "slow" -v --tb=short
+
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Mypy
+        run: mypy .
+
+  quality:
+    name: Quality checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install graphviz
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Cyclomatic complexity (radon)
+        run: |
+          radon cc --min=B --show-complexity --average auto_transcribe.py reclassify_and_fix.py ondemand_transcribe.py pipeline.py config.py
+
+      - name: Dead code detection (vulture)
+        run: vulture auto_transcribe.py reclassify_and_fix.py ondemand_transcribe.py pipeline.py config.py
+
+      - name: Import cycle detection (pydeps)
+        run: |
+          pydeps --max-bacon=4 --show-cycles --no-show auto_transcribe.py || true
+          pydeps --max-bacon=4 --show-cycles --no-show ondemand_transcribe.py || true
+          pydeps --max-bacon=4 --show-cycles --no-show reclassify_and_fix.py || true
+
+      - name: Dependency vulnerability audit
+        run: pip-audit --desc
