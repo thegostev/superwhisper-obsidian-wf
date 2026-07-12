@@ -61,18 +61,15 @@ class PermanentFileError(Exception):
 
 def load_state():
     if Path(STATE_FILE).exists():
-        try:
-            return json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
+        try: return json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
             print(f"⚠️  Warning: Could not load state file, starting fresh: {e}", flush=True)
     return {"processed": {}}
 
 
 def save_state(state):
-    try:
-        Path(STATE_FILE).write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
-    except OSError as e:
-        print(f"⚠️  Warning: Could not save state file: {e}", flush=True)
+    try: Path(STATE_FILE).write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+    except OSError as e: print(f"⚠️  Warning: Could not save state file: {e}", flush=True)
 
 
 # ============================================================================
@@ -91,10 +88,8 @@ def get_audio_timestamp(audio_path):
         )
         if result.returncode == 0 and (raw := result.stdout.strip()):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
-                try:
-                    return datetime.strptime(raw, fmt)
-                except ValueError:
-                    pass
+                try: return datetime.strptime(raw, fmt)
+                except ValueError: pass
     except Exception:
         pass
 
@@ -119,10 +114,8 @@ def get_audio_timestamp(audio_path):
 def save_output(category: str, filename: str, content: str) -> str | None:
     """Save analysis output directly to the configured category folder."""
     dest = Path(FOLDERS.get(category, FOLDERS[DEFAULT_CATEGORY]))
-    try:
-        dest.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        print(f"⚠️  Warning: Could not create output folder: {e}", flush=True)
+    try: dest.mkdir(parents=True, exist_ok=True)
+    except OSError as e: print(f"⚠️  Warning: Could not create output folder: {e}", flush=True)
 
     try:
         (out := dest / filename).write_text(content, encoding="utf-8")
@@ -159,8 +152,7 @@ def is_file_stable(path: str, wait_seconds: int = FILE_STABILITY_WAIT_SECONDS) -
             return False
         time.sleep(wait_seconds)
         return size1 == Path(path).stat().st_size
-    except OSError:
-        return False
+    except OSError: return False
 
 
 def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
@@ -173,8 +165,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
                 try:
                     if (d := datetime.strptime(child.name, "%Y-%m-%d")) >= cutoff:
                         dated.append((d, str(child)))
-                except ValueError:
-                    pass
+                except ValueError: pass
     except OSError as e:
         print(f"❌ Cannot list watch folder: {e}", flush=True)
         return []
@@ -226,17 +217,14 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
 
     while time.time() < deadline:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
-        try:
-            entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            continue
+        try: entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError: continue
 
         for entry in entries:
             try:
                 if entry.stat().st_mtime <= since:
                     break  # all remaining entries are older than our handoff
-            except OSError:
-                continue
+            except OSError: continue
             if (text := _read_superwhisper_entry(entry)) and (
                 CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text
             ):
