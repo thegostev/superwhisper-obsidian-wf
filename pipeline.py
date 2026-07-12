@@ -103,8 +103,7 @@ def get_audio_timestamp(audio_path):
             if len(part) == 10 and part[4] == "-" and part[7] == "-":
                 try:
                     date_parts = [int(x) for x in part.split("-")]
-                    time_parts_text = Path(audio_path).stem.split()[0]
-                    time_parts = [int(x) for x in time_parts_text.split("-")]
+                    time_parts = [int(x) for x in Path(audio_path).stem.split()[0].split("-")]
                     return datetime(date_parts[0], date_parts[1], date_parts[2], time_parts[0], time_parts[1], time_parts[2])
                 except (ValueError, IndexError):
                     pass
@@ -208,8 +207,7 @@ def handoff_to_superwhisper(file_path: str) -> None:
 def _read_superwhisper_entry(path: Path) -> str | None:
     """Return the llmResult field from a Superwhisper recording directory's meta.json."""
     try:
-        data = json.loads((path / "meta.json").read_text(encoding="utf-8"))
-        result = data.get("llmResult")
+        result = json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
         return str(result) if result is not None else None
     except (OSError, ValueError):
         return None
@@ -333,11 +331,9 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "processed_at": datetime.now().isoformat(),
             "attempts": na,
         }
-        print(
-            f"   🛑 Permanently failed after {na} attempts"
-            if na >= MAX_RETRIES
-            else f"   🔄 Will retry on next cycle (attempt {na}/{MAX_RETRIES})",
-            flush=True,
-        )
+        if na >= MAX_RETRIES:
+            print(f"   🛑 Permanently failed after {na} attempts", flush=True)
+        else:
+            print(f"   🔄 Will retry on next cycle (attempt {na}/{MAX_RETRIES})", flush=True)
         save_state(state)
         return False, None
