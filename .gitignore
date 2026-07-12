@@ -40,3 +40,8 @@ Transcribing meetings and placing them into the right folder on Mac..md
 
 # pytest
 .pytest_cache/
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
