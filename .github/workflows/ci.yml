@@ -148,3 +148,35 @@ jobs:
 
       - name: Dependency vulnerability audit
         run: pip-audit --desc
+
+  coverage-comment:
+    name: Coverage PR comment
+    runs-on: ubuntu-latest
+    needs: test-fast
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" pytest-cov
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ -m "not slow and not integration" \
+            --cov=. --cov-report=xml --cov-report=term-missing
+
+      - name: Post coverage comment
+        uses: MishaKav/pytest-coverage-comment@v1.0.199
+        with:
+          pytest-xml-coverage-path: coverage.xml
+          title: Coverage Report
+          hide-report: false
+          create-new-comment: false
