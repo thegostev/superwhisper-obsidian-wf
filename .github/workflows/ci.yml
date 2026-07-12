@@ -59,7 +59,14 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]" pytest-cov
 
+      - name: Check for slow tests
+        id: check
+        run: |
+          count=$(python -m pytest tests/ -m "slow" --collect-only -q 2>/dev/null | tail -1 | grep -oE '[0-9]+' | head -1 || echo "0")
+          echo "slow_count=$count" >> "$GITHUB_OUTPUT"
+
       - name: Run slow tests
+        if: steps.check.outputs.slow_count != '0'
         run: |
           python -m pytest tests/ -m "slow" -v --tb=short
 
