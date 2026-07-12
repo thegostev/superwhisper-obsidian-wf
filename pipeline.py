@@ -259,8 +259,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         raw_output = wait_for_superwhisper_result(file_path, since=since)
         category, ai_filename, analysis = parse_superwhisper_output(raw_output)
 
-        filename = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
-        if output_path := save_output(category, filename, analysis):
+        if output_path := save_output(category, f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}", analysis):
             print(f"   ✅ Analysis saved: {output_path}", flush=True)
 
         processed[file_path] = {"status": "complete", "category": category, "timestamp": timestamp.isoformat(), "processed_at": datetime.now().isoformat(), "attempts": attempts + 1}
@@ -276,7 +275,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
 
     except Exception as e:
         print(f"   ❌ Failed to process {Path(file_path).name}: {e}", flush=True)
-        processed[file_path] = {"status": "failed_permanent" if attempts + 1 >= MAX_RETRIES else "failed_retry", "error": str(e), "processed_at": datetime.now().isoformat(), "attempts": attempts + 1}
-        print(f"   🛑 Permanently failed after {attempts + 1} attempts" if attempts + 1 >= MAX_RETRIES else f"   🔄 Will retry on next cycle (attempt {attempts + 1}/{MAX_RETRIES})", flush=True)
+        processed[file_path] = {"status": "failed_permanent" if (na := attempts + 1) >= MAX_RETRIES else "failed_retry", "error": str(e), "processed_at": datetime.now().isoformat(), "attempts": na}
+        print(f"   🛑 Permanently failed after {na} attempts" if na >= MAX_RETRIES else f"   🔄 Will retry on next cycle (attempt {na}/{MAX_RETRIES})", flush=True)
         save_state(state)
         return False, None
