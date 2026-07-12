@@ -173,10 +173,28 @@ jobs:
           python -m pytest tests/ -m "not slow and not integration" \
             --cov=. --cov-report=xml --cov-report=term-missing
 
+      - name: Parse coverage summary
+        id: coverage
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET, os
+          root = ET.parse('coverage.xml').getroot()
+          rate = float(root.attrib['line-rate']) * 100
+          total = root.attrib['lines-valid']
+          covered = root.attrib['lines-covered']
+          summary = f"Total lines: {total} | Covered: {covered} | Coverage: {rate:.2f}%"
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"summary={summary}\n")
+          PY
+
       - name: Post coverage comment
-        uses: MishaKav/pytest-coverage-comment@v1.0.199
+        uses: actions/github-script@v7
         with:
-          pytest-xml-coverage-path: coverage.xml
-          title: Coverage Report
-          hide-report: false
-          create-new-comment: false
+          script: |
+            const body = `## Coverage Report\n\n${{ steps.coverage.outputs.summary }}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
