@@ -35,8 +35,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     for subfolder in scan_subfolders:
         if not (subfolder_path := Path(watch_folder) / subfolder).is_dir():
             nonexistent.append(subfolder)
-            if verbose:
-                print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
+            if verbose: print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
             continue
 
         for fp in subfolder_path.glob("*.m4a"):
@@ -73,8 +72,7 @@ def process_batch(unprocessed_files, state, dry_run=False):
         try:
             success, _ = process_audio(audio_path, timestamp, state)
             success_count += success
-            if not success:
-                failed_files.append(audio_path)
+            if not success: failed_files.append(audio_path)
         except FatalAPIError as e:
             print(f"\n🛑 FATAL: {e}", flush=True)
             failed_files.append(audio_path)
@@ -160,8 +158,7 @@ Examples:
         print("\n✨ All files are fully processed!")
         return
 
-    if args.dry_run:
-        print("\n⚠️  DRY RUN MODE - No files will be processed")
+    if args.dry_run: print("\n⚠️  DRY RUN MODE - No files will be processed")
 
     print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...\n{'-' * 60}")
     results = process_batch(unprocessed, state, dry_run=args.dry_run)

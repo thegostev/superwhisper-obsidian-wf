@@ -66,8 +66,7 @@ def discover_audio_files(watch_folder, state, transcript_index):
             if is_file_stable(file_path, wait_seconds=1):
                 audio_files.append((file_path, timestamp))
 
-    if state_dirty:
-        save_state(state)
+    if state_dirty: save_state(state)
 
     if len(audio_files) > MAX_FILES_PER_CYCLE:
         print(
