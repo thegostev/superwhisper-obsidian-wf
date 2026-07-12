@@ -36,7 +36,9 @@ for day_dir in sorted(WATCH.iterdir()):
 all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in src if d >= "2026"})
 
 # Print table
-print(f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | {'MUSIKKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |")
+print(
+    f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | {'MUSIKKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |"
+)
 print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 8}|{'-' * 10}|")
 
 tp = tm = tmu = tu = tf = ta = 0
@@ -46,7 +48,7 @@ for date in all_dates:
     fa = len(fail_by_date[date])
     audio = audio_by_date.get(date)
     coverage = f"{(pe + mn + mu + un + fa) / audio * 100:.0f}%" if audio else "?"
-    tp, tm, tmu, tu, tf, ta = tp+pe, tm+mn, tmu+mu, tu+un, tf+fa, ta+(audio or 0)
+    tp, tm, tmu, tu, tf, ta = tp + pe, tm + mn, tmu + mu, tu + un, tf + fa, ta + (audio or 0)
     print(f"| {date:<12} | {audio or '?':>5} | {pe:>9} | {mn:>11} | {mu:>9} | {un:>7} | {fa:>6} | {coverage:>8} |")
 
 print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 8}|{'-' * 10}|")

@@ -5,32 +5,48 @@ Usage:
     python ondemand_transcribe.py --catchup 14              # Process last 14 days
 """
 
-import argparse, sys, time
+import argparse
+import sys
+import time
 from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS, WATCH_FOLDER
 from pipeline import (
-    TIMESTAMP_FORMAT, FatalAPIError, build_transcript_index, discover_recent_folders,
-    get_audio_timestamp, is_file_stable, load_state, process_audio,
+    TIMESTAMP_FORMAT,
+    FatalAPIError,
+    build_transcript_index,
+    discover_recent_folders,
+    get_audio_timestamp,
+    is_file_stable,
+    load_state,
+    process_audio,
 )
 
 
 def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     """Scan specific subfolders for .m4a files. Returns list of (path, timestamp) tuples."""
     if not scan_subfolders:
-        raise ValueError("scan_subfolders must contain at least one subfolder. Use --catchup to auto-discover date folders.")
+        raise ValueError(
+            "scan_subfolders must contain at least one subfolder. Use --catchup to auto-discover date folders."
+        )
 
     audio_files, nonexistent = [], []
 
     for subfolder in scan_subfolders:
         if not (subfolder_path := Path(watch_folder) / subfolder).is_dir():
             nonexistent.append(subfolder)
-            if verbose: print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
+            if verbose:
+                print(f"⚠️  Warning: Not found: {subfolder_path}", flush=True)
             continue
 
         for fp in subfolder_path.glob("*.m4a"):
             file_path = str(fp)  # str boundary: is_file_stable, get_audio_timestamp expect str
-            if ".icloud" in file_path or ".tmp" in file_path or fp.name.startswith(".") or not is_file_stable(file_path, wait_seconds=1):
+            if (
+                ".icloud" in file_path
+                or ".tmp" in file_path
+                or fp.name.startswith(".")
+                or not is_file_stable(file_path, wait_seconds=1)
+            ):
                 continue
             audio_files.append((file_path, get_audio_timestamp(file_path)))
 
@@ -47,14 +63,18 @@ def process_batch(unprocessed_files, state, dry_run=False):
         print(f"\n[{i}/{total}] Processing {Path(audio_path).name}...", flush=True)
 
         if dry_run:
-            print(f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n  ⚠️  DRY RUN - Would process this file", flush=True)
+            print(
+                f"  📁 Path: {audio_path}\n  🕐 Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n  ⚠️  DRY RUN - Would process this file",
+                flush=True,
+            )
             success_count += 1
             continue
 
         try:
             success, _ = process_audio(audio_path, timestamp, state)
             success_count += success
-            if not success: failed_files.append(audio_path)
+            if not success:
+                failed_files.append(audio_path)
         except FatalAPIError as e:
             print(f"\n🛑 FATAL: {e}", flush=True)
             failed_files.append(audio_path)
@@ -80,10 +100,23 @@ Examples:
   python ondemand_transcribe.py --catchup 14                 # Process last 14 days
         """,
     )
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be processed without actually processing")
-    parser.add_argument("--reprocess-partial", action="store_true", help="(Not supported with Superwhisper — re-process audio files instead)")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be processed without actually processing"
+    )
+    parser.add_argument(
+        "--reprocess-partial",
+        action="store_true",
+        help="(Not supported with Superwhisper — re-process audio files instead)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Show detailed progress")
-    parser.add_argument("--catchup", type=int, metavar="DAYS", nargs="?", const=7, help="Auto-discover date folders from last N days (default: 7)")
+    parser.add_argument(
+        "--catchup",
+        type=int,
+        metavar="DAYS",
+        nargs="?",
+        const=7,
+        help="Auto-discover date folders from last N days (default: 7)",
+    )
 
     args = parser.parse_args()
 
@@ -95,7 +128,10 @@ Examples:
     print(f"{'=' * 60}\n📼 On-Demand Audio Transcription & Analysis (Superwhisper)\n{'=' * 60}")
 
     scan_subfolders = [Path(p).name for p in discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)]
-    print(f"\n🔄 Catchup mode: scanning last {args.catchup} days\n📁 Target subfolders: {', '.join(scan_subfolders)}", flush=True)
+    print(
+        f"\n🔄 Catchup mode: scanning last {args.catchup} days\n📁 Target subfolders: {', '.join(scan_subfolders)}",
+        flush=True,
+    )
 
     if not scan_subfolders:
         print("No date folders found in the specified range.", flush=True)
@@ -113,10 +149,12 @@ Examples:
     print("\n🔎 Checking processing status...", flush=True)
     unprocessed = [(ap, ts) for ap, ts in all_audio_files if not transcript_index.get(ts.strftime(TIMESTAMP_FORMAT))]
 
-    print(f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
-          f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed)}"
-          f"\n   📝 Transcript only (missing analysis): {0}"
-          f"\n   🆕 Unprocessed:                        {len(unprocessed)}\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
+    print(
+        f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
+        f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed)}"
+        f"\n   📝 Transcript only (missing analysis): {0}"
+        f"\n   🆕 Unprocessed:                        {len(unprocessed)}\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}"
+    )
 
     if not unprocessed:
         print("\n✨ All files are fully processed!")
