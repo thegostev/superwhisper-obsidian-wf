@@ -1,6 +1,6 @@
 """Configuration loader for RecordingAnalyser.
 
-Loads settings from config.yaml. No external API keys required — processing
+Loads settings from config.yaml. No external API keys required — audio processing
 is handled by Superwhisper running locally on the same machine.
 """
 
