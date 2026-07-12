@@ -3,8 +3,6 @@ name: Coverage comment
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
 
 permissions:
   pull-requests: write
@@ -12,7 +10,7 @@ permissions:
 
 jobs:
   coverage:
-    name: Coverage diff
+    name: Coverage report
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,10 +28,8 @@ jobs:
           python -m pytest tests/ -m "not slow and not integration" \
             --cov=. --cov-report=xml --cov-report=term-missing
 
-      - name: Coverage comment
-        uses: py-cov-action/python-coverage-comment-action@v3
+      - name: Post coverage comment
+        uses: coroo/pytest-coverage-commentator@v2.3
         with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MINIMUM_ORANGE: 50
-          MINIMUM_GREEN: 80
-          MERGE_COVERAGE_FILES: true
+          pytest-coverage: coverage.xml
+        continue-on-error: true
