@@ -145,8 +145,7 @@ def main():
             for i, (transcript_path, category) in enumerate(missing, 1):
                 print(f"[{i}/{len(missing)}] {category}/{Path(transcript_path).name}")
 
-                if generate_missing_analysis(transcript_path, category, args.dry_run, args.verbose):
-                    success_count += 1
+                success_count += generate_missing_analysis(transcript_path, category, args.dry_run, args.verbose)
 
                 if i < len(missing) and not args.dry_run:
                     print(f"  ⏸️  Pausing {DELAY_BETWEEN_FILES}s between files...", flush=True)
@@ -178,8 +177,7 @@ def main():
                     skipped_count += 1
                     continue
 
-                if move_transcript_and_analysis(transcript_path, new_category, new_filename, args.dry_run, args.verbose):
-                    moved_count += 1
+                moved_count += move_transcript_and_analysis(transcript_path, new_category, new_filename, args.dry_run, args.verbose)
 
             print(f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed")
 
