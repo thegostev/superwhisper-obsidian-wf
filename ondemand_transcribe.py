@@ -26,9 +26,7 @@ from pipeline import (
 def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
     """Scan specific subfolders for .m4a files. Returns list of (path, timestamp) tuples."""
     if not scan_subfolders:
-        raise ValueError(
-            "scan_subfolders must contain at least one subfolder. Use --catchup to auto-discover date folders."
-        )
+        raise ValueError("scan_subfolders must contain at least one subfolder. Use --catchup to auto-discover date folders.")
 
     audio_files, nonexistent = [], []
 
