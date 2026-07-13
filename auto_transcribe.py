@@ -86,10 +86,7 @@ def run_scan_cycle(state, transcript_index, cycle_number):
             print(f"[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - No new files", flush=True)
         return 0
 
-    print(
-        f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process",
-        flush=True,
-    )
+    print(f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process", flush=True)
 
     success_count = 0
     for i, (audio_path, timestamp) in enumerate(new_files, 1):
@@ -105,10 +102,7 @@ def run_scan_cycle(state, transcript_index, cycle_number):
             print(f"   ⏸️  Pausing {DELAY_BETWEEN_FILES}s before next file...", flush=True)
             time.sleep(DELAY_BETWEEN_FILES)
 
-    print(
-        f"\n{'=' * 50}\nCycle {cycle_number} complete: {success_count} succeeded, {len(new_files) - success_count} failed\n{'=' * 50}",
-        flush=True,
-    )
+    print(f"\n{'=' * 50}\nCycle {cycle_number} complete: {success_count} succeeded, {len(new_files) - success_count} failed\n{'=' * 50}", flush=True)
 
     return success_count
 
@@ -124,10 +118,7 @@ def main():
 
     state = load_state()
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
-    print(
-        f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed",
-        flush=True,
-    )
+    print(f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed", flush=True)
 
     print("📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)
