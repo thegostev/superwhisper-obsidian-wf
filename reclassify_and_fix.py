@@ -194,9 +194,7 @@ def main():
                     skipped_count += 1
                     continue
 
-                moved_count += move_transcript_and_analysis(
-                    transcript_path, new_category, new_filename, args.dry_run, args.verbose
-                )
+                moved_count += move_transcript_and_analysis(transcript_path, new_category, new_filename, args.dry_run, args.verbose)
 
             print(
                 f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed"

@@ -204,9 +204,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
     """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper()."""
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
-        raise FatalAPIError(
-            f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once."
-        )
+        raise FatalAPIError(f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once.")
 
     deadline = time.time() + SUPERWHISPER_TIMEOUT
     print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
