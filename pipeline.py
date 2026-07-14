@@ -41,9 +41,7 @@ MODE_SWITCH_SETTLE_SECONDS = 1.0  # let Superwhisper apply the mode before hando
 FILE_STABILITY_WAIT_SECONDS = 2  # iCloud sync settle check
 
 
-# ============================================================================
-# ERROR CLASSES
-# ============================================================================
+# --- Error classes ---
 
 
 class FatalAPIError(Exception):
@@ -54,9 +52,7 @@ class PermanentFileError(Exception):
     """Error specific to one file that retrying won't fix (bad format, corrupt audio, etc)."""
 
 
-# ============================================================================
-# STATE MANAGEMENT
-# ============================================================================
+# --- State management ---
 
 
 def load_state():
@@ -75,9 +71,7 @@ def save_state(state):
         print(f"⚠️  Warning: Could not save state file: {e}", flush=True)
 
 
-# ============================================================================
-# HELPERS: TIMESTAMP, PARSING, FILE I/O
-# ============================================================================
+# --- Helpers: timestamp, parsing, file I/O ---
 
 
 def get_audio_timestamp(audio_path):
@@ -131,9 +125,7 @@ def save_output(category: str, filename: str, content: str) -> str | None:
         return None
 
 
-# ============================================================================
-# DISCOVERY & INDEXING
-# ============================================================================
+# --- Discovery & indexing ---
 
 
 def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
@@ -181,9 +173,7 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
     return [path for _, path in sorted(dated)]
 
 
-# ============================================================================
-# SUPERWHISPER INTEGRATION
-# ============================================================================
+# --- Superwhisper integration ---
 
 
 def switch_superwhisper_mode() -> None:
@@ -269,9 +259,7 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     return category, filename, analysis
 
 
-# ============================================================================
-# MAIN PIPELINE
-# ============================================================================
+# --- Main pipeline ---
 
 
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
