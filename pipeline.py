@@ -41,18 +41,12 @@ MODE_SWITCH_SETTLE_SECONDS = 1.0  # let Superwhisper apply the mode before hando
 FILE_STABILITY_WAIT_SECONDS = 2  # iCloud sync settle check
 
 
-# --- Error classes ---
-
-
 class FatalAPIError(Exception):
     """Error that should stop the entire service (unrecoverable, e.g. misconfiguration)."""
 
 
 class PermanentFileError(Exception):
     """Error specific to one file that retrying won't fix (bad format, corrupt audio, etc)."""
-
-
-# --- State management ---
 
 
 def load_state():
@@ -69,9 +63,6 @@ def save_state(state):
         Path(STATE_FILE).write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
     except OSError as e:
         print(f"⚠️  Warning: Could not save state file: {e}", flush=True)
-
-
-# --- Helpers: timestamp, parsing, file I/O ---
 
 
 def get_audio_timestamp(audio_path):
@@ -125,9 +116,6 @@ def save_output(category: str, filename: str, content: str) -> str | None:
         return None
 
 
-# --- Discovery & indexing ---
-
-
 def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
     """Scan category folders; return lookup dict keyed by "YY-MM-DD HH.MM" for deduplication."""
     index: dict[str, dict] = {}
@@ -171,9 +159,6 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
         return []
 
     return [path for _, path in sorted(dated)]
-
-
-# --- Superwhisper integration ---
 
 
 def switch_superwhisper_mode() -> None:
@@ -255,9 +240,6 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     if not (analysis := "\n".join(lines[analysis_start:]).strip()):
         raise PermanentFileError("Superwhisper output has no analysis body. Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content.")
     return category, filename, analysis
-
-
-# --- Main pipeline ---
 
 
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
