@@ -42,9 +42,7 @@ def discover_audio_files(watch_folder, state, transcript_index):
 
     for folder_path in discover_recent_folders(watch_folder, SCAN_DAYS_BACK):
         for fp in Path(folder_path).glob("*.m4a"):
-            file_path = str(fp)  # str boundary: state dict key
-
-            if ".icloud" in file_path or ".tmp" in file_path or fp.name.startswith("."):
+            if ".icloud" in (file_path := str(fp)) or ".tmp" in file_path or fp.name.startswith("."):
                 continue
 
             if state.get("processed", {}).get(file_path, {}).get("status") in ("complete", "failed_permanent"):

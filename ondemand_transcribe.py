@@ -38,8 +38,7 @@ def discover_audio_files(watch_folder, scan_subfolders, verbose=False):
             continue
 
         for fp in subfolder_path.glob("*.m4a"):
-            file_path = str(fp)  # str boundary: is_file_stable, get_audio_timestamp expect str
-            if ".icloud" in file_path or ".tmp" in file_path or fp.name.startswith(".") or not is_file_stable(file_path, wait_seconds=1):
+            if ".icloud" in (file_path := str(fp)) or ".tmp" in file_path or fp.name.startswith(".") or not is_file_stable(file_path, wait_seconds=1):
                 continue
             audio_files.append((file_path, get_audio_timestamp(file_path)))
 
