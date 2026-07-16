@@ -28,10 +28,8 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
     return cfg
 
 
-# ---------- Load once at import time ----------
 _cfg = load_config()
 
-# ---------- Export as module-level constants ----------
 WATCH_FOLDER: str = _cfg["watch_folder"]
 FOLDERS: dict[str, str] = _cfg["folders"]
 STATE_FILE: str = _cfg["state_file"]
