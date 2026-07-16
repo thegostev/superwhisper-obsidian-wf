@@ -146,7 +146,6 @@ def main():
         print(f"\n📊 Task 1: Generating Missing Analysis Files\n{'-' * 60}")
 
         missing = find_missing_analysis(FOLDERS, verbose=args.verbose)
-
         if not missing:
             print("✅ No missing analysis files found!")
         else:
@@ -168,7 +167,6 @@ def main():
         print(f"\n📁 Task 2: Reclassifying and Moving Files\n{'-' * 60}")
 
         unknown_meetings = [t for t in scan_default_folder(verbose=args.verbose) if "Unknown Meeting" in Path(t).name]
-
         if not unknown_meetings:
             print("✅ No 'Unknown Meeting' files found in DEFAULT folder!")
         else:
