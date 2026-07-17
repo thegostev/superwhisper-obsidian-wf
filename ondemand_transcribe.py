@@ -124,9 +124,7 @@ Examples:
         return
 
     all_audio_files = discover_audio_files(WATCH_FOLDER, scan_subfolders, verbose=args.verbose)
-    print(f"Found {len(all_audio_files)} audio files", flush=True)
-
-    print("\n📚 Building transcript index...", flush=True)
+    print(f"Found {len(all_audio_files)} audio files\n\n📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)
     print(f"Found {len(transcript_index)} existing transcripts", flush=True)
 
@@ -149,9 +147,7 @@ Examples:
 
     print(f"\n🚀 Processing {len(unprocessed)} unprocessed files...\n{'-' * 60}")
     results = process_batch(unprocessed, state, dry_run=args.dry_run)
-    print(f"\n{'-' * 60}\n  ✅ Success: {results['success']}\n  ❌ Failed:  {len(results['failed'])}")
-
-    print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
+    print(f"\n{'-' * 60}\n  ✅ Success: {results['success']}\n  ❌ Failed:  {len(results['failed'])}\n\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 
 
 if __name__ == "__main__":

@@ -111,13 +111,9 @@ def main():
 
     state = load_state()
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
-    print(f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed", flush=True)
-
-    print("📚 Building transcript index...", flush=True)
+    print(f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed\n📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)
-    print(f"Found {len(transcript_index)} existing transcripts", flush=True)
-
-    print(f"\n🔄 Starting scan loop (every {SCAN_INTERVAL}s)...\n", flush=True)
+    print(f"Found {len(transcript_index)} existing transcripts\n\n🔄 Starting scan loop (every {SCAN_INTERVAL}s)...\n", flush=True)
 
     for cycle in itertools.count(1):
         try:
