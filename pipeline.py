@@ -70,9 +70,7 @@ def get_audio_timestamp(audio_path):
     try:
         result = subprocess.run(
             ["mdls", "-name", "kMDItemContentCreationDate", "-raw", audio_path],
-            capture_output=True,
-            text=True,
-            timeout=MDLS_TIMEOUT_SECONDS,
+            capture_output=True, text=True, timeout=MDLS_TIMEOUT_SECONDS,
         )
         if result.returncode == 0 and (raw := result.stdout.strip()):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
@@ -207,9 +205,7 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
                     break  # all remaining entries are older than our handoff
             except OSError:
                 continue
-            if (text := _read_superwhisper_entry(entry)) and (
-                CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text
-            ):
+            if (text := _read_superwhisper_entry(entry)) and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text
 
