@@ -168,14 +168,12 @@ def switch_superwhisper_mode() -> None:
 
 
 def handoff_to_superwhisper(file_path: str) -> None:
-    """Open audio file in Superwhisper for transcription + analysis in one pass."""
     if not Path(file_path).exists():
         raise PermanentFileError(f"Audio file not found: {file_path}")
     subprocess.run(["open", file_path, "-a", "Superwhisper"], check=True)
 
 
 def _read_superwhisper_entry(path: Path) -> str | None:
-    """Return the llmResult field from a Superwhisper recording directory's meta.json."""
     try:
         result = json.loads((path / "meta.json").read_text(encoding="utf-8")).get("llmResult")
         return str(result) if result is not None else None
