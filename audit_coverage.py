@@ -45,8 +45,7 @@ tp = tm = tmu = tu = tf = ta = 0
 
 for date in all_dates:
     pe, mn, mu, un = (by_date[date].get(k, 0) for k in ("PERSONLIG", "MINNESOTERE", "MUSIKKERE", "UNKNOWN"))
-    fa = len(fail_by_date[date])
-    audio = audio_by_date.get(date)
+    fa, audio = len(fail_by_date[date]), audio_by_date.get(date)
     coverage = f"{(pe + mn + mu + un + fa) / audio * 100:.0f}%" if audio else "?"
     tp, tm, tmu, tu, tf, ta = tp + pe, tm + mn, tmu + mu, tu + un, tf + fa, ta + (audio or 0)
     print(f"| {date:<12} | {audio or '?':>5} | {pe:>9} | {mn:>11} | {mu:>9} | {un:>7} | {fa:>6} | {coverage:>8} |")

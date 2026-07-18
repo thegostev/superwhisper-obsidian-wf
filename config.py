@@ -17,11 +17,10 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
 
     cfg: dict = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-    expand = lambda p: str(Path(p).expanduser())
-    cfg["watch_folder"] = expand(cfg["watch_folder"])
-    cfg["state_file"] = expand(cfg.get("state_file", "~/.meeting_transcriber_state.json"))
-    cfg["superwhisper_recordings_dir"] = expand(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings"))
-    cfg["folders"] = {cat: expand(p) for cat, p in cfg.get("folders", {}).items()}
+    cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
+    cfg["state_file"] = str(Path(cfg.get("state_file", "~/.meeting_transcriber_state.json")).expanduser())
+    cfg["superwhisper_recordings_dir"] = str(Path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")).expanduser())
+    cfg["folders"] = {cat: str(Path(p).expanduser()) for cat, p in cfg.get("folders", {}).items()}
 
     return cfg
 
