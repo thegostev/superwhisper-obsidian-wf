@@ -3,9 +3,7 @@
 Runs as a launchd service. See README.md for setup instructions.
 """
 
-import itertools
-import sys
-import time
+import itertools, sys, time
 from datetime import datetime
 from pathlib import Path
 

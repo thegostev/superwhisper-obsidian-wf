@@ -14,11 +14,7 @@ the Superwhisper pipeline (switch_superwhisper_mode / handoff_to_superwhisper /
 wait_for_superwhisper_result / parse_superwhisper_output) is implemented in pipeline.py.
 """
 
-import argparse
-import re
-import shutil
-import sys
-import time
+import argparse, re, shutil, sys, time
 from pathlib import Path
 
 from config import DELAY_BETWEEN_FILES, FOLDERS
