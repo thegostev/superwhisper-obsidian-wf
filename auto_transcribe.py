@@ -104,8 +104,7 @@ def run_scan_cycle(state, transcript_index, cycle_number):
 
 def main():
     print(f"{'=' * 60}\n🎙️  Auto-Transcription Service (Superwhisper)\n{'=' * 60}\n"
-          f"Watch folder: {WATCH_FOLDER}\nScanning last {SCAN_DAYS_BACK} days of recordings\n"
-          f"Scan interval: {SCAN_INTERVAL}s | Delay between files: {DELAY_BETWEEN_FILES}s\n"
+          f"Watch folder: {WATCH_FOLDER}\nScanning last {SCAN_DAYS_BACK} days of recordings\nScan interval: {SCAN_INTERVAL}s | Delay between files: {DELAY_BETWEEN_FILES}s\n"
           f"Max retries: {MAX_RETRIES} per file | Max files/cycle: {MAX_FILES_PER_CYCLE}\nSuperwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}\n{'=' * 60}",
           flush=True)
 

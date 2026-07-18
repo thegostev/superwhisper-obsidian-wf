@@ -134,8 +134,7 @@ Examples:
     unprocessed = [(ap, ts) for ap, ts in all_audio_files if not transcript_index.get(ts.strftime(TIMESTAMP_FORMAT))]
 
     print(f"\n{'=' * 60}\n📊 Status Summary\n{'=' * 60}"
-          f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed)}"
-          f"\n   📝 Transcript only (missing analysis): {0}"
+          f"\n   ✅ Complete (transcript + analysis):  {len(all_audio_files) - len(unprocessed)}\n   📝 Transcript only (missing analysis): 0"
           f"\n   🆕 Unprocessed:                        {len(unprocessed)}\n   📁 Total audio files:                  {len(all_audio_files)}\n{'=' * 60}")
 
     if not unprocessed:
