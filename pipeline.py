@@ -244,8 +244,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         since = time.time()
         switch_superwhisper_mode()
         handoff_to_superwhisper(file_path)
-        raw_output = wait_for_superwhisper_result(file_path, since=since)
-        category, ai_filename, analysis = parse_superwhisper_output(raw_output)
+        category, ai_filename, analysis = parse_superwhisper_output(wait_for_superwhisper_result(file_path, since=since))
 
         fname = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
         if output_path := save_output(category, fname, analysis):
