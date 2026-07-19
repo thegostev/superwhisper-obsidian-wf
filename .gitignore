@@ -16,6 +16,7 @@ build/
 .env
 .env.*
 config.yaml
+config.example.yaml
 
 # Utility scripts (personal one-off tools)
 utils/

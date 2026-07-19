@@ -10,6 +10,40 @@ from pathlib import Path
 import yaml
 
 
+def find_obsidian_base(start: Path = Path(__file__).resolve()) -> Path:
+    """Return the path *before* the enclosing 'Obsidian' folder.
+
+    This script lives inside the Obsidian vault tree, so we walk up from its own
+    location until we hit a folder named 'Obsidian' and return that folder's
+    parent. All relative folder paths in config are resolved against this base,
+    which keeps them identical across machines even though the absolute path
+    (e.g. ~/Documents vs an iCloud location) differs per Mac.
+    """
+    for parent in start.parents:
+        if parent.name == "Obsidian":
+            return parent.parent
+    raise RuntimeError(
+        f"Could not find an 'Obsidian' folder in the parents of {start}. "
+        "config.py must live inside the Obsidian vault tree."
+    )
+
+
+OBSIDIAN_BASE: Path = find_obsidian_base()
+
+
+def resolve_path(p: str) -> str:
+    """Resolve a config path to an absolute path.
+
+    - '~/...'      -> expanded against the home dir (portable as-is)
+    - '/abs/...'   -> used unchanged
+    - 'Obsidian/..' (or any relative path) -> joined onto OBSIDIAN_BASE
+    """
+    raw = Path(p).expanduser()
+    if raw.is_absolute():
+        return str(raw)
+    return str(OBSIDIAN_BASE / raw)
+
+
 def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict:
     if not config_path.exists():
         print(f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.", flush=True)
@@ -17,10 +51,10 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
 
     cfg: dict = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-    cfg["watch_folder"] = str(Path(cfg["watch_folder"]).expanduser())
-    cfg["state_file"] = str(Path(cfg.get("state_file", "~/.meeting_transcriber_state.json")).expanduser())
-    cfg["superwhisper_recordings_dir"] = str(Path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")).expanduser())
-    cfg["folders"] = {cat: str(Path(p).expanduser()) for cat, p in cfg.get("folders", {}).items()}
+    cfg["watch_folder"] = resolve_path(cfg["watch_folder"])
+    cfg["state_file"] = resolve_path(cfg.get("state_file", "~/.meeting_transcriber_state.json"))
+    cfg["superwhisper_recordings_dir"] = resolve_path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings"))
+    cfg["folders"] = {cat: resolve_path(p) for cat, p in cfg.get("folders", {}).items()}
 
     return cfg
 

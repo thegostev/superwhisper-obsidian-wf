@@ -37,14 +37,14 @@ all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in
 
 # Print table
 print(
-    f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | {'MUSIKKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |"
+    f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | {'MUSIKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |"
 )
 print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 8}|{'-' * 10}|")
 
 tp = tm = tmu = tu = tf = ta = 0
 
 for date in all_dates:
-    pe, mn, mu, un = (by_date[date].get(k, 0) for k in ("PERSONLIG", "MINNESOTERE", "MUSIKKERE", "UNKNOWN"))
+    pe, mn, mu, un = (by_date[date].get(k, 0) for k in ("PERSONLIG", "MINNESOTERE", "MUSIKERE", "UNKNOWN"))
     fa, audio = len(fail_by_date[date]), audio_by_date.get(date)
     coverage = f"{(pe + mn + mu + un + fa) / audio * 100:.0f}%" if audio else "?"
     tp, tm, tmu, tu, tf, ta = tp + pe, tm + mn, tmu + mu, tu + un, tf + fa, ta + (audio or 0)
