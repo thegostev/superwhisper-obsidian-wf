@@ -71,7 +71,6 @@ def discover_audio_files(watch_folder, state, transcript_index):
 
 
 def run_scan_cycle(state, transcript_index, cycle_number):
-    """Run one scan-and-process cycle. Returns count of files processed."""
     new_files = discover_audio_files(WATCH_FOLDER, state, transcript_index)
 
     if not new_files:

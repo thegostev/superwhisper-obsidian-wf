@@ -99,7 +99,6 @@ def get_audio_timestamp(audio_path):
 
 
 def save_output(category: str, filename: str, content: str) -> str | None:
-    """Save analysis output directly to the configured category folder."""
     dest = Path(FOLDERS.get(category, FOLDERS[DEFAULT_CATEGORY]))
     try:
         dest.mkdir(parents=True, exist_ok=True)
