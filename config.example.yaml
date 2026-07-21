@@ -1,0 +1,67 @@
+# SuperwhisperObsidianWF Configuration
+# Copy this file to locations/config.yaml and fill in your values.
+# See README.md for the full configuration reference.
+
+# ── Superwhisper integration ───────────────────────────────────────────────
+# Mode key: find in ~/Documents/superwhisper/modes (the "key" field of a mode file,
+# not the filename). The default Custom Mode has key "custom" (its "name" is "Meeting").
+superwhisper_mode_key: "custom"
+superwhisper_timeout: 3600           # seconds to wait for result before giving up
+superwhisper_recordings_dir: "~/Documents/superwhisper/recordings"
+superwhisper_poll_interval: 3        # seconds between polls while waiting
+
+# ── Custom Mode prompt (reference only — paste into Superwhisper UI) ───────
+# Go to Superwhisper > Settings > Custom Mode > Prompt and set:
+#
+# The User Message is the raw transcription of the audio.
+# Output EXACTLY the following structure, with no preamble or extra text:
+#
+# ---CATEGORY---
+# <one of your category names (must match the `folders` keys below exactly)>
+# ---FILENAME---
+# <meeting title — no date, no .md extension, no slashes>
+# ---ANALYSIS---
+# <full analysis in Markdown>
+#
+# The Python parser strips non-ASCII characters (emoji) from the CATEGORY value
+# before lookup, so "WORK 🍎" resolves to "WORK".
+
+# ── Watch folder ───────────────────────────────────────────────────────────
+# Where your recording app saves audio files.
+# Audio is expected in date-based subfolders: YYYY-MM-DD/*.m4a
+# Example: Just Press Record's iCloud folder
+watch_folder: "~/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
+
+# ── Output folders ─────────────────────────────────────────────────────────
+# Map each CATEGORY value to an output folder path.
+# Files land directly here — no subfolder is appended by the code.
+#
+# Paths may be:
+#   - "~/..."          expanded against the home dir (portable as-is)
+#   - "/abs/..."       used unchanged
+#   - "Obsidian/..."   resolved against the Obsidian vault root (portable
+#                     across machines; see config.py find_obsidian_base)
+#
+# Define any category names you like — they just need to match the Custom Mode
+# prompt's `---CATEGORY---` values exactly. A `DEFAULT` entry is required as
+# the fallback when the parser doesn't recognise a category.
+folders:
+  WORK: "Obsidian/VaultA/raw/Meetings"
+  TEAM: "Obsidian/VaultB/raw/Meetings"
+  PERSONAL: "Obsidian/VaultC/raw/Meetings"
+  INTERVIEWS: "Obsidian/VaultD/raw/Interviews"
+  DEFAULT: "Obsidian/VaultC/raw/Meetings"
+
+# ── State tracking ─────────────────────────────────────────────────────────
+# JSON file tracking processed audio files (keyed by audio path).
+# Keeps per-machine state; do NOT commit this file.
+state_file: "~/.superwhisper_transcriber_state.json"
+failed_analysis_log: "~/.superwhisper_transcriber_failed.log"
+
+# ── Service behavior ───────────────────────────────────────────────────────
+scan_interval: 30           # seconds between scan cycles
+scan_days_back: 7           # how many days of recordings to scan
+delay_between_files: 5      # seconds between files (Superwhisper is local, no API rate limit)
+max_files_per_cycle: 5      # cap per scan cycle (prevents backlog stampede)
+max_retries: 3
+retry_backoff: [10, 30, 60]
