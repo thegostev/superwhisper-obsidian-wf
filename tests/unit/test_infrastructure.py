@@ -31,7 +31,7 @@ def test_state_file_fixture(state_file):
 def test_mock_superwhisper_output_fixture(mock_superwhisper_output):
     """Verify the mock_superwhisper_output factory produces the expected format."""
     output = mock_superwhisper_output()
-    assert "CATEGORY: PERSONLIG" in output
+    assert "CATEGORY: PERSONAL" in output
     assert "FILENAME: Test Meeting" in output
     assert "Test analysis content." in output
 

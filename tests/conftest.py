@@ -1,35 +1,37 @@
-"""Shared test fixtures for RecordingAnalyser."""
+"""Shared test fixtures for SuperwhisperObsidianWF.
+
+Test config is always written to a temp location and config.py is forced to
+load it via the SWOWF_CONFIG_PATH env var, so tests never depend on the
+user's real config.yaml (which may have personal paths / category names).
+"""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+import yaml
 
-# Create a test config.yaml BEFORE config.py is imported by any test module.
-# config.py loads at import time, so the file must exist first.
 _PROJECT_DIR = Path(__file__).parent.parent
-_TEST_CONFIG = _PROJECT_DIR / "config.yaml"
 
-if not _TEST_CONFIG.exists():
-    import yaml
-
-    _test_cfg = {
-        "watch_folder": "/tmp/test-watch-folder",
-        "folders": {
-            "WORK": "/tmp/test-work",
-            "PERSONAL": "/tmp/test-personal",
-            "PERSONLIG": "/tmp/test-personlig",
-            "MINNESOTERE": "/tmp/test-minnesotere",
-            "DEFAULT": "/tmp/test-default",
-        },
-        "state_file": "/tmp/test-state.json",
-        "failed_analysis_log": "/tmp/test-failed.log",
-        "superwhisper_mode_key": "test-mode-key",
-    }
-    _TEST_CONFIG.write_text(yaml.dump(_test_cfg))
-    _CREATED_TEST_CONFIG = True
-else:
-    _CREATED_TEST_CONFIG = False
+# Build a deterministic test config and point config.py at it before any
+# test module imports config.py (which loads at import time).
+_TEST_CFG = {
+    "watch_folder": "/tmp/test-watch-folder",
+    "folders": {
+        "WORK": "/tmp/test-work",
+        "TEAM": "/tmp/test-team",
+        "PERSONAL": "/tmp/test-personal",
+        "INTERVIEWS": "/tmp/test-interviews",
+        "DEFAULT": "/tmp/test-default",
+    },
+    "state_file": "/tmp/test-state.json",
+    "failed_analysis_log": "/tmp/test-failed.log",
+    "superwhisper_mode_key": "test-mode-key",
+}
+_TEST_CONFIG_PATH = _PROJECT_DIR / "tests" / "_test_config.yaml"
+_TEST_CONFIG_PATH.write_text(yaml.dump(_TEST_CFG))
+os.environ["SWOWF_CONFIG_PATH"] = str(_TEST_CONFIG_PATH)
 
 
 @pytest.fixture
@@ -73,7 +75,7 @@ def mock_superwhisper_output():
     """Factory fixture for mock Superwhisper Custom Mode output strings."""
 
     def _make_output(
-        category="PERSONLIG",
+        category="PERSONAL",
         filename="Test Meeting",
         analysis="## Summary\nTest analysis content.",
     ):

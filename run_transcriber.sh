@@ -1,8 +1,12 @@
 #!/bin/zsh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PID_FILE="$SCRIPT_DIR/.transcriber.pid"
-LOG_FILE="$SCRIPT_DIR/transcriber.log"
+LOCATIONS_DIR="$SCRIPT_DIR/locations"
+PID_FILE="$LOCATIONS_DIR/.transcriber.pid"
+LOG_FILE="$LOCATIONS_DIR/logs/transcriber.log"
+ENV_FILE="$LOCATIONS_DIR/.env"
+
+mkdir -p "$LOCATIONS_DIR/logs"
 
 # Disable XetHub download protocol — incompatible with Python 3.9 threading
 export HF_HUB_DISABLE_XET=1
@@ -13,7 +17,7 @@ start() {
         return 1
     fi
 
-    [ -f "$SCRIPT_DIR/.env" ] && set -a && source "$SCRIPT_DIR/.env" && set +a
+    [ -f "$ENV_FILE" ] && set -a && source "$ENV_FILE" && set +a
 
     cd "$SCRIPT_DIR"
     nohup "$SCRIPT_DIR/venv/bin/python3" "$SCRIPT_DIR/auto_transcribe.py" >> "$LOG_FILE" 2>&1 &

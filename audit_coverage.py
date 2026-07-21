@@ -1,11 +1,22 @@
-"""One-shot audit: match audio files to transcripts per category."""
+"""One-shot audit: match audio files to transcripts per category.
+
+Reads WATCH_FOLDER, STATE_FILE, and FOLDERS from config so it stays in sync
+with the active configuration. Run with:
+
+    python audit_coverage.py
+"""
 
 import json
 from collections import defaultdict
 from pathlib import Path
 
-STATE = Path.home() / ".meeting_transcriber_state.json"
-WATCH = Path.home() / "Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
+from config import FOLDERS, WATCH_FOLDER
+
+STATE = Path.home() / ".superwhisper_transcriber_state.json"
+WATCH = Path(WATCH_FOLDER)
+
+# Categories to tabulate (exclude DEFAULT — it's a routing fallback, not a real category).
+CATEGORIES = [c for c in FOLDERS if c != "DEFAULT"]
 
 processed = json.loads(STATE.read_text())["processed"]
 
@@ -29,29 +40,38 @@ for day_dir in sorted(WATCH.iterdir()):
         continue
     if m4as := sorted(day_dir.glob("*.m4a")):
         audio_by_date[day_dir.name] = len(m4as)
-        for m4a in m4as:
+        for m4a in m4a:
             if str(m4a) not in processed:
                 untracked[day_dir.name].append(m4a.name)
 
 all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in src if d >= "2026"})
 
-# Print table
-print(
-    f"| {'Date':<12} | {'Audio':>5} | {'PERSONLIG':>9} | {'MINNESOTERE':>11} | {'MUSIKERE':>9} | {'UNKNOWN':>7} | {'Failed':>6} | {'Coverage':>8} |"
-)
-print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 8}|{'-' * 10}|")
+# Print table — one column per category, plus UNKNOWN and Failed
+cat_cols = CATEGORIES + ["UNKNOWN"]
+header = f"| {'Date':<12} | {'Audio':>5} |" + "".join(f" {c:>9} |" for c in cat_cols) + f" {'Failed':>6} | {'Coverage':>8} |"
+print(header)
+print(f"|{'-' * 14}|{'-' * 7}" + "".join(f"{'-' * 11}" for _ in cat_cols) + f"|{'-' * 8}|{'-' * 10}|")
 
-tp = tm = tmu = tu = tf = ta = 0
+totals = {c: 0 for c in cat_cols}
+total_failed = 0
+total_audio = 0
 
 for date in all_dates:
-    pe, mn, mu, un = (by_date[date].get(k, 0) for k in ("PERSONLIG", "MINNESOTERE", "MUSIKERE", "UNKNOWN"))
-    fa, audio = len(fail_by_date[date]), audio_by_date.get(date)
-    coverage = f"{(pe + mn + mu + un + fa) / audio * 100:.0f}%" if audio else "?"
-    tp, tm, tmu, tu, tf, ta = tp + pe, tm + mn, tmu + mu, tu + un, tf + fa, ta + (audio or 0)
-    print(f"| {date:<12} | {audio or '?':>5} | {pe:>9} | {mn:>11} | {mu:>9} | {un:>7} | {fa:>6} | {coverage:>8} |")
+    counts = {c: by_date[date].get(c, 0) for c in cat_cols}
+    failed = len(fail_by_date[date])
+    audio = audio_by_date.get(date)
+    processed_count = sum(counts.values()) + failed
+    coverage = f"{processed_count / audio * 100:.0f}%" if audio else "?"
+    for c in cat_cols:
+        totals[c] += counts[c]
+    total_failed += failed
+    total_audio += audio or 0
+    row = f"| {date:<12} | {audio or '?':>5} |" + "".join(f" {counts[c]:>9} |" for c in cat_cols) + f" {failed:>6} | {coverage:>8} |"
+    print(row)
 
-print(f"|{'-' * 14}|{'-' * 7}|{'-' * 11}|{'-' * 13}|{'-' * 11}|{'-' * 9}|{'-' * 8}|{'-' * 10}|")
-print(f"| {'TOTAL':<12} | {ta:>5} | {tp:>9} | {tm:>11} | {tmu:>9} | {tu:>7} | {tf:>6} | {'':>8} |")
+print(f"|{'-' * 14}|{'-' * 7}" + "".join(f"{'-' * 11}" for _ in cat_cols) + f"|{'-' * 8}|{'-' * 10}|")
+totals_row = f"| {'TOTAL':<12} | {total_audio:>5} |" + "".join(f" {totals[c]:>9} |" for c in cat_cols) + f" {total_failed:>6} | {'':>8} |"
+print(totals_row)
 
 print(f"\n=== UNTRACKED AUDIO (in folder, not in state): {sum(len(v) for v in untracked.values())} files ===")
 for date in sorted(untracked):

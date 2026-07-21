@@ -39,6 +39,7 @@ TIMESTAMP_KEY_LENGTH = 14  # leading chars of a filename forming the "YY-MM-DD H
 MDLS_TIMEOUT_SECONDS = 5  # macOS metadata lookup
 MODE_SWITCH_SETTLE_SECONDS = 1.0  # let Superwhisper apply the mode before handoff
 FILE_STABILITY_WAIT_SECONDS = 2  # iCloud sync settle check
+RECORDING_STABILITY_POLLS = 5  # consecutive polls with unchanged mtime → recording is done
 
 
 class FatalAPIError(Exception):
@@ -66,7 +67,12 @@ def save_state(state):
 
 
 def get_audio_timestamp(audio_path):
-    """Extract recording timestamp via mdls → dir/filename parse → file ctime."""
+    """Extract recording timestamp via mdls → dir/filename parse → file ctime.
+
+    Returns a LOCAL TIME datetime to match the Just Press Record folder/filename
+    convention (which is local) and the user's meeting-time reference. mdls returns
+    kMDItemContentCreationDate in UTC with a +0000 offset, so we convert to local.
+    """
     try:
         result = subprocess.run(
             ["mdls", "-name", "kMDItemContentCreationDate", "-raw", audio_path],
@@ -75,7 +81,10 @@ def get_audio_timestamp(audio_path):
         if result.returncode == 0 and (raw := result.stdout.strip()):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
                 try:
-                    return datetime.strptime(raw, fmt)
+                    parsed = datetime.strptime(raw, fmt)
+                    # mdls returns UTC; convert to local time to match JPR folder naming.
+                    # astimezone() with no arg converts to the system local timezone.
+                    return parsed.astimezone() if parsed.tzinfo else parsed
                 except ValueError:
                     pass
     except Exception:
@@ -180,14 +189,42 @@ def _read_superwhisper_entry(path: Path) -> str | None:
         return None
 
 
+def _read_recording_meta(path: Path) -> dict | None:
+    """Read meta.json and return the fields relevant to result detection.
+
+    Returns None if meta.json is missing or unreadable. Otherwise a dict with:
+      - llm_result: str | None (the Custom Mode LLM output, may be empty/absent)
+      - has_transcript: bool (True if result/rawResult present and non-empty)
+    """
+    try:
+        meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    llm = meta.get("llmResult")
+    raw = meta.get("result") or meta.get("rawResult")
+    return {"llm_result": str(llm) if llm is not None else None, "has_transcript": bool(raw or raw == "") and bool(meta.get("processingTime") is not None or raw)}
+
+
 def wait_for_superwhisper_result(file_path: str, since: float) -> str:
-    """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper()."""
+    """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper().
+
+    Detection strategy (fast-fail, avoids blocking the queue for SUPERWHISPER_TIMEOUT):
+      - llmResult with CATEGORY: header → success, return it
+      - llmResult present but no CATEGORY: header → LLM refused the contract → PermanentFileError
+      - No llmResult but meta.json mtime stable for RECORDING_STABILITY_POLLS polls and
+        transcription completed → analysis pass did not run → PermanentFileError
+      - Otherwise keep polling until SUPERWHISPER_TIMEOUT → TimeoutError (transient retry)
+    """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
         raise FatalAPIError(f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once.")
 
     deadline = time.time() + SUPERWHISPER_TIMEOUT
     print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
+
+    # Track consecutive polls where each candidate recording's mtime was unchanged.
+    # Keyed by recording dir name → (last_mtime, stable_count).
+    stability: dict[str, tuple[float, int]] = {}
 
     while time.time() < deadline:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
@@ -198,13 +235,54 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
 
         for entry in entries:
             try:
-                if entry.stat().st_mtime <= since:
-                    break  # all remaining entries are older than our handoff
+                mtime = entry.stat().st_mtime
             except OSError:
                 continue
-            if (text := _read_superwhisper_entry(entry)) and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
+            if mtime <= since:
+                break  # all remaining entries are older than our handoff
+
+            info = _read_recording_meta(entry)
+            if info is None:
+                continue  # meta.json not ready yet
+
+            text = info["llm_result"]
+            if text and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text
+
+            # Fast-fail case 1: LLM produced output but no CATEGORY: header = refusal.
+            if text and not (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
+                raise PermanentFileError(
+                    f"Superwhisper produced an llmResult without the {CATEGORY_HEADER} contract header "
+                    f"for {Path(file_path).name}. The Custom Mode LLM likely refused the transcript "
+                    f"(too short, wrong format, or non-meeting audio). First line: {text.splitlines()[0][:120]!r}"
+                )
+
+            # Fast-fail case 2: no llmResult but meta.json mtime is stable.
+            # Superwhisper creates an empty stub when `open file -a Superwhisper` fires faster
+            # than it can process; the stub is never filled in. This is transient — re-opening
+            # the file later (when Superwhisper is idle) processes it correctly. Raise
+            # TimeoutError so process_audio records failed_retry and re-queues on the next cycle.
+            # Stability check: same mtime across RECORDING_STABILITY_POLLS consecutive polls.
+            prev = stability.get(entry.name)
+            if prev is None:
+                stability[entry.name] = (mtime, 1)
+                continue
+            prev_mtime, count = prev
+            if mtime != prev_mtime:
+                stability[entry.name] = (mtime, 1)  # reset — file still being written
+                continue
+            count += 1
+            stability[entry.name] = (mtime, count)
+            if count >= RECORDING_STABILITY_POLLS:
+                # meta.json hasn't changed across N polls → Superwhisper dropped this stub.
+                # Transient: re-opening the audio file on a later cycle should work.
+                raise TimeoutError(
+                    f"Superwhisper created an empty recording stub for {Path(file_path).name} "
+                    f"(meta.json stable for {count} polls, no llmResult). The file-open likely "
+                    f"arrived while Superwhisper was busy with a prior handoff. "
+                    f"Will retry on the next scan cycle. Recording dir: {entry.name}"
+                )
 
     raise TimeoutError(f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}")
 
