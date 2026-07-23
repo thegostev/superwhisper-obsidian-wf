@@ -8,22 +8,22 @@ import pytest
 from pipeline import PermanentFileError, parse_superwhisper_output
 
 
-def _make(category="PERSONLIG", filename="Test Meeting", analysis="## Notes\n- point"):
+def _make(category="PERSONAL", filename="Test Meeting", analysis="## Notes\n- point"):
     return f"CATEGORY: {category}\nFILENAME: {filename}\n\n{analysis}"
 
 
 def test_happy_path(mock_superwhisper_output):
-    output = mock_superwhisper_output(category="PERSONLIG", filename="Team Sync", analysis="## Summary\nAll good.")
+    output = mock_superwhisper_output(category="PERSONAL", filename="Team Sync", analysis="## Summary\nAll good.")
     category, filename, analysis = parse_superwhisper_output(output)
-    assert category == "PERSONLIG"
+    assert category == "PERSONAL"
     assert filename == "Team Sync"
     assert "All good." in analysis
 
 
 def test_category_normalised_to_uppercase():
-    output = _make(category="personlig")
+    output = _make(category="personal")
     category, _, _ = parse_superwhisper_output(output)
-    assert category == "PERSONLIG"
+    assert category == "PERSONAL"
 
 
 def test_unknown_category_falls_back_to_default():
@@ -65,25 +65,25 @@ def test_analysis_content_preserved():
 
 
 def test_whitespace_stripped_from_category_and_filename():
-    output = "CATEGORY:   PERSONLIG  \nFILENAME:   My Meeting  \n\n## Notes"
+    output = "CATEGORY:   PERSONAL  \nFILENAME:   My Meeting  \n\n## Notes"
     category, filename, _ = parse_superwhisper_output(output)
-    assert category == "PERSONLIG"
+    assert category == "PERSONAL"
     assert filename == "My Meeting"
 
 
 def test_real_prompt_format():
     """Matches the exact output format from the meeting.json prompt."""
     output = (
-        "CATEGORY: MINNESOTERE\n"
-        "FILENAME: Delta Sprint Review - Timeline, Backstage, Jenkins\n"
+        "CATEGORY: TEAM\n"
+        "FILENAME: Sprint Review - Timeline, Backstage, Jenkins\n"
         "\n"
         "**Jenkins migration**\n"
         "- Marcin pushed back on Q1 deadline\n"
-        "- ▶️ Brian: draft cutoff comms by Mon\n"
+        "- Action item: draft cutoff comms by Mon\n"
     )
     category, filename, analysis = parse_superwhisper_output(output)
-    assert category == "MINNESOTERE"
-    assert filename == "Delta Sprint Review - Timeline, Backstage, Jenkins"
+    assert category == "TEAM"
+    assert filename == "Sprint Review - Timeline, Backstage, Jenkins"
     assert "Jenkins migration" in analysis
     assert "CATEGORY" not in analysis
     assert "FILENAME" not in analysis

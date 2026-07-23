@@ -4,6 +4,7 @@ Loads settings from config.yaml. No external API keys required — audio process
 is handled by Superwhisper running locally on the same machine.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -45,8 +46,24 @@ def resolve_path(p: str) -> str:
 
 
 def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> dict:
+    # Tests point config.py at a temp config via env var (see tests/conftest.py).
+    # Production: falls back to locations/config.yaml, then ./config.yaml.
+    env_path = os.environ.get("SWOWF_CONFIG_PATH")
+    if env_path:
+        config_path = Path(env_path)
+    elif not config_path.exists():
+        alt = Path(__file__).parent / "locations" / "config.yaml"
+        if alt.exists():
+            config_path = alt
+
     if not config_path.exists():
-        print(f"ERROR: Config file not found: {config_path}\nCopy config.example.yaml to config.yaml and fill in your values.", flush=True)
+        print(
+            f"ERROR: Config file not found.\n"
+            f"Tried: {config_path}\n"
+            f"Also looked in: {Path(__file__).parent / 'locations' / 'config.yaml'}\n"
+            f"Copy config.example.yaml to locations/config.yaml and fill in your values.",
+            flush=True,
+        )
         sys.exit(1)
 
     cfg: dict = yaml.safe_load(config_path.read_text(encoding="utf-8"))
