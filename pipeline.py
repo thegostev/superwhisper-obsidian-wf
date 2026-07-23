@@ -194,7 +194,7 @@ def _read_superwhisper_entry(path: Path) -> str | None:
         return None
 
 
-def _read_recording_meta(path: Path) -> dict | None:
+def _read_recording_meta(path: Path) -> dict[str, str | bool | int | None] | None:
     """Read meta.json and return the fields relevant to result detection.
 
     Returns None if meta.json is missing or unreadable. Otherwise a dict with:
@@ -259,7 +259,8 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
             if info is None:
                 continue  # meta.json not ready yet
 
-            text = info["llm_result"]
+            raw_text = info["llm_result"]
+            text = raw_text if isinstance(raw_text, str) else None
             if text and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
                 print(f"   📄 Got result from: {entry.name}", flush=True)
                 return text

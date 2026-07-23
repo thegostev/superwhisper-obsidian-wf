@@ -40,7 +40,7 @@ for day_dir in sorted(WATCH.iterdir()):
         continue
     if m4as := sorted(day_dir.glob("*.m4a")):
         audio_by_date[day_dir.name] = len(m4as)
-        for m4a in m4a:
+        for m4a in m4as:
             if str(m4a) not in processed:
                 untracked[day_dir.name].append(m4a.name)
 

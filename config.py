@@ -19,13 +19,29 @@ def find_obsidian_base(start: Path = Path(__file__).resolve()) -> Path:
     parent. All relative folder paths in config are resolved against this base,
     which keeps them identical across machines even though the absolute path
     (e.g. ~/Documents vs an iCloud location) differs per Mac.
+
+    The lookup is lazy: if no 'Obsidian' folder is found AND the SWOWF_CONFIG_PATH
+    env var is set (test mode), the repo root is used as a fallback. This lets
+    tests run on CI runners where the checkout is not inside an Obsidian vault.
+    For production deployments, the SWOWF_OBSIDIAN_BASE env var can override the
+    base path explicitly.
     """
+    env_override = os.environ.get("SWOWF_OBSIDIAN_BASE")
+    if env_override:
+        return Path(env_override).expanduser()
+
     for parent in start.parents:
         if parent.name == "Obsidian":
             return parent.parent
+
+    if os.environ.get("SWOWF_CONFIG_PATH"):
+        # Test mode: config will provide absolute paths, so OBSIDIAN_BASE is only
+        # a fallback for relative paths. Use the repo root (config.py's parent).
+        return start.parent
+
     raise RuntimeError(
         f"Could not find an 'Obsidian' folder in the parents of {start}. "
-        "config.py must live inside the Obsidian vault tree."
+        "config.py must live inside the Obsidian vault tree, or set SWOWF_OBSIDIAN_BASE."
     )
 
 
