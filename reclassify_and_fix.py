@@ -44,13 +44,19 @@ def generate_missing_analysis(transcript_path, category, dry_run=False, verbose=
         print(f"  [DRY RUN] Would generate analysis for: {category}/{Path(transcript_path).name}", flush=True)
         return True
 
-    print(f"  ⚠️  Cannot generate analysis for {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n     Re-process the original audio file to regenerate transcript + analysis together.", flush=True)
+    print(
+        f"  ⚠️  Cannot generate analysis for {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n     Re-process the original audio file to regenerate transcript + analysis together.",
+        flush=True,
+    )
     return False
 
 
 def reclassify_transcript(transcript_path, dry_run=False, verbose=False):
     """TODO: not yet implemented; returns (new_category, new_filename) or None when complete."""
-    print(f"  ⚠️  Cannot reclassify {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n     Re-process the original audio file to get updated category + filename.", flush=True)
+    print(
+        f"  ⚠️  Cannot reclassify {Path(transcript_path).name} — Superwhisper pipeline not yet implemented.\n     Re-process the original audio file to get updated category + filename.",
+        flush=True,
+    )
     return None
 
 
@@ -184,9 +190,13 @@ def main():
                     skipped_count += 1
                     continue
 
-                moved_count += move_transcript_and_analysis(transcript_path, new_category, new_filename, args.dry_run, args.verbose)
+                moved_count += move_transcript_and_analysis(
+                    transcript_path, new_category, new_filename, args.dry_run, args.verbose
+                )
 
-            print(f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed")
+            print(
+                f"\n📊 Results: ✅ {moved_count} moved, ⚠️ {skipped_count} skipped, ❌ {len(unknown_meetings) - moved_count - skipped_count} failed"
+            )
 
     print(f"\n{'=' * 60}\n✅ Done!\n{'=' * 60}")
 

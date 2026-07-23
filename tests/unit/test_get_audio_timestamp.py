@@ -7,9 +7,6 @@ kMDItemContentCreationDate in UTC with a +0000 offset; the function must convert
 local time before returning so the output filename matches the JPR folder time.
 """
 
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-
 from pipeline import get_audio_timestamp
 
 
@@ -30,6 +27,7 @@ def test_mdls_utc_is_converted_to_local_time(tmp_path, monkeypatch):
             returncode = 0
             stdout = "2026-07-20 14:32:02 +0000"
             stderr = ""
+
         return R()
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -54,6 +52,7 @@ def test_filename_fallback_is_local_time(tmp_path, monkeypatch):
             returncode = 0
             stdout = ""
             stderr = ""
+
         return R()
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -80,6 +79,7 @@ def test_mdls_naive_datetime_is_treated_as_utc(tmp_path, monkeypatch):
             returncode = 0
             stdout = "2026-07-21 12:00:36"  # naive — no +0000 suffix
             stderr = ""
+
         return R()
 
     monkeypatch.setattr("subprocess.run", fake_run)

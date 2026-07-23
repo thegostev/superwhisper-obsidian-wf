@@ -66,7 +66,7 @@ def save_state(state):
         print(f"⚠️  Warning: Could not save state file: {e}", flush=True)
 
 
-def get_audio_timestamp(audio_path):
+def get_audio_timestamp(audio_path: str) -> datetime:
     """Extract recording timestamp via mdls → dir/filename parse → file ctime.
 
     Returns a LOCAL TIME datetime to match the Just Press Record folder/filename
@@ -76,7 +76,9 @@ def get_audio_timestamp(audio_path):
     try:
         result = subprocess.run(
             ["mdls", "-name", "kMDItemContentCreationDate", "-raw", audio_path],
-            capture_output=True, text=True, timeout=MDLS_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            timeout=MDLS_TIMEOUT_SECONDS,
         )
         if result.returncode == 0 and (raw := result.stdout.strip()):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
@@ -175,7 +177,9 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
 def switch_superwhisper_mode() -> None:
     """Switch Superwhisper to the configured Custom Mode via deep link."""
     if not SUPERWHISPER_MODE_KEY:
-        raise FatalAPIError("superwhisper_mode_key is not set in config.yaml. Default value is 'meeting' — verify in ~/Documents/superwhisper/modes.")
+        raise FatalAPIError(
+            "superwhisper_mode_key is not set in config.yaml. Default value is 'meeting' — verify in ~/Documents/superwhisper/modes."
+        )
     subprocess.run(["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"], check=True)
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
@@ -231,7 +235,9 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
-        raise FatalAPIError(f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once.")
+        raise FatalAPIError(
+            f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once."
+        )
 
     deadline = time.time() + SUPERWHISPER_TIMEOUT
     print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
@@ -312,7 +318,9 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
                     f"Will retry on the next scan cycle. Recording dir: {entry.name}"
                 )
 
-    raise TimeoutError(f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}")
+    raise TimeoutError(
+        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+    )
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
@@ -338,7 +346,9 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
     analysis_start = next((i for i in range(analysis_start, len(lines)) if lines[i].strip()), len(lines))
     if not (analysis := "\n".join(lines[analysis_start:]).strip()):
-        raise PermanentFileError("Superwhisper output has no analysis body. Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content.")
+        raise PermanentFileError(
+            "Superwhisper output has no analysis body. Check the Custom Mode prompt outputs CATEGORY: / FILENAME: followed by content."
+        )
     return category, filename, analysis
 
 
@@ -350,7 +360,9 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         since = time.time()
         switch_superwhisper_mode()
         handoff_to_superwhisper(file_path)
-        category, ai_filename, analysis = parse_superwhisper_output(wait_for_superwhisper_result(file_path, since=since))
+        category, ai_filename, analysis = parse_superwhisper_output(
+            wait_for_superwhisper_result(file_path, since=since)
+        )
 
         fname = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
         if output_path := save_output(category, fname, analysis):
@@ -383,9 +395,96 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "processed_at": datetime.now().isoformat(),
             "attempts": na,
         }
-        print("   " + (f"🛑 Permanently failed after {na} attempts" if na >= MAX_RETRIES else f"🔄 Will retry on next cycle (attempt {na}/{MAX_RETRIES})"), flush=True)
+        print(
+            "   "
+            + (
+                f"🛑 Permanently failed after {na} attempts"
+                if na >= MAX_RETRIES
+                else f"🔄 Will retry on next cycle (attempt {na}/{MAX_RETRIES})"
+            ),
+            flush=True,
+        )
     save_state(state)
     return False, None
+
+
+def _parse_recovery_candidate(entry: Path, mtime: float) -> tuple[float, datetime, int, str] | None:
+    """Return (mtime, rec_start, duration_ms, llmResult) for a stub with a valid contract, else None."""
+    info = _read_recording_meta(entry)
+    if not info or not isinstance(info["llm_result"], str):
+        return None
+    text = info["llm_result"]
+    if CATEGORY_HEADER not in text and CATEGORY_SECTION_MARKER not in text:
+        return None
+    try:
+        meta = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    try:
+        rec_start = datetime.fromisoformat(str(meta.get("datetime")).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        rec_start = datetime.fromtimestamp(mtime, tz=timezone.utc)
+    return mtime, rec_start, int(meta.get("duration") or 0), text
+
+
+def _collect_recovery_candidates(recordings_dir: Path, cutoff: float) -> list[tuple[float, datetime, int, str]] | None:
+    """Scan the recordings dir for stubs newer than cutoff with a CATEGORY: contract.
+
+    Returns None on OSError (recordings dir unreadable); empty list if no candidates match.
+    """
+    candidates: list[tuple[float, datetime, int, str]] = []
+    try:
+        for entry in recordings_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            if mtime < cutoff:
+                continue
+            if (cand := _parse_recovery_candidate(entry, mtime)) is not None:
+                candidates.append(cand)
+    except OSError as e:
+        print(f"⚠️  Recovery scan: could not list recordings dir: {e}", flush=True)
+        return None
+    return candidates
+
+
+def _derive_audio_ts(path: str, entry: dict) -> datetime | None:
+    """Derive the audio recording timestamp from a failed entry's state.
+
+    Failed entries don't carry a `timestamp` field (the success path sets it). Fall
+    back to get_audio_timestamp() on the audio path, then to the state's processed_at.
+    """
+    if entry.get("timestamp"):
+        try:
+            return datetime.fromisoformat(entry["timestamp"])
+        except ValueError:
+            pass
+    if Path(path).exists():
+        return get_audio_timestamp(path)
+    try:
+        return datetime.fromisoformat(entry["processed_at"])
+    except (ValueError, KeyError):
+        return None
+
+
+def _find_best_candidate(candidates, audio_utc: datetime) -> tuple[float, datetime, int, str] | None:
+    """Pick the most-recently-modified candidate whose rec_start falls in the audio's window.
+
+    Window: [audio_start - 5min, audio_start + duration + 30min]. The wide upper
+    bound covers JPR's recording start → stop → SW handoff → LLM pass start.
+    """
+    best = None
+    for mtime, rec_start, duration_ms, text in candidates:
+        if rec_start.tzinfo is None:
+            rec_start = rec_start.replace(tzinfo=timezone.utc)
+        delta = (rec_start - audio_utc).total_seconds()
+        upper = duration_ms / 1000 + 1800
+        if -300 <= delta <= upper and (best is None or mtime > best[0]):
+            best = (mtime, rec_start, duration_ms, text)
+    return best
 
 
 def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
@@ -398,91 +497,33 @@ def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
     failed_permanent entry by audio timestamp + duration, and — if matched — parses,
     saves the .md, and flips the state entry to complete.
 
-    Matching is by recording timestamp (YY-MM-DD HH.MM): a candidate stub matches a
-    failed entry when the stub's audio duration brackets the entry's recording time, or
-    (fallback) when the stub's recording-start datetime is within max_age_days and the
-    entry has no other match. Returns the number of entries recovered.
+    Returns the number of entries recovered.
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
         return 0
 
     processed = state.get("processed", {})
-    failed = {
-        path: entry
-        for path, entry in processed.items()
-        if entry.get("status") == "failed_permanent"
-    }
+    failed = {path: entry for path, entry in processed.items() if entry.get("status") == "failed_permanent"}
     if not failed:
         return 0
 
     cutoff = time.time() - max_age_days * 86400
-    candidates: list[tuple[float, datetime, int, str]] = []  # (mtime, rec_start_utc, duration_ms, llmResult)
-    try:
-        for entry in recordings_dir.iterdir():
-            if not entry.is_dir():
-                continue
-            try:
-                mtime = entry.stat().st_mtime
-            except OSError:
-                continue
-            if mtime < cutoff:
-                continue
-            info = _read_recording_meta(entry)
-            if not info or not info["llm_result"]:
-                continue
-            text = info["llm_result"]
-            if CATEGORY_HEADER not in text and CATEGORY_SECTION_MARKER not in text:
-                continue
-            meta = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
-            try:
-                rec_start = datetime.fromisoformat(str(meta.get("datetime")).replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
-                rec_start = datetime.fromtimestamp(mtime, tz=timezone.utc)
-            duration_ms = int(meta.get("duration") or 0)
-            candidates.append((mtime, rec_start, duration_ms, text))
-    except OSError as e:
-        print(f"⚠️  Recovery scan: could not list recordings dir: {e}", flush=True)
-        return 0
-
+    candidates = _collect_recovery_candidates(recordings_dir, cutoff)
     if not candidates:
         return 0
 
     recovered = 0
     for path, entry in failed.items():
-        # Failed entries don't carry a `timestamp` field (the success path sets it).
-        # Derive it from the audio file path via get_audio_timestamp — fall back to
-        # the state's processed_at if the file is gone.
-        audio_ts = None
-        if entry.get("timestamp"):
-            try:
-                audio_ts = datetime.fromisoformat(entry["timestamp"])
-            except ValueError:
-                audio_ts = None
-        if audio_ts is None and Path(path).exists():
-            audio_ts = get_audio_timestamp(path)
-        if audio_ts is None:
-            try:
-                audio_ts = datetime.fromisoformat(entry["processed_at"])
-            except (ValueError, KeyError):
-                continue
+        if (audio_ts := _derive_audio_ts(path, entry)) is None:
+            continue
         # State timestamps come from get_audio_timestamp() which returns LOCAL time
         # (to match JPR folder naming). Treat naive as local, not UTC.
         if audio_ts.tzinfo is None:
             audio_ts = audio_ts.astimezone()
         audio_utc = audio_ts.astimezone(timezone.utc)
 
-        # Match: stub's datetime (UTC) is within [audio_start - 5min, audio_start + duration + 30min].
-        # The wide window covers JPR's recording start → stop → SW handoff → LLM pass start.
-        best = None
-        for mtime, rec_start, duration_ms, text in candidates:
-            if rec_start.tzinfo is None:
-                rec_start = rec_start.replace(tzinfo=timezone.utc)
-            delta = (rec_start - audio_utc).total_seconds()
-            upper = duration_ms / 1000 + 1800  # duration + 30min slack for handoff/queue
-            if -300 <= delta <= upper:
-                if best is None or mtime > best[0]:
-                    best = (mtime, rec_start, duration_ms, text)
+        best = _find_best_candidate(candidates, audio_utc)
         if best is None:
             continue
 

@@ -7,12 +7,21 @@ user's real config.yaml (which may have personal paths / category names).
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 import yaml
 
 _PROJECT_DIR = Path(__file__).parent.parent
+
+# Pin the local timezone for the whole session. get_audio_timestamp() converts
+# UTC mdls output to local time via datetime.astimezone() — tests assert CEST
+# (+02:00) expectations, but CI runners default to UTC. Setting TZ before any
+# test module imports makes astimezone() deterministic across Linux/macOS
+# runners and dev machines. Must run before config.py loads at import time.
+os.environ["TZ"] = "Europe/Oslo"
+time.tzset()
 
 # Build a deterministic test config and point config.py at it before any
 # test module imports config.py (which loads at import time).

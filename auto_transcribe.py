@@ -69,7 +69,10 @@ def discover_audio_files(watch_folder, state, transcript_index):
         save_state(state)
 
     if len(audio_files) > MAX_FILES_PER_CYCLE:
-        print(f"   📋 {len(audio_files)} files found, processing {MAX_FILES_PER_CYCLE} this cycle ({len(audio_files) - MAX_FILES_PER_CYCLE} deferred to next cycle)", flush=True)
+        print(
+            f"   📋 {len(audio_files)} files found, processing {MAX_FILES_PER_CYCLE} this cycle ({len(audio_files) - MAX_FILES_PER_CYCLE} deferred to next cycle)",
+            flush=True,
+        )
     return sorted(audio_files, key=lambda x: x[1])[:MAX_FILES_PER_CYCLE]
 
 
@@ -81,7 +84,10 @@ def run_scan_cycle(state, transcript_index, cycle_number):
             print(f"[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - No new files", flush=True)
         return 0
 
-    print(f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process", flush=True)
+    print(
+        f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process",
+        flush=True,
+    )
 
     success_count = 0
     for i, (audio_path, timestamp) in enumerate(new_files, 1):
@@ -97,20 +103,28 @@ def run_scan_cycle(state, transcript_index, cycle_number):
             print(f"   ⏸️  Pausing {DELAY_BETWEEN_FILES}s before next file...", flush=True)
             time.sleep(DELAY_BETWEEN_FILES)
 
-    print(f"\n{'=' * 50}\nCycle {cycle_number} complete: {success_count} succeeded, {len(new_files) - success_count} failed\n{'=' * 50}", flush=True)
+    print(
+        f"\n{'=' * 50}\nCycle {cycle_number} complete: {success_count} succeeded, {len(new_files) - success_count} failed\n{'=' * 50}",
+        flush=True,
+    )
 
     return success_count
 
 
 def main():
-    print(f"{'=' * 60}\n🎙️  Auto-Transcription Service (Superwhisper)\n{'=' * 60}\n"
-          f"Watch folder: {WATCH_FOLDER}\nScanning last {SCAN_DAYS_BACK} days of recordings\nScan interval: {SCAN_INTERVAL}s | Delay between files: {DELAY_BETWEEN_FILES}s\n"
-          f"Max retries: {MAX_RETRIES} per file | Max files/cycle: {MAX_FILES_PER_CYCLE}\nSuperwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}\n{'=' * 60}",
-          flush=True)
+    print(
+        f"{'=' * 60}\n🎙️  Auto-Transcription Service (Superwhisper)\n{'=' * 60}\n"
+        f"Watch folder: {WATCH_FOLDER}\nScanning last {SCAN_DAYS_BACK} days of recordings\nScan interval: {SCAN_INTERVAL}s | Delay between files: {DELAY_BETWEEN_FILES}s\n"
+        f"Max retries: {MAX_RETRIES} per file | Max files/cycle: {MAX_FILES_PER_CYCLE}\nSuperwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}\n{'=' * 60}",
+        flush=True,
+    )
 
     state = load_state()
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
-    print(f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed", flush=True)
+    print(
+        f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed",
+        flush=True,
+    )
 
     if statuses.count("failed_permanent") > 0:
         print("♻️  Scanning for late-arriving Superwhisper results to salvage failed_permanent entries...", flush=True)
@@ -122,7 +136,10 @@ def main():
 
     print("📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)
-    print(f"Found {len(transcript_index)} existing transcripts\n\n🔄 Starting scan loop (every {SCAN_INTERVAL}s)...\n", flush=True)
+    print(
+        f"Found {len(transcript_index)} existing transcripts\n\n🔄 Starting scan loop (every {SCAN_INTERVAL}s)...\n",
+        flush=True,
+    )
 
     for cycle in itertools.count(1):
         try:

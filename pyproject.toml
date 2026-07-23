@@ -73,6 +73,11 @@ select = [
 ]
 ignore = [
     "E501",
+    # UP017 prefers `datetime.UTC` over `timezone.utc`, but the codebase imports
+    # `from datetime import datetime` (the class) throughout, which makes
+    # `datetime.UTC` resolve to a class attribute that doesn't exist. Using
+    # `timezone.utc` is the only clean option with this import style.
+    "UP017",
 ]
 
 [tool.ruff.lint.pydocstyle]

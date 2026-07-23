@@ -48,7 +48,9 @@ all_dates = sorted({d for src in (audio_by_date, by_date, fail_by_date) for d in
 
 # Print table — one column per category, plus UNKNOWN and Failed
 cat_cols = CATEGORIES + ["UNKNOWN"]
-header = f"| {'Date':<12} | {'Audio':>5} |" + "".join(f" {c:>9} |" for c in cat_cols) + f" {'Failed':>6} | {'Coverage':>8} |"
+header = (
+    f"| {'Date':<12} | {'Audio':>5} |" + "".join(f" {c:>9} |" for c in cat_cols) + f" {'Failed':>6} | {'Coverage':>8} |"
+)
 print(header)
 print(f"|{'-' * 14}|{'-' * 7}" + "".join(f"{'-' * 11}" for _ in cat_cols) + f"|{'-' * 8}|{'-' * 10}|")
 
@@ -66,11 +68,19 @@ for date in all_dates:
         totals[c] += counts[c]
     total_failed += failed
     total_audio += audio or 0
-    row = f"| {date:<12} | {audio or '?':>5} |" + "".join(f" {counts[c]:>9} |" for c in cat_cols) + f" {failed:>6} | {coverage:>8} |"
+    row = (
+        f"| {date:<12} | {audio or '?':>5} |"
+        + "".join(f" {counts[c]:>9} |" for c in cat_cols)
+        + f" {failed:>6} | {coverage:>8} |"
+    )
     print(row)
 
 print(f"|{'-' * 14}|{'-' * 7}" + "".join(f"{'-' * 11}" for _ in cat_cols) + f"|{'-' * 8}|{'-' * 10}|")
-totals_row = f"| {'TOTAL':<12} | {total_audio:>5} |" + "".join(f" {totals[c]:>9} |" for c in cat_cols) + f" {total_failed:>6} | {'':>8} |"
+totals_row = (
+    f"| {'TOTAL':<12} | {total_audio:>5} |"
+    + "".join(f" {totals[c]:>9} |" for c in cat_cols)
+    + f" {total_failed:>6} | {'':>8} |"
+)
 print(totals_row)
 
 print(f"\n=== UNTRACKED AUDIO (in folder, not in state): {sum(len(v) for v in untracked.values())} files ===")

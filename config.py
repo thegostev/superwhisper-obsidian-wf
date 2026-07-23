@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 
-def find_obsidian_base(start: Path = Path(__file__).resolve()) -> Path:
+def find_obsidian_base(start: Path | None = None) -> Path:
     """Return the path *before* the enclosing 'Obsidian' folder.
 
     This script lives inside the Obsidian vault tree, so we walk up from its own
@@ -30,6 +30,7 @@ def find_obsidian_base(start: Path = Path(__file__).resolve()) -> Path:
     if env_override:
         return Path(env_override).expanduser()
 
+    start = start or Path(__file__).resolve()
     for parent in start.parents:
         if parent.name == "Obsidian":
             return parent.parent
@@ -86,7 +87,9 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
 
     cfg["watch_folder"] = resolve_path(cfg["watch_folder"])
     cfg["state_file"] = resolve_path(cfg.get("state_file", "~/.meeting_transcriber_state.json"))
-    cfg["superwhisper_recordings_dir"] = resolve_path(cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings"))
+    cfg["superwhisper_recordings_dir"] = resolve_path(
+        cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")
+    )
     cfg["folders"] = {cat: resolve_path(p) for cat, p in cfg.get("folders", {}).items()}
 
     return cfg

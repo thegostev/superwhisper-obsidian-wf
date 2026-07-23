@@ -8,7 +8,6 @@ category folder with the correct timestamp prefix.
 import json
 import os
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -127,23 +126,38 @@ def test_picks_latest_stub_when_multiple_match(recordings_dir, state_with_failed
     not the abandoned stub.
     """
     # Abandoned stub — oldest
-    _write_stub(recordings_dir, "1784722997", {
-        "datetime": "2026-07-22T12:23:17",
-        "duration": 0,
-        "processingTime": 0,
-    }, mtime_offset=-100.0)
+    _write_stub(
+        recordings_dir,
+        "1784722997",
+        {
+            "datetime": "2026-07-22T12:23:17",
+            "duration": 0,
+            "processingTime": 0,
+        },
+        mtime_offset=-100.0,
+    )
     # Completed stub 1
-    _write_stub(recordings_dir, "1784723046", {
-        "datetime": "2026-07-22T12:24:06",
-        "duration": 1299000,
-        "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: First completion\n\nbody A",
-    }, mtime_offset=-50.0)
+    _write_stub(
+        recordings_dir,
+        "1784723046",
+        {
+            "datetime": "2026-07-22T12:24:06",
+            "duration": 1299000,
+            "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: First completion\n\nbody A",
+        },
+        mtime_offset=-50.0,
+    )
     # Completed stub 2 — newest, should win
-    _write_stub(recordings_dir, "1784723106", {
-        "datetime": "2026-07-22T12:25:06",
-        "duration": 1299000,
-        "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: Second completion\n\nbody B",
-    }, mtime_offset=0.0)
+    _write_stub(
+        recordings_dir,
+        "1784723106",
+        {
+            "datetime": "2026-07-22T12:25:06",
+            "duration": 1299000,
+            "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: Second completion\n\nbody B",
+        },
+        mtime_offset=0.0,
+    )
 
     out_dir = tmp_path / "vault"
     out_dir.mkdir()
