@@ -27,6 +27,7 @@ from pipeline import (
     is_file_stable,
     load_state,
     process_audio,
+    recover_failed_permanent,
     save_state,
 )
 
@@ -107,7 +108,17 @@ def main():
 
     state = load_state()
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
-    print(f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed\n📚 Building transcript index...", flush=True)
+    print(f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed", flush=True)
+
+    if statuses.count("failed_permanent") > 0:
+        print("♻️  Scanning for late-arriving Superwhisper results to salvage failed_permanent entries...", flush=True)
+        recovered = recover_failed_permanent(state)
+        if recovered:
+            print(f"   ♻️  Recovered {recovered} analysis file(s) from completed Superwhisper stubs", flush=True)
+        else:
+            print("   — no salvageable stubs found", flush=True)
+
+    print("📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)
     print(f"Found {len(transcript_index)} existing transcripts\n\n🔄 Starting scan loop (every {SCAN_INTERVAL}s)...\n", flush=True)
 

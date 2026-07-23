@@ -105,6 +105,42 @@ def test_retries_when_transcription_done_but_no_llm_pass(recordings_dir):
             wait_for_superwhisper_result("foo.m4a", since=since)
 
 
+def test_does_not_fast_fail_while_llm_pass_is_in_flight(recordings_dir):
+    """languageModelProcessingTime present (LLM pass started) but llmResult not yet written.
+
+    Reproduces the July 22 bug: a 21-minute meeting took ~23s of LLM inference. The old
+    stability check (5 polls × 3s = 15s) fast-failed mid-inference, then retried by
+    re-opening the file, which interrupted the in-flight pass and created a new stub.
+    The daemon marked the file failed_permanent despite Superwhisper eventually writing
+    a valid llmResult. With the fix, the poller must keep waiting until the LLM pass
+    finishes and writes llmResult (or the deadline hits).
+    """
+    # meta.json stable (mtime in the past), no llmResult, but LLM pass has started.
+    meta = {
+        "processingTime": 0,
+        "languageModelProcessingTime": 5000,  # LLM pass in flight
+        "duration": 1299000,
+    }
+    _write_recording(recordings_dir, "444", -10.0, meta)  # mtime 10s ago, won't change
+    since = time.time() - 11
+
+    # Poll twice the stability threshold — must NOT raise. Patch deadline so we don't
+    # wait the full SUPERWHISPER_TIMEOUT (5s in the fixture).
+    call_count = {"n": 0}
+
+    def fake_sleep(_):
+        call_count["n"] += 1
+
+    # Short timeout so the test fails fast if the bug regresses (would raise mid-poll).
+    with patch("time.sleep", fake_sleep), patch("pipeline.RECORDING_STABILITY_POLLS", 2), patch(
+        "pipeline.SUPERWHISPER_TIMEOUT", 0.2
+    ):
+        with pytest.raises(TimeoutError, match="did not return"):
+            wait_for_superwhisper_result("foo.m4a", since=since)
+    # If the bug regressed, we'd have raised "empty recording stub" TimeoutError before
+    # hitting the deadline. The "did not return" match confirms we waited the full window.
+
+
 # --- wait_for_superwhisper_result: timeout still works for in-progress ------
 
 def test_timeout_when_recording_never_appears(recordings_dir, monkeypatch):

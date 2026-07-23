@@ -17,6 +17,15 @@ start() {
         return 1
     fi
 
+    # Refuse to start a second daemon if launchd already has the service loaded —
+    # the two would race for the same files and corrupt state.
+    if launchctl list 2>/dev/null | grep -q "com.alex.transcriber"; then
+        echo "Refusing to start: launchd service com.alex.transcriber is loaded."
+        echo "Use 'launchctl unload ~/Library/LaunchAgents/com.alex.transcriber.plist' first,"
+        echo "or use launchctl to manage the service instead of this script."
+        return 1
+    fi
+
     [ -f "$ENV_FILE" ] && set -a && source "$ENV_FILE" && set +a
 
     cd "$SCRIPT_DIR"
@@ -69,6 +78,11 @@ catchup_preview() {
     "$SCRIPT_DIR/venv/bin/python3" "$SCRIPT_DIR/ondemand_transcribe.py" --catchup $DAYS --dry-run
 }
 
+recover_failed() {
+    cd "$SCRIPT_DIR"
+    "$SCRIPT_DIR/venv/bin/python3" "$SCRIPT_DIR/ondemand_transcribe.py" --recover-failed "$@"
+}
+
 reprocess() {
     DAYS=${1:-7}
     cd "$SCRIPT_DIR"
@@ -98,12 +112,13 @@ case "${1:-start}" in
     restart) stop; sleep 1; start ;;
     catchup) catchup "$2" ;;
     catchup-preview) catchup_preview "$2" ;;
+    recover-failed) recover_failed "${@:2}" ;;
     reprocess) reprocess "$2" ;;
     fix-analysis) fix_analysis "${@:2}" ;;
     fix-categories) fix_categories "${@:2}" ;;
     fix-all) fix_all "${@:2}" ;;
     *)
-        echo "Usage: $0 {start|stop|status|logs|restart|catchup|catchup-preview|reprocess|fix-analysis|fix-categories|fix-all}"
+        echo "Usage: $0 {start|stop|status|logs|restart|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all}"
         echo "Service Management:"
         echo "  start          - Launch auto-transcriber in background (default)"
         echo "  stop           - Stop the running transcriber"
@@ -115,6 +130,7 @@ case "${1:-start}" in
         echo "  catchup [days]         - Process last N days (default: 7)"
         echo "  catchup-preview [days] - Preview what would be processed (default: 7)"
         echo "  reprocess [days]       - Catchup + regenerate missing analysis (default: 7)"
+        echo "  recover-failed         - Salvage analysis for failed_permanent entries from completed Superwhisper stubs"
         echo ""
         echo "Maintenance Operations:"
         echo "  fix-analysis           - Generate missing analysis files"

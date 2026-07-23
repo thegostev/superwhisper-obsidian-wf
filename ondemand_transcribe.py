@@ -18,6 +18,7 @@ from pipeline import (
     is_file_stable,
     load_state,
     process_audio,
+    recover_failed_permanent,
 )
 
 
@@ -103,15 +104,31 @@ Examples:
         const=7,
         help="Auto-discover date folders from last N days (default: 7)",
     )
+    parser.add_argument(
+        "--recover-failed",
+        action="store_true",
+        help="Scan Superwhisper recordings for late-arriving llmResult to salvage failed_permanent entries, then exit.",
+    )
 
     args = parser.parse_args()
 
-    if args.catchup is None:
+    if args.catchup is None and not args.recover_failed:
         parser.print_help()
-        print("\n⚠️  Please specify --catchup [DAYS] to auto-discover folders.")
+        print("\n⚠️  Please specify --catchup [DAYS] or --recover-failed.")
         sys.exit(1)
 
     print(f"{'=' * 60}\n📼 On-Demand Audio Transcription & Analysis (Superwhisper)\n{'=' * 60}")
+
+    if args.recover_failed:
+        state = load_state()
+        failed = sum(1 for v in state.get("processed", {}).values() if v.get("status") == "failed_permanent")
+        print(f"\n♻️  Recovery scan: {failed} failed_permanent entries in state", flush=True)
+        if not args.dry_run:
+            recovered = recover_failed_permanent(state)
+            print(f"\n{'=' * 60}\n   ♻️  Recovered: {recovered}\n{'=' * 60}")
+        else:
+            print("⚠️  DRY RUN — would run recovery scan; no files will be modified")
+        return
 
     scan_subfolders = [Path(p).name for p in discover_recent_folders(WATCH_FOLDER, days_back=args.catchup)]
     print(f"\n🔄 Catchup mode: scanning last {args.catchup} days\n📁 Target subfolders: {', '.join(scan_subfolders)}", flush=True)

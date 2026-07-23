@@ -61,3 +61,32 @@ def test_filename_fallback_is_local_time(tmp_path, monkeypatch):
     result = get_audio_timestamp(str(audio))
     formatted = result.strftime("%y-%m-%d %H.%M")
     assert formatted == "26-07-20 16.32", f"Filename parse should give 16.32, got {formatted}"
+
+
+def test_mdls_naive_datetime_is_treated_as_utc(tmp_path, monkeypatch):
+    """When iCloud sync is incomplete, mdls can return a naive datetime (no +0000).
+
+    The value is still UTC. Without assuming UTC, the raw 12:00:36 would be returned
+    as local time, producing filename "26-07-21 12.00" instead of "26-07-21 14.00" CEST.
+    This reproduces the July 21 recording bug where the daemon saved the analysis with
+    a 2-hour-shifted timestamp prefix.
+    """
+    audio = tmp_path / "2026-07-21" / "14-00-36.m4a"
+    audio.parent.mkdir()
+    audio.write_text("x")
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode = 0
+            stdout = "2026-07-21 12:00:36"  # naive — no +0000 suffix
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = get_audio_timestamp(str(audio))
+    formatted = result.strftime("%y-%m-%d %H.%M")
+    assert formatted == "26-07-21 14.00", (
+        f"Naive mdls output must be treated as UTC and converted to local. "
+        f"Expected 26-07-21 14.00 (CEST), got {formatted}."
+    )

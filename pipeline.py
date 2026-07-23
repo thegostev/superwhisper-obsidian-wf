@@ -7,7 +7,7 @@ import json
 import re
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import (
@@ -39,7 +39,7 @@ TIMESTAMP_KEY_LENGTH = 14  # leading chars of a filename forming the "YY-MM-DD H
 MDLS_TIMEOUT_SECONDS = 5  # macOS metadata lookup
 MODE_SWITCH_SETTLE_SECONDS = 1.0  # let Superwhisper apply the mode before handoff
 FILE_STABILITY_WAIT_SECONDS = 2  # iCloud sync settle check
-RECORDING_STABILITY_POLLS = 5  # consecutive polls with unchanged mtime → recording is done
+RECORDING_STABILITY_POLLS = 10  # consecutive polls with unchanged mtime → recording is done
 
 
 class FatalAPIError(Exception):
@@ -82,9 +82,14 @@ def get_audio_timestamp(audio_path):
             for fmt in ["%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"]:
                 try:
                     parsed = datetime.strptime(raw, fmt)
-                    # mdls returns UTC; convert to local time to match JPR folder naming.
-                    # astimezone() with no arg converts to the system local timezone.
-                    return parsed.astimezone() if parsed.tzinfo else parsed
+                    # mdls returns kMDItemContentCreationDate in UTC. When the suffix is
+                    # present (+0000) astimezone() converts to local. When iCloud sync
+                    # is incomplete mdls can return a naive datetime — assume UTC rather
+                    # than returning raw (which would silently shift the output filename
+                    # by the UTC offset, e.g. 12:00 UTC → "12.00" instead of "14.00" CEST).
+                    if parsed.tzinfo:
+                        return parsed.astimezone()
+                    return parsed.replace(tzinfo=timezone.utc).astimezone()
                 except ValueError:
                     pass
     except Exception:
@@ -195,6 +200,8 @@ def _read_recording_meta(path: Path) -> dict | None:
     Returns None if meta.json is missing or unreadable. Otherwise a dict with:
       - llm_result: str | None (the Custom Mode LLM output, may be empty/absent)
       - has_transcript: bool (True if result/rawResult present and non-empty)
+      - processing_time: int | None (Superwhisper's processingTime field; 0 = stub)
+      - llm_processing_time: int | None (languageModelProcessingTime; None = LLM pass not started/finished)
     """
     try:
         meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
@@ -202,7 +209,14 @@ def _read_recording_meta(path: Path) -> dict | None:
         return None
     llm = meta.get("llmResult")
     raw = meta.get("result") or meta.get("rawResult")
-    return {"llm_result": str(llm) if llm is not None else None, "has_transcript": bool(raw or raw == "") and bool(meta.get("processingTime") is not None or raw)}
+    pt = meta.get("processingTime")
+    lpt = meta.get("languageModelProcessingTime")
+    return {
+        "llm_result": str(llm) if llm is not None else None,
+        "has_transcript": bool(raw or raw == "") and bool(pt is not None or raw),
+        "processing_time": int(pt) if isinstance(pt, (int, float)) else None,
+        "llm_processing_time": int(lpt) if isinstance(lpt, (int, float)) else None,
+    }
 
 
 def wait_for_superwhisper_result(file_path: str, since: float) -> str:
@@ -264,6 +278,19 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
             # the file later (when Superwhisper is idle) processes it correctly. Raise
             # TimeoutError so process_audio records failed_retry and re-queues on the next cycle.
             # Stability check: same mtime across RECORDING_STABILITY_POLLS consecutive polls.
+            #
+            # Important: do NOT fast-fail while the LLM pass is in flight. Superwhisper writes
+            # languageModelProcessingTime into meta.json when the LLM pass starts and does not
+            # touch mtime again until it writes llmResult — which can take 20-30s for a long
+            # meeting. The previous logic (5 polls × 3s = 15s) fast-failed mid-inference,
+            # declared the stub abandoned, and retried by re-opening the file, which interrupted
+            # the in-flight LLM pass and created a new stub. Treat languageModelProcessingTime
+            # present (even with processingTime still 0) as "still processing" and keep waiting.
+            if info["llm_processing_time"] is not None:
+                # LLM pass is in progress — reset stability counter, do not fast-fail.
+                stability.pop(entry.name, None)
+                continue
+
             prev = stability.get(entry.name)
             if prev is None:
                 stability[entry.name] = (mtime, 1)
@@ -279,8 +306,8 @@ def wait_for_superwhisper_result(file_path: str, since: float) -> str:
                 # Transient: re-opening the audio file on a later cycle should work.
                 raise TimeoutError(
                     f"Superwhisper created an empty recording stub for {Path(file_path).name} "
-                    f"(meta.json stable for {count} polls, no llmResult). The file-open likely "
-                    f"arrived while Superwhisper was busy with a prior handoff. "
+                    f"(meta.json stable for {count} polls, no llmResult, no LLM pass started). "
+                    f"The file-open likely arrived while Superwhisper was busy with a prior handoff. "
                     f"Will retry on the next scan cycle. Recording dir: {entry.name}"
                 )
 
@@ -358,3 +385,126 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         print("   " + (f"🛑 Permanently failed after {na} attempts" if na >= MAX_RETRIES else f"🔄 Will retry on next cycle (attempt {na}/{MAX_RETRIES})"), flush=True)
     save_state(state)
     return False, None
+
+
+def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
+    """Salvage analysis from failed_permanent entries whose Superwhisper stubs later completed.
+
+    The stability fast-fail can mark a file failed_permanent while Superwhisper is still
+    writing the LLM result. The stubs eventually get a valid llmResult; without recovery,
+    that work is silently lost. This scans the recordings dir for stubs newer than
+    max_age_days whose meta.json has a CATEGORY: contract, matches each against a
+    failed_permanent entry by audio timestamp + duration, and — if matched — parses,
+    saves the .md, and flips the state entry to complete.
+
+    Matching is by recording timestamp (YY-MM-DD HH.MM): a candidate stub matches a
+    failed entry when the stub's audio duration brackets the entry's recording time, or
+    (fallback) when the stub's recording-start datetime is within max_age_days and the
+    entry has no other match. Returns the number of entries recovered.
+    """
+    recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
+    if not recordings_dir.exists():
+        return 0
+
+    processed = state.get("processed", {})
+    failed = {
+        path: entry
+        for path, entry in processed.items()
+        if entry.get("status") == "failed_permanent"
+    }
+    if not failed:
+        return 0
+
+    cutoff = time.time() - max_age_days * 86400
+    candidates: list[tuple[float, datetime, int, str]] = []  # (mtime, rec_start_utc, duration_ms, llmResult)
+    try:
+        for entry in recordings_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            if mtime < cutoff:
+                continue
+            info = _read_recording_meta(entry)
+            if not info or not info["llm_result"]:
+                continue
+            text = info["llm_result"]
+            if CATEGORY_HEADER not in text and CATEGORY_SECTION_MARKER not in text:
+                continue
+            meta = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
+            try:
+                rec_start = datetime.fromisoformat(str(meta.get("datetime")).replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                rec_start = datetime.fromtimestamp(mtime, tz=timezone.utc)
+            duration_ms = int(meta.get("duration") or 0)
+            candidates.append((mtime, rec_start, duration_ms, text))
+    except OSError as e:
+        print(f"⚠️  Recovery scan: could not list recordings dir: {e}", flush=True)
+        return 0
+
+    if not candidates:
+        return 0
+
+    recovered = 0
+    for path, entry in failed.items():
+        # Failed entries don't carry a `timestamp` field (the success path sets it).
+        # Derive it from the audio file path via get_audio_timestamp — fall back to
+        # the state's processed_at if the file is gone.
+        audio_ts = None
+        if entry.get("timestamp"):
+            try:
+                audio_ts = datetime.fromisoformat(entry["timestamp"])
+            except ValueError:
+                audio_ts = None
+        if audio_ts is None and Path(path).exists():
+            audio_ts = get_audio_timestamp(path)
+        if audio_ts is None:
+            try:
+                audio_ts = datetime.fromisoformat(entry["processed_at"])
+            except (ValueError, KeyError):
+                continue
+        # State timestamps come from get_audio_timestamp() which returns LOCAL time
+        # (to match JPR folder naming). Treat naive as local, not UTC.
+        if audio_ts.tzinfo is None:
+            audio_ts = audio_ts.astimezone()
+        audio_utc = audio_ts.astimezone(timezone.utc)
+
+        # Match: stub's datetime (UTC) is within [audio_start - 5min, audio_start + duration + 30min].
+        # The wide window covers JPR's recording start → stop → SW handoff → LLM pass start.
+        best = None
+        for mtime, rec_start, duration_ms, text in candidates:
+            if rec_start.tzinfo is None:
+                rec_start = rec_start.replace(tzinfo=timezone.utc)
+            delta = (rec_start - audio_utc).total_seconds()
+            upper = duration_ms / 1000 + 1800  # duration + 30min slack for handoff/queue
+            if -300 <= delta <= upper:
+                if best is None or mtime > best[0]:
+                    best = (mtime, rec_start, duration_ms, text)
+        if best is None:
+            continue
+
+        _, _, _, text = best
+        try:
+            category, ai_filename, analysis = parse_superwhisper_output(text)
+        except PermanentFileError:
+            continue
+
+        fname = f"{audio_ts.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
+        if not (output_path := save_output(category, fname, analysis)):
+            continue
+        print(f"   ♻️  Recovered analysis for {Path(path).name}: {output_path}", flush=True)
+        processed[path] = {
+            "status": "complete",
+            "category": category,
+            "timestamp": audio_ts.isoformat(),
+            "processed_at": datetime.now().isoformat(),
+            "attempts": entry.get("attempts", 0) + 1,
+            "note": "recovered from late-arriving Superwhisper llmResult",
+        }
+        recovered += 1
+
+    if recovered:
+        save_state(state)
+    return recovered
