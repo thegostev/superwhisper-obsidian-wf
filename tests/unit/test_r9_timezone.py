@@ -25,6 +25,7 @@ def _fake_mdls_empty(*args, **kwargs):
 def _fake_mdls_utc(raw_utc: str):
     def _impl(*args, **kwargs):
         return type("R", (), {"returncode": 0, "stdout": raw_utc, "stderr": ""})()
+
     return _impl
 
 

@@ -106,15 +106,11 @@ def _check_state_completeness(
                 }
             )
         else:
-            missing_md.append(
-                {"audio_path": audio_path, "timestamp_key": key, "expected_category": category}
-            )
+            missing_md.append({"audio_path": audio_path, "timestamp_key": key, "expected_category": category})
     return missing_md, wrong_folder_md, state_complete_count, state_claims_by_key
 
 
-def _find_orphans(
-    folders: dict[str, str], state_claims_by_key: set[str]
-) -> tuple[list, set[Path]]:
+def _find_orphans(folders: dict[str, str], state_claims_by_key: set[str]) -> tuple[list, set[Path]]:
     """Find .md files in vault folders that no state entry claims.
 
     Returns (orphan_md, seen_paths). `seen_paths` is the dedup set of all .md files
@@ -141,9 +137,7 @@ def _find_orphans(
     return orphan_md, seen_paths
 
 
-def _find_untracked_audio(
-    watch_folder: str, scan_days_back: int, processed_paths: set[str]
-) -> list[str]:
+def _find_untracked_audio(watch_folder: str, scan_days_back: int, processed_paths: set[str]) -> list[str]:
     """Find .m4a files in recent watch-folder date dirs not in state["processed"]."""
     untracked_audio: list[str] = []
     for folder_path in discover_recent_folders(watch_folder, scan_days_back):
@@ -237,17 +231,13 @@ def print_report(report: dict, file=sys.stdout) -> None:
         lambda i: i,
     )
 
-    issues = sum(
-        len(report[k]) for k in ("missing_md", "wrong_folder_md", "orphan_md", "untracked_audio")
-    )
+    issues = sum(len(report[k]) for k in ("missing_md", "wrong_folder_md", "orphan_md", "untracked_audio"))
     print(f"\n{'=' * 50}", file=file)
     print("✅ No issues found." if issues == 0 else f"⚠️  {issues} issue(s) found.", file=file)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Verify pipeline integrity: state vs vault vs watch folder."
-    )
+    parser = argparse.ArgumentParser(description="Verify pipeline integrity: state vs vault vs watch folder.")
     parser.add_argument("--watch-folder", default=WATCH_FOLDER, help="JPR root to scan")
     parser.add_argument(
         "--scan-days-back",

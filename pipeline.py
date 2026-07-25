@@ -295,9 +295,7 @@ def _read_recording_meta(path: Path) -> dict[str, str | bool | int | None] | Non
 def get_audio_duration_ms(audio_path: str) -> int | None:
     """Get audio duration in milliseconds via macOS `afinfo`. Returns None on failure."""
     try:
-        result = subprocess.run(
-            ["afinfo", audio_path], capture_output=True, text=True, timeout=AFINFO_TIMEOUT_SECONDS
-        )
+        result = subprocess.run(["afinfo", audio_path], capture_output=True, text=True, timeout=AFINFO_TIMEOUT_SECONDS)
         if result.returncode != 0:
             return None
         for line in result.stdout.splitlines():
@@ -322,9 +320,7 @@ def _is_consumed(recording_dir: Path) -> bool:
 def _mark_consumed(recording_dir: Path) -> None:
     """Write a sentinel file so a later retry does not re-match this recording."""
     try:
-        (recording_dir / CONSUMED_SENTINEL).write_text(
-            f"consumed at {_now_local().isoformat()}\n", encoding="utf-8"
-        )
+        (recording_dir / CONSUMED_SENTINEL).write_text(f"consumed at {_now_local().isoformat()}\n", encoding="utf-8")
     except OSError as e:
         print(f"   ⚠️  Could not mark {recording_dir.name} as consumed: {e}", flush=True)
 
@@ -605,9 +601,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         switch_superwhisper_mode()
         handoff_to_superwhisper(file_path)
         category, ai_filename, analysis = parse_superwhisper_output(
-            wait_for_superwhisper_result(
-                file_path, since=since, expected_duration_ms=expected_duration_ms
-            )
+            wait_for_superwhisper_result(file_path, since=since, expected_duration_ms=expected_duration_ms)
         )
 
         fname = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
@@ -808,7 +802,9 @@ def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
         except PermanentFileError:
             continue
 
-        fname = f"{audio_ts_fallback.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
+        fname = (
+            f"{audio_ts_fallback.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
+        )
         if not (output_path := save_output(category, fname, analysis)):
             continue
         note = (
