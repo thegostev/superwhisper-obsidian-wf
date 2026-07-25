@@ -55,10 +55,11 @@ def _write_stub(recordings_dir: Path, name: str, meta: dict, mtime_offset: float
 
 def test_recover_when_stub_has_valid_llmresult(recordings_dir, state_with_failed_entry, tmp_path, monkeypatch):
     """A failed_permanent entry is salvaged when a matching stub has a CATEGORY: llmResult."""
-    # Stub datetime is 2026-07-22T12:24:06 UTC = 14:24:06 CEST — within the audio's
+    # Stub datetime is 2026-07-22T14:24:06 Europe/Oslo (= 12:24:06 UTC) — ~24min after
+    # the audio recording started (13:59:43 Europe/Oslo), within the legacy
     # [recording_start - 5min, recording_start + duration + 30min] window.
     meta = {
-        "datetime": "2026-07-22T12:24:06",
+        "datetime": "2026-07-22T14:24:06",
         "duration": 1299000,
         "processingTime": 0,
         "languageModelProcessingTime": 23159,
@@ -93,7 +94,7 @@ def test_no_recovery_when_no_matching_stub(recordings_dir, state_with_failed_ent
     """If no stub's datetime falls in the audio's window, nothing is recovered."""
     # Stub datetime is days outside the audio's window.
     meta = {
-        "datetime": "2026-07-01T12:24:06",
+        "datetime": "2026-07-01T14:24:06",
         "duration": 1299000,
         "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: unrelated\n\nbody",
     }
@@ -105,7 +106,7 @@ def test_no_recovery_when_no_matching_stub(recordings_dir, state_with_failed_ent
 
 def test_no_recovery_when_stub_llmresult_missing(recordings_dir, state_with_failed_entry):
     """A stub with no llmResult (genuine empty stub) is not a recovery candidate."""
-    meta = {"datetime": "2026-07-22T12:24:06", "duration": 0, "processingTime": 0}
+    meta = {"datetime": "2026-07-22T14:24:06", "duration": 0, "processingTime": 0}
     _write_stub(recordings_dir, "1784722997", meta)
     assert recover_failed_permanent(state_with_failed_entry) == 0
 
@@ -124,13 +125,17 @@ def test_picks_latest_stub_when_multiple_match(recordings_dir, state_with_failed
     Reproduces the July 22 scenario: three stubs were created (one abandoned, two
     completed). The recovery must pick one of the completed stubs (the latest mtime),
     not the abandoned stub.
+
+    Stub datetimes are Europe/Oslo local (matches real Superwhisper meta.json, which
+    is naive ISO written in Mac-local time). All three stubs fall in the audio's
+    [recording_start - 5min, recording_start + duration + 30min] window; mtime decides.
     """
-    # Abandoned stub — oldest
+    # Abandoned stub — oldest mtime, but datetime still in window
     _write_stub(
         recordings_dir,
         "1784722997",
         {
-            "datetime": "2026-07-22T12:23:17",
+            "datetime": "2026-07-22T14:23:17",
             "duration": 0,
             "processingTime": 0,
         },
@@ -141,7 +146,7 @@ def test_picks_latest_stub_when_multiple_match(recordings_dir, state_with_failed
         recordings_dir,
         "1784723046",
         {
-            "datetime": "2026-07-22T12:24:06",
+            "datetime": "2026-07-22T14:24:06",
             "duration": 1299000,
             "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: First completion\n\nbody A",
         },
@@ -152,7 +157,7 @@ def test_picks_latest_stub_when_multiple_match(recordings_dir, state_with_failed
         recordings_dir,
         "1784723106",
         {
-            "datetime": "2026-07-22T12:25:06",
+            "datetime": "2026-07-22T14:25:06",
             "duration": 1299000,
             "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: Second completion\n\nbody B",
         },

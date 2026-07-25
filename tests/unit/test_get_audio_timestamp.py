@@ -1,22 +1,22 @@
 """Unit tests for get_audio_timestamp().
 
 The timestamp drives both the output filename (YY-MM-DD HH.MM - Title.md) and the
-dedup index key. It must be in LOCAL time to match the Just Press Record folder/filename
-convention (which is local) and the user's meeting-time reference. mdls returns
-kMDItemContentCreationDate in UTC with a +0000 offset; the function must convert to
-local time before returning so the output filename matches the JPR folder time.
+dedup index key. It must be in Europe/Oslo wall-clock time (naive, tzinfo=None) to
+match the user's meeting-time reference. mdls returns kMDItemContentCreationDate in
+UTC with a +0000 offset; the function converts to Europe/Oslo. The filename fallback
+parses the JPR name as CET (UTC+1 fixed — JPR ignores Norway's DST) and converts to
+Europe/Oslo, so a "16-32" Jul filename → 17:32 CEST, not 16:32.
 """
 
 from pipeline import get_audio_timestamp
 
 
 def test_mdls_utc_is_converted_to_local_time(tmp_path, monkeypatch):
-    """mdls returns UTC; the formatted output must match the JPR local folder time.
+    """mdls returns UTC; the formatted output must match Europe/Oslo wall-clock time.
 
-    JPR names files in local time: 2026-07-20/16-32-02.m4a = 16:32 CEST.
     mdls returns kMDItemContentCreationDate as UTC: 2026-07-20 14:32:02 +0000.
-    Without conversion, the output filename is 26-07-20 14.32 (UTC) instead of
-    26-07-20 16.32 (local) — a 2-hour discrepancy for CEST.
+    In July (CEST = UTC+2) the Europe/Oslo wall-clock is 16:32. Without conversion
+    the output filename would be 26-07-20 14.32 (UTC) — a 2-hour discrepancy.
     """
     audio = tmp_path / "16-32-02.m4a"
     audio.write_text("x")
@@ -35,13 +35,19 @@ def test_mdls_utc_is_converted_to_local_time(tmp_path, monkeypatch):
     result = get_audio_timestamp(str(audio))
     formatted = result.strftime("%y-%m-%d %H.%M")
     assert formatted == "26-07-20 16.32", (
-        f"Expected local time 26-07-20 16.32 (matches JPR folder), got {formatted}. "
-        f"mdls returned UTC 14:32 +0000 which must be converted to local 16:32 CEST."
+        f"Expected Europe/Oslo 26-07-20 16.32 (CEST), got {formatted}. "
+        f"mdls returned UTC 14:32 +0000 which must be converted to 16:32 CEST."
     )
 
 
-def test_filename_fallback_is_local_time(tmp_path, monkeypatch):
-    """When mdls fails, the folder/filename parse should give local time directly."""
+def test_filename_fallback_uses_cet_fixed_not_dst(tmp_path, monkeypatch):
+    """When mdls fails, the JPR folder/filename parse uses CET (UTC+1) fixed.
+
+    JPR uses CET year-round — in July, when local is CEST (UTC+2), a "16-32" filename
+    = 16:32 CET = 17:32 CEST. The output filename must reflect the user's local
+    meeting time (17.32), not the JPR-stored CET value (16.32). This is the R9 fix
+    documented in memory: reference-jpr-timezone.md.
+    """
     audio = tmp_path / "2026-07-20" / "16-32-02.m4a"
     audio.parent.mkdir()
     audio.write_text("x")
@@ -59,7 +65,10 @@ def test_filename_fallback_is_local_time(tmp_path, monkeypatch):
 
     result = get_audio_timestamp(str(audio))
     formatted = result.strftime("%y-%m-%d %H.%M")
-    assert formatted == "26-07-20 16.32", f"Filename parse should give 16.32, got {formatted}"
+    assert formatted == "26-07-20 17.32", (
+        f"JPR filename 16-32-02 is CET (UTC+1); in July local is CEST (UTC+2), "
+        f"so Europe/Oslo is 17.32. Got {formatted}."
+    )
 
 
 def test_mdls_naive_datetime_is_treated_as_utc(tmp_path, monkeypatch):

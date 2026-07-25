@@ -21,8 +21,10 @@ from config import (
     WATCH_FOLDER,
 )
 from pipeline import (
+    SALVAGE_PASS_EVERY_N_CYCLES,
     TIMESTAMP_FORMAT,
     FatalAPIError,
+    _now_local,
     build_transcript_index,
     discover_recent_folders,
     get_audio_timestamp,
@@ -55,7 +57,7 @@ def discover_audio_files(watch_folder, state, transcript_index):
                     "status": "complete",
                     "category": existing["category"],
                     "timestamp": timestamp.isoformat(),
-                    "processed_at": datetime.now().isoformat(),
+                    "processed_at": _now_local().isoformat(),
                     "attempts": 0,
                     "note": "found in transcript index",
                 }
@@ -81,11 +83,11 @@ def run_scan_cycle(state, transcript_index, cycle_number):
 
     if not new_files:
         if cycle_number % IDLE_HEARTBEAT_EVERY_N_CYCLES == 0:
-            print(f"[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - No new files", flush=True)
+            print(f"[Cycle {cycle_number}] {_now_local().strftime('%H:%M:%S')} - No new files", flush=True)
         return 0
 
     print(
-        f"\n[Cycle {cycle_number}] {datetime.now().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process",
+        f"\n[Cycle {cycle_number}] {_now_local().strftime('%H:%M:%S')} - Found {len(new_files)} file(s) to process",
         flush=True,
     )
 
@@ -143,6 +145,22 @@ def main():
 
     for cycle in itertools.count(1):
         try:
+            # R8: periodically re-scan for late-arriving Superwhisper stubs to salvage.
+            # Runs at startup (above) and every SALVAGE_PASS_EVERY_N_CYCLES cycles, so a
+            # stub that completes after daemon start is still recovered.
+            if cycle > 1 and (cycle % SALVAGE_PASS_EVERY_N_CYCLES) == 0:
+                failed_count = sum(
+                    1 for v in state.get("processed", {}).values() if v.get("status") == "failed_permanent"
+                )
+                if failed_count > 0:
+                    print(
+                        f"\n♻️  Periodic salvage pass (cycle {cycle}): {failed_count} failed_permanent entries to check",
+                        flush=True,
+                    )
+                    recovered = recover_failed_permanent(state)
+                    if recovered:
+                        print(f"   ♻️  Recovered {recovered} analysis file(s)", flush=True)
+
             run_scan_cycle(state, transcript_index, cycle)
         except FatalAPIError as e:
             print(f"\n🛑 FATAL: {e}\n   Unrecoverable error. Service stopping.", flush=True)
