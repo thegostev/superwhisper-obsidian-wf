@@ -441,9 +441,14 @@ def wait_for_superwhisper_result(
 
             # R3: duration-based correlation. Skip recordings whose duration doesn't
             # match the source audio within tolerance.
-            if expected_duration_ms and info["duration_ms"] and info["duration_ms"] > 0:
-                if abs(info["duration_ms"] - expected_duration_ms) > expected_duration_ms * DURATION_MATCH_TOLERANCE:
-                    continue
+            duration_ms = info["duration_ms"]
+            if (
+                expected_duration_ms
+                and isinstance(duration_ms, int)
+                and duration_ms > 0
+                and abs(duration_ms - expected_duration_ms) > expected_duration_ms * DURATION_MATCH_TOLERANCE
+            ):
+                continue
 
             raw_text = info["llm_result"]
             text = raw_text if isinstance(raw_text, str) else None
@@ -451,28 +456,18 @@ def wait_for_superwhisper_result(
                 # R5: require WRITE_STABILITY_POLLS consecutive polls with unchanged
                 # mtime AND unchanged llmResult byte length before returning. Catches
                 # mid-stream reads where Superwhisper is still appending to llmResult.
-                cur_size = len(text)
-                prev = write_stability.get(entry.name)
-                if prev is None:
-                    write_stability[entry.name] = (mtime, cur_size, 1)
-                    continue
-                prev_mtime, prev_size, count = prev
-                if mtime != prev_mtime or cur_size != prev_size:
-                    write_stability[entry.name] = (mtime, cur_size, 1)
-                    continue
-                count += 1
-                if count < WRITE_STABILITY_POLLS:
-                    write_stability[entry.name] = (mtime, cur_size, count)
+                stable_text = _check_write_stability(write_stability, entry, mtime, text)
+                if stable_text is None:
                     continue
                 # Stable — safe to return. R13: log dir + hash + bytes for post-hoc verification.
-                content_hash = hashlib.sha256(text[:200].encode("utf-8")).hexdigest()[:8]
+                content_hash = hashlib.sha256(stable_text[:200].encode("utf-8")).hexdigest()[:8]
                 print(
-                    f"   📄 Got result from: {entry.name} (bytes={len(text)}, hash={content_hash})",
+                    f"   📄 Got result from: {entry.name} (bytes={len(stable_text)}, hash={content_hash})",
                     flush=True,
                 )
                 # R4: mark this recording consumed so retries don't re-match it.
                 _mark_consumed(entry)
-                return text
+                return stable_text
 
             # Fast-fail case 1: LLM produced output but no CATEGORY: header = refusal.
             if text and not (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
@@ -487,7 +482,6 @@ def wait_for_superwhisper_result(
             # than it can process; the stub is never filled in. This is transient — re-opening
             # the file later (when Superwhisper is idle) processes it correctly. Raise
             # TimeoutError so process_audio records failed_retry and re-queues on the next cycle.
-            # Stability check: same mtime across `stability_polls` consecutive polls.
             #
             # Important: do NOT fast-fail while the LLM pass is in flight. Superwhisper writes
             # languageModelProcessingTime into meta.json when the LLM pass starts and does not
@@ -501,29 +495,71 @@ def wait_for_superwhisper_result(
                 stub_stability.pop(entry.name, None)
                 continue
 
-            prev = stub_stability.get(entry.name)
-            if prev is None:
-                stub_stability[entry.name] = (mtime, 1)
-                continue
-            prev_mtime, count = prev
-            if mtime != prev_mtime:
-                stub_stability[entry.name] = (mtime, 1)  # reset — file still being written
-                continue
-            count += 1
-            stub_stability[entry.name] = (mtime, count)
-            if count >= stability_polls:
-                # meta.json hasn't changed across N polls → Superwhisper dropped this stub.
-                # Transient: re-opening the audio file on a later cycle should work.
-                raise TimeoutError(
-                    f"Superwhisper created an empty recording stub for {Path(file_path).name} "
-                    f"(meta.json stable for {count} polls, no llmResult, no LLM pass started). "
-                    f"The file-open likely arrived while Superwhisper was busy with a prior handoff. "
-                    f"Will retry on the next scan cycle. Recording dir: {entry.name}"
-                )
+            _check_stub_abandoned(stub_stability, entry, mtime, stability_polls, file_path)
 
     raise TimeoutError(
         f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
     )
+
+
+def _check_write_stability(
+    write_stability: dict[str, tuple[float, int, int]],
+    entry: Path,
+    mtime: float,
+    text: str,
+) -> str | None:
+    """R5: require WRITE_STABILITY_POLLS consecutive polls with unchanged mtime AND
+    unchanged llmResult byte length before returning the text. Returns the text
+    once stable, None if still stabilizing (caller should `continue` the poll loop).
+    """
+    cur_size = len(text)
+    prev = write_stability.get(entry.name)
+    if prev is None:
+        write_stability[entry.name] = (mtime, cur_size, 1)
+        return None
+    prev_mtime, prev_size, count = prev
+    if mtime != prev_mtime or cur_size != prev_size:
+        write_stability[entry.name] = (mtime, cur_size, 1)
+        return None
+    count += 1
+    if count < WRITE_STABILITY_POLLS:
+        write_stability[entry.name] = (mtime, cur_size, count)
+        return None
+    return text
+
+
+def _check_stub_abandoned(
+    stub_stability: dict[str, tuple[float, int]],
+    entry: Path,
+    mtime: float,
+    stability_polls: int,
+    file_path: str,
+) -> None:
+    """Fast-fail case 2: empty stub whose meta.json mtime is stable across N polls.
+
+    Raises TimeoutError if the stub has been stable for `stability_polls` consecutive
+    polls (no llmResult, no LLM pass). Otherwise updates the stability tracker and
+    returns None — caller should `continue` the poll loop.
+    """
+    stub_prev = stub_stability.get(entry.name)
+    if stub_prev is None:
+        stub_stability[entry.name] = (mtime, 1)
+        return
+    prev_mtime, count = stub_prev
+    if mtime != prev_mtime:
+        stub_stability[entry.name] = (mtime, 1)  # reset — file still being written
+        return
+    count += 1
+    stub_stability[entry.name] = (mtime, count)
+    if count >= stability_polls:
+        # meta.json hasn't changed across N polls → Superwhisper dropped this stub.
+        # Transient: re-opening the audio file on a later cycle should work.
+        raise TimeoutError(
+            f"Superwhisper created an empty recording stub for {Path(file_path).name} "
+            f"(meta.json stable for {count} polls, no llmResult, no LLM pass started). "
+            f"The file-open likely arrived while Superwhisper was busy with a prior handoff. "
+            f"Will retry on the next scan cycle. Recording dir: {entry.name}"
+        )
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
@@ -698,9 +734,12 @@ def _find_best_candidate_by_duration(
         return None
     best = None
     for mtime, rec_start, duration_ms, text in candidates:
-        if duration_ms and abs(duration_ms - expected_duration_ms) <= expected_duration_ms * DURATION_MATCH_TOLERANCE:
-            if best is None or mtime > best[0]:
-                best = (mtime, rec_start, duration_ms, text)
+        if (
+            duration_ms
+            and abs(duration_ms - expected_duration_ms) <= expected_duration_ms * DURATION_MATCH_TOLERANCE
+            and (best is None or mtime > best[0])
+        ):
+            best = (mtime, rec_start, duration_ms, text)
     return best
 
 
@@ -759,31 +798,10 @@ def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
         if not expected_duration_ms and Path(path).exists():
             expected_duration_ms = get_audio_duration_ms(path)
 
-        best = None
-        matched_by_duration = False
-        if expected_duration_ms:
-            best = _find_best_candidate_by_duration(candidates, expected_duration_ms)
-            if best is not None:
-                matched_by_duration = True
-        if best is None:
-            # Fallback to legacy datetime-window match if duration unavailable.
-            if (audio_ts := _derive_audio_ts(path, entry)) is None:
-                continue
-            if audio_ts.tzinfo is None:
-                audio_ts = audio_ts.replace(tzinfo=OSLO_TZ)
-            audio_utc = audio_ts.astimezone(timezone.utc)
-            best = _find_best_candidate(candidates, audio_utc)
-            if best is None:
-                continue
-            audio_ts_fallback = audio_ts
-        else:
-            # For duration-matched recoveries, still need a timestamp for the output filename.
-            audio_ts_fallback = _derive_audio_ts(path, entry)
-            if audio_ts_fallback is None:
-                continue
-            if audio_ts_fallback.tzinfo is None:
-                audio_ts_fallback = audio_ts_fallback.replace(tzinfo=OSLO_TZ)
-
+        match = _match_recovery_candidate(candidates, path, entry, expected_duration_ms)
+        if match is None:
+            continue
+        best, matched_by_duration, audio_ts_fallback = match
         _, _, _, text = best
         try:
             category, ai_filename, analysis = parse_superwhisper_output(text)
@@ -813,3 +831,43 @@ def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
     if recovered:
         save_state(state)
     return recovered
+
+
+def _match_recovery_candidate(
+    candidates: list[tuple[float, datetime, int, str]],
+    path: str,
+    entry: dict,
+    expected_duration_ms: int | None,
+) -> tuple[tuple[float, datetime, int, str], bool, datetime] | None:
+    """Find the best Superwhisper stub for a failed_permanent entry.
+
+    Tries duration match first (R8); falls back to legacy datetime-window match if
+    duration is unavailable. Returns (best_candidate, matched_by_duration, audio_ts)
+    or None if no match. `audio_ts` is Europe/Oslo-aware (naive state timestamps
+    are treated as Oslo wall-clock per R10).
+    """
+    best: tuple[float, datetime, int, str] | None = None
+    matched_by_duration = False
+    if expected_duration_ms:
+        best = _find_best_candidate_by_duration(candidates, expected_duration_ms)
+        if best is not None:
+            matched_by_duration = True
+    if best is None:
+        # Fallback to legacy datetime-window match if duration unavailable.
+        if (audio_ts := _derive_audio_ts(path, entry)) is None:
+            return None
+        if audio_ts.tzinfo is None:
+            audio_ts = audio_ts.replace(tzinfo=OSLO_TZ)
+        audio_utc = audio_ts.astimezone(timezone.utc)
+        best = _find_best_candidate(candidates, audio_utc)
+        if best is None:
+            return None
+        return best, False, audio_ts
+
+    # For duration-matched recoveries, still need a timestamp for the output filename.
+    audio_ts_fallback = _derive_audio_ts(path, entry)
+    if audio_ts_fallback is None:
+        return None
+    if audio_ts_fallback.tzinfo is None:
+        audio_ts_fallback = audio_ts_fallback.replace(tzinfo=OSLO_TZ)
+    return best, matched_by_duration, audio_ts_fallback

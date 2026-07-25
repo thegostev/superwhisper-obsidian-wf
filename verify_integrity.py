@@ -21,7 +21,6 @@ Usage:
 
 import argparse
 import sys
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -48,32 +47,8 @@ def _state_timestamp_key(entry: dict) -> str | None:
         return None
 
 
-def verify_integrity(
-    state: dict,
-    folders: dict[str, str],
-    watch_folder: str,
-    scan_days_back: int = 7,
-) -> dict:
-    """Cross-check state vs vault vs watch folder; return a report dict.
-
-    Args:
-        state: pipeline state dict (as loaded by load_state()).
-        folders: category → base path mapping (typically config.FOLDERS).
-        watch_folder: JPR root to scan for untracked audio.
-        scan_days_back: how many date-subfolders back to scan for audio.
-
-    Returns:
-        {
-            "missing_md":       [{audio_path, timestamp_key, expected_category}, ...],
-            "wrong_folder_md":   [{audio_path, timestamp_key, expected_category, actual_category}, ...],
-            "orphan_md":         [{path, category, timestamp_key}, ...],
-            "untracked_audio":   [path, ...],
-            "summary":           {state_complete, vault_md, watch_audio_untracked},
-        }
-    """
-    missing_md, wrong_folder_md, orphan_md, untracked_audio = [], [], [], []
-
-    # Walk vault folders; build {category: {timestamp_key: Path}}.
+def _scan_vault_by_category(folders: dict[str, str]) -> dict[str, dict[str, Path]]:
+    """Walk vault folders; return {category: {timestamp_key: Path}} for non-legacy .md files."""
     vault_by_category: dict[str, dict[str, Path]] = {}
     for category, base_path in folders.items():
         files: dict[str, Path] = {}
@@ -85,16 +60,21 @@ def verify_integrity(
                     continue
                 files[name[:TIMESTAMP_KEY_LENGTH]] = fp
         vault_by_category[category] = files
+    return vault_by_category
 
-    # First pass over state: collect claimed keys (any category) for orphan suppression.
+
+def _check_state_completeness(
+    state: dict, vault_by_category: dict[str, dict[str, Path]]
+) -> tuple[list, list, int, set[str]]:
+    """Cross-check state status=complete entries against the vault.
+
+    Returns (missing_md, wrong_folder_md, state_complete_count, state_claims_by_key).
+    `state_claims_by_key` is the set of timestamp keys claimed by any complete entry —
+    used by the orphan check to suppress .md files that ARE claimed (possibly misplaced,
+    already reported in wrong_folder_md).
+    """
+    missing_md, wrong_folder_md = [], []
     state_claims_by_key: set[str] = set()
-    for entry in state.get("processed", {}).values():
-        if entry.get("status") != "complete":
-            continue
-        if (key := _state_timestamp_key(entry)) is not None:
-            state_claims_by_key.add(key)
-
-    # Second pass over state: missing_md + wrong_folder_md.
     state_complete_count = 0
     for audio_path, entry in state.get("processed", {}).items():
         if entry.get("status") != "complete":
@@ -103,9 +83,9 @@ def verify_integrity(
         key = _state_timestamp_key(entry)
         if key is None:
             continue
+        state_claims_by_key.add(key)
         category = entry.get("category", DEFAULT_CATEGORY)
-        expected_files = vault_by_category.get(category, {})
-        if key in expected_files:
+        if key in vault_by_category.get(category, {}):
             continue
         # Not in expected folder — check if it's misplaced elsewhere.
         actual_category = next(
@@ -129,8 +109,19 @@ def verify_integrity(
             missing_md.append(
                 {"audio_path": audio_path, "timestamp_key": key, "expected_category": category}
             )
+    return missing_md, wrong_folder_md, state_complete_count, state_claims_by_key
 
-    # Orphan check: .md in vault but no state entry claims that timestamp.
+
+def _find_orphans(
+    folders: dict[str, str], state_claims_by_key: set[str]
+) -> tuple[list, set[Path]]:
+    """Find .md files in vault folders that no state entry claims.
+
+    Returns (orphan_md, seen_paths). `seen_paths` is the dedup set of all .md files
+    seen (used by the summary's vault_md count); dedup matters because FOLDERS may
+    have aliases (DEFAULT and PERSONLIG often point to the same path).
+    """
+    orphan_md: list = []
     seen_paths: set[Path] = set()
     for category, base_path in folders.items():
         base = Path(base_path)
@@ -147,9 +138,14 @@ def verify_integrity(
             if key in state_claims_by_key:
                 continue
             orphan_md.append({"path": str(fp), "category": category, "timestamp_key": key})
+    return orphan_md, seen_paths
 
-    # Untracked audio: .m4a in recent watch-folder date dirs not in state["processed"].
-    processed_paths = set(state.get("processed", {}).keys())
+
+def _find_untracked_audio(
+    watch_folder: str, scan_days_back: int, processed_paths: set[str]
+) -> list[str]:
+    """Find .m4a files in recent watch-folder date dirs not in state["processed"]."""
+    untracked_audio: list[str] = []
     for folder_path in discover_recent_folders(watch_folder, scan_days_back):
         for fp in Path(folder_path).glob("*.m4a"):
             p = str(fp)
@@ -157,6 +153,39 @@ def verify_integrity(
                 continue
             if p not in processed_paths:
                 untracked_audio.append(p)
+    return untracked_audio
+
+
+def verify_integrity(
+    state: dict,
+    folders: dict[str, str],
+    watch_folder: str,
+    scan_days_back: int = 7,
+) -> dict:
+    """Cross-check state vs vault vs watch folder; return a report dict.
+
+    Args:
+        state: pipeline state dict (as loaded by load_state()).
+        folders: category → base path mapping (typically config.FOLDERS).
+        watch_folder: JPR root to scan for untracked audio.
+        scan_days_back: how many date-subfolders back to scan for audio.
+
+    Returns:
+        {
+            "missing_md":       [{audio_path, timestamp_key, expected_category}, ...],
+            "wrong_folder_md":   [{audio_path, timestamp_key, expected_category, actual_category}, ...],
+            "orphan_md":         [{path, category, timestamp_key}, ...],
+            "untracked_audio":   [path, ...],
+            "summary":           {state_complete, vault_md, watch_audio_untracked},
+        }
+    """
+    vault_by_category = _scan_vault_by_category(folders)
+    missing_md, wrong_folder_md, state_complete_count, state_claims_by_key = _check_state_completeness(
+        state, vault_by_category
+    )
+    orphan_md, seen_paths = _find_orphans(folders, state_claims_by_key)
+    processed_paths = set(state.get("processed", {}).keys())
+    untracked_audio = _find_untracked_audio(watch_folder, scan_days_back, processed_paths)
 
     return {
         "missing_md": missing_md,

@@ -20,11 +20,9 @@ import pytest
 from pipeline import (
     CATEGORY_HEADER,
     CONSUMED_SENTINEL,
-    PermanentFileError,
-    _is_superwhisper_idle,
     _find_best_candidate_by_duration,
+    _is_superwhisper_idle,
     _mark_consumed,
-    get_audio_duration_ms,
     handoff_to_superwhisper,
     recover_failed_permanent,
     wait_for_superwhisper_result,

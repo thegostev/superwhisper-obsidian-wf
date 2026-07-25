@@ -7,7 +7,6 @@ silently inherit the host system's tz if it ever changes.
 """
 
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from pipeline import OSLO_TZ, _now_local, discover_recent_folders
 

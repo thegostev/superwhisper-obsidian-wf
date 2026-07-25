@@ -9,14 +9,10 @@ R9 fix: parse the JPR filename as UTC+1 fixed (no DST), convert to Europe/Oslo, 
 naive Europe/Oslo wall-clock so strftime produces the user's local meeting time.
 """
 
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from datetime import timedelta, timezone
 from unittest.mock import patch
 
-import pytest
-
 from pipeline import get_audio_timestamp
-
 
 JPR_FIXED_CET = timezone(timedelta(hours=1))
 
