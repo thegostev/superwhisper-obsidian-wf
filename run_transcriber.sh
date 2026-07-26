@@ -104,6 +104,37 @@ fix_all() {
     "$SCRIPT_DIR/venv/bin/python3" "$SCRIPT_DIR/reclassify_and_fix.py" --generate-missing-analysis --reclassify "$@"
 }
 
+verify() {
+    cd "$SCRIPT_DIR"
+    local venv="$SCRIPT_DIR/venv/bin"
+
+    echo "▶ ruff check ."
+    if ! "$venv/ruff" check .; then
+        echo "✗ Failed: ruff check ."
+        return 1
+    fi
+
+    echo "▶ ruff format --check ."
+    if ! "$venv/ruff" format --check .; then
+        echo "✗ Failed: ruff format --check ."
+        return 1
+    fi
+
+    echo "▶ mypy ."
+    if ! "$venv/mypy" .; then
+        echo "✗ Failed: mypy ."
+        return 1
+    fi
+
+    echo "▶ pytest tests/ -m 'not slow and not integration'"
+    if ! "$venv/python" -m pytest tests/ -m "not slow and not integration"; then
+        echo "✗ Failed: pytest"
+        return 1
+    fi
+
+    echo "✓ All checks passed — safe to push"
+}
+
 case "${1:-start}" in
     start)  start ;;
     stop)   stop ;;
@@ -117,8 +148,9 @@ case "${1:-start}" in
     fix-analysis) fix_analysis "${@:2}" ;;
     fix-categories) fix_categories "${@:2}" ;;
     fix-all) fix_all "${@:2}" ;;
+    verify) verify ;;
     *)
-        echo "Usage: $0 {start|stop|status|logs|restart|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all}"
+        echo "Usage: $0 {start|stop|status|logs|restart|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all|verify}"
         echo "Service Management:"
         echo "  start          - Launch auto-transcriber in background (default)"
         echo "  stop           - Stop the running transcriber"
@@ -137,6 +169,9 @@ case "${1:-start}" in
         echo "  fix-categories         - Reclassify and move files to correct folders"
         echo "  fix-all                - Do both (generate analysis + reclassify)"
         echo "  Add --dry-run to preview changes"
+        echo ""
+        echo "Development:"
+        echo "  verify         - Run CI checks locally (ruff check, ruff format --check, mypy, pytest-fast)"
         exit 1
         ;;
 esac

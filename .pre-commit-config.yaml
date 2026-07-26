@@ -1,23 +1,53 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.18
+    rev: v0.15.21
     hooks:
+      # Commit stage: auto-fix and auto-format.
       - id: ruff
         args: [--fix]
       - id: ruff-format
+      # Push stage: read-only gate mirroring CI exactly. No --fix, --check only.
+      - id: ruff
+        alias: ruff-check-push
+        stages: [pre-push]
+      - id: ruff-format
+        alias: ruff-format-check-push
+        stages: [pre-push]
+        args: [--check]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
+    rev: v2.2.0
     hooks:
+      # Commit and push stage both run `mypy .` (matching CI exactly). pass_filenames: false
+      # is required so mypy sees the whole project and respects pyproject's exclude
+      # (tests/ and utils/ are excluded there). Passing filenames bypasses the exclude.
       - id: mypy
         additional_dependencies: [types-PyYAML, pytest]
-        args: [--ignore-missing-imports]
+        args: [--ignore-missing-imports, .]
+        pass_filenames: false
+        always_run: true
+      - id: mypy
+        alias: mypy-push
+        stages: [pre-push]
+        additional_dependencies: [types-PyYAML, pytest]
+        args: [--ignore-missing-imports, .]
+        pass_filenames: false
+        always_run: true
 
   - repo: local
     hooks:
+      # Commit stage: fast test subset.
       - id: pytest-fast
         name: pytest-fast
         entry: python -m pytest tests/ -m "not slow and not integration"
         language: system
         pass_filenames: false
         always_run: true
+      # Push stage: same gate as CI test-fast job.
+      - id: pytest-fast-push
+        name: pytest-fast (push gate)
+        entry: python -m pytest tests/ -m "not slow and not integration"
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
