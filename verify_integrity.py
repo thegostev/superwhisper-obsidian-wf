@@ -15,8 +15,12 @@ Reports four classes of drift that the 2026-07-24 incident exposed:
 Exit code 0 if clean, 1 if any issues found. Read-only — safe to run anytime.
 
 Usage:
-    python verify_integrity.py [--watch-folder PATH] [--scan-days-back N] [--verbose]
+    python verify_integrity.py [--watch-folder PATH] [--scan-days-back N] [--state-since YYYY-MM-DD] [--verbose]
     ./run_transcriber.sh verify          # when wired into the wrapper
+
+--state-since suppresses orphan_md entries whose timestamp_key predates the
+given date. Use the date state tracking was enabled to filter legacy .md files
+that legitimately have no state entry (they predate the state dict).
 """
 
 import argparse
@@ -110,15 +114,22 @@ def _check_state_completeness(
     return missing_md, wrong_folder_md, state_complete_count, state_claims_by_key
 
 
-def _find_orphans(folders: dict[str, str], state_claims_by_key: set[str]) -> tuple[list, set[Path]]:
+def _find_orphans(
+    folders: dict[str, str],
+    state_claims_by_key: set[str],
+    state_since: str | None = None,
+) -> tuple[list, set[Path], int]:
     """Find .md files in vault folders that no state entry claims.
 
-    Returns (orphan_md, seen_paths). `seen_paths` is the dedup set of all .md files
-    seen (used by the summary's vault_md count); dedup matters because FOLDERS may
-    have aliases (DEFAULT and PERSONLIG often point to the same path).
+    Returns (orphan_md, seen_paths, orphans_suppressed). `seen_paths` is the dedup
+    set of all .md files seen (used by the summary's vault_md count); dedup matters
+    because FOLDERS may have aliases (DEFAULT and PERSONLIG often point to the same
+    path). `orphans_suppressed` counts .md files skipped because their
+    timestamp_key predates `state_since` ("YY-MM-DD"); None disables the filter.
     """
     orphan_md: list = []
     seen_paths: set[Path] = set()
+    orphans_suppressed = 0
     for category, base_path in folders.items():
         base = Path(base_path)
         if not base.exists():
@@ -133,8 +144,11 @@ def _find_orphans(folders: dict[str, str], state_claims_by_key: set[str]) -> tup
             key = name[:TIMESTAMP_KEY_LENGTH]
             if key in state_claims_by_key:
                 continue
+            if state_since is not None and key[:8] < state_since:
+                orphans_suppressed += 1
+                continue
             orphan_md.append({"path": str(fp), "category": category, "timestamp_key": key})
-    return orphan_md, seen_paths
+    return orphan_md, seen_paths, orphans_suppressed
 
 
 def _find_untracked_audio(watch_folder: str, scan_days_back: int, processed_paths: set[str]) -> list[str]:
@@ -155,6 +169,7 @@ def verify_integrity(
     folders: dict[str, str],
     watch_folder: str,
     scan_days_back: int = 7,
+    state_since: str | None = None,
 ) -> dict:
     """Cross-check state vs vault vs watch folder; return a report dict.
 
@@ -163,6 +178,10 @@ def verify_integrity(
         folders: category → base path mapping (typically config.FOLDERS).
         watch_folder: JPR root to scan for untracked audio.
         scan_days_back: how many date-subfolders back to scan for audio.
+        state_since: optional "YY-MM-DD" cutoff; orphan_md entries whose
+            timestamp_key predates this date are suppressed (counted in
+            summary.orphans_suppressed instead). Use the date state tracking
+            was enabled to filter legacy .md files with no state entry.
 
     Returns:
         {
@@ -170,14 +189,14 @@ def verify_integrity(
             "wrong_folder_md":   [{audio_path, timestamp_key, expected_category, actual_category}, ...],
             "orphan_md":         [{path, category, timestamp_key}, ...],
             "untracked_audio":   [path, ...],
-            "summary":           {state_complete, vault_md, watch_audio_untracked},
+            "summary":           {state_complete, vault_md, watch_audio_untracked, orphans_suppressed},
         }
     """
     vault_by_category = _scan_vault_by_category(folders)
     missing_md, wrong_folder_md, state_complete_count, state_claims_by_key = _check_state_completeness(
         state, vault_by_category
     )
-    orphan_md, seen_paths = _find_orphans(folders, state_claims_by_key)
+    orphan_md, seen_paths, orphans_suppressed = _find_orphans(folders, state_claims_by_key, state_since)
     processed_paths = set(state.get("processed", {}).keys())
     untracked_audio = _find_untracked_audio(watch_folder, scan_days_back, processed_paths)
 
@@ -190,6 +209,7 @@ def verify_integrity(
             "state_complete": state_complete_count,
             "vault_md": len(seen_paths),
             "watch_audio_untracked": len(untracked_audio),
+            "orphans_suppressed": orphans_suppressed,
         },
     }
 
@@ -202,6 +222,11 @@ def print_report(report: dict, file=sys.stdout) -> None:
         f"Untracked audio: {s['watch_audio_untracked']}",
         file=file,
     )
+    if s.get("orphans_suppressed", 0) > 0:
+        print(
+            f"   ({s['orphans_suppressed']} legacy orphan(s) suppressed by --state-since)",
+            file=file,
+        )
 
     def _section(title: str, items: list, formatter) -> None:
         if not items:
@@ -236,6 +261,17 @@ def print_report(report: dict, file=sys.stdout) -> None:
     print("✅ No issues found." if issues == 0 else f"⚠️  {issues} issue(s) found.", file=file)
 
 
+def _normalize_state_since(value: str | None) -> str | None:
+    """Convert --state-since YYYY-MM-DD to "YY-MM-DD" for key comparison; None → None.
+
+    Raises ValueError on bad input; main() converts that to parser.error().
+    """
+    if value is None:
+        return None
+    dt = datetime.strptime(value, "%Y-%m-%d")
+    return dt.strftime("%y-%m-%d")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify pipeline integrity: state vs vault vs watch folder.")
     parser.add_argument("--watch-folder", default=WATCH_FOLDER, help="JPR root to scan")
@@ -245,11 +281,22 @@ def main() -> None:
         default=SCAN_DAYS_BACK,
         help="Recent date-subfolders to scan for audio (default: %(default)s)",
     )
+    parser.add_argument(
+        "--state-since",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Suppress orphan_md entries older than this date (legacy files pre-dating state tracking)",
+    )
     args = parser.parse_args()
+
+    try:
+        state_since = _normalize_state_since(args.state_since)
+    except ValueError:
+        parser.error(f"--state-since must be YYYY-MM-DD, got: {args.state_since!r}")
 
     state = load_state()
     print(f"{'=' * 50}\n🔍 Pipeline Integrity Check\n{'=' * 50}")
-    report = verify_integrity(state, FOLDERS, args.watch_folder, args.scan_days_back)
+    report = verify_integrity(state, FOLDERS, args.watch_folder, args.scan_days_back, state_since=state_since)
     print_report(report)
     sys.exit(1 if any(report[k] for k in ("missing_md", "wrong_folder_md", "orphan_md", "untracked_audio")) else 0)
 

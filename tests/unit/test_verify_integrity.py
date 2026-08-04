@@ -159,6 +159,57 @@ def test_legacy_analysis_files_skipped(folders, watch_folder):
     assert report["orphan_md"] == []
 
 
+# --- state_since filter ---------------------------------------------------------
+
+
+def test_orphan_suppressed_when_older_than_state_since(folders, watch_folder):
+    """--state-since=2026-07-01 suppresses an orphan dated 2026-06-15; counts in summary."""
+    musikere = Path(folders["MUSIKERE"])
+    musikere.mkdir()
+    (musikere / "26-06-15 09.00 - Legacy Meeting.md").write_text("body")
+
+    report = verify_integrity({"processed": {}}, folders, watch_folder, scan_days_back=1, state_since="26-07-01")
+
+    assert report["orphan_md"] == []
+    assert report["summary"]["orphans_suppressed"] == 1
+
+
+def test_orphan_not_suppressed_when_newer_than_state_since(folders, watch_folder):
+    """--state-since=2026-07-01 does NOT suppress an orphan dated 2026-07-23."""
+    minnesotere = Path(folders["MINNESOTERE"])
+    minnesotere.mkdir()
+    (minnesotere / "26-07-23 14.30 - Recent Orphan.md").write_text("body")
+
+    report = verify_integrity({"processed": {}}, folders, watch_folder, scan_days_back=1, state_since="26-07-01")
+
+    assert len(report["orphan_md"]) == 1
+    assert report["summary"]["orphans_suppressed"] == 0
+
+
+def test_state_since_does_not_affect_missing_md(folders, watch_folder):
+    """state_since filters orphans only; missing_md is reported regardless of age."""
+    state = {"processed": {"audio/a.m4a": _make_state_entry(category="MUSIKERE", timestamp_iso="2026-06-15T09:00:00")}}
+    Path(folders["MUSIKERE"]).mkdir()
+
+    report = verify_integrity(state, folders, watch_folder, scan_days_back=1, state_since="26-07-01")
+
+    assert len(report["missing_md"]) == 1
+    assert report["summary"]["orphans_suppressed"] == 0
+
+
+def test_state_since_none_reports_all_orphans(folders, watch_folder):
+    """Default state_since=None behaves identically to no filter — every orphan reported."""
+    musikere = Path(folders["MUSIKERE"])
+    musikere.mkdir()
+    (musikere / "26-06-15 09.00 - Legacy.md").write_text("body")
+    (musikere / "26-07-23 14.30 - Recent.md").write_text("body")
+
+    report = verify_integrity({"processed": {}}, folders, watch_folder, scan_days_back=1)
+
+    assert len(report["orphan_md"]) == 2
+    assert report["summary"]["orphans_suppressed"] == 0
+
+
 # --- untracked_audio ------------------------------------------------------------
 
 
