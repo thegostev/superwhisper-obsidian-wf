@@ -3,8 +3,10 @@
 All entry points (daemon, on-demand CLI, maintenance CLI) import from here.
 """
 
+import contextlib
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -113,10 +115,24 @@ def load_state():
 
 
 def save_state(state):
+    """Persist state atomically: write a temp file in the same directory, then rename.
+
+    A non-atomic `write_text` truncates the canonical file before writing; a crash,
+    SIGKILL (launchd unload), or disk-full mid-write would leave state.json empty or
+    partial, and `load_state` would fall back to fresh — re-queueing every audio in
+    the scan window for reprocessing. Writing to a sibling temp and `os.replace`-ing
+    it into place makes the swap atomic on POSIX (same filesystem), so the canonical
+    file is either the previous version or the new one, never a partial write.
+    """
+    state_path = Path(STATE_FILE)
+    tmp = state_path.with_suffix(state_path.suffix + ".tmp")
     try:
-        Path(STATE_FILE).write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+        tmp.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+        os.replace(tmp, state_path)
     except OSError as e:
         print(f"⚠️  Warning: Could not save state file: {e}", flush=True)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def get_audio_timestamp(audio_path: str) -> datetime:
