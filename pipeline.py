@@ -199,11 +199,20 @@ def save_output(category: str, filename: str, content: str) -> str | None:
     except OSError as e:
         print(f"⚠️  Warning: Could not create output folder: {e}", flush=True)
 
+    out = dest / filename
+    # Write to a sibling temp then os.replace so the canonical note is never seen
+    # half-written by Obsidian or iCloud (which syncs a truncated note to every
+    # device). The temp suffix is ".tmp", NOT ".md", so the `*.md` globs in
+    # build_transcript_index / verify_integrity never observe it mid-flight.
+    tmp = dest / (filename + ".tmp")
     try:
-        (out := dest / filename).write_text(content, encoding="utf-8")
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, out)
         return str(out)
     except OSError as e:
         print(f"⚠️  Warning: Failed to save output: {e}", flush=True)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
         return None
 
 
