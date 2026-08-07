@@ -650,8 +650,12 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     return False, None
 
 
-def _parse_recovery_candidate(entry: Path, mtime: float) -> tuple[float, datetime, int, str] | None:
-    """Return (mtime, rec_start, duration_ms, llmResult) for a stub with a valid contract, else None."""
+def _parse_recovery_candidate(entry: Path, mtime: float) -> tuple[float, datetime, int, str, Path] | None:
+    """Return (mtime, rec_start, duration_ms, llmResult, entry) for a stub with a valid contract, else None.
+
+    The recording `entry` Path is threaded as the 5th element so the caller can mark
+    the stub consumed after a successful recovery (R4 closure on the salvage path).
+    """
     info = _read_recording_meta(entry)
     if not info or not isinstance(info["llm_result"], str):
         return None
@@ -666,15 +670,20 @@ def _parse_recovery_candidate(entry: Path, mtime: float) -> tuple[float, datetim
         rec_start = datetime.fromisoformat(str(meta.get("datetime")).replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         rec_start = datetime.fromtimestamp(mtime, tz=timezone.utc)
-    return mtime, rec_start, int(meta.get("duration") or 0), text
+    return mtime, rec_start, int(meta.get("duration") or 0), text, entry
 
 
-def _collect_recovery_candidates(recordings_dir: Path, cutoff: float) -> list[tuple[float, datetime, int, str]] | None:
+def _collect_recovery_candidates(
+    recordings_dir: Path, cutoff: float
+) -> list[tuple[float, datetime, int, str, Path]] | None:
     """Scan the recordings dir for stubs newer than cutoff with a CATEGORY: contract.
 
-    Returns None on OSError (recordings dir unreadable); empty list if no candidates match.
+    Skips dirs already marked consumed (R4): the main path writes a stub's output and
+    marks it consumed, so re-using it from salvage would duplicate the .md under a
+    different audio's timestamp — a salvage-path misroute. Returns None on OSError
+    (recordings dir unreadable); empty list if no candidates match.
     """
-    candidates: list[tuple[float, datetime, int, str]] = []
+    candidates: list[tuple[float, datetime, int, str, Path]] = []
     try:
         for entry in recordings_dir.iterdir():
             if not entry.is_dir():
@@ -685,6 +694,8 @@ def _collect_recovery_candidates(recordings_dir: Path, cutoff: float) -> list[tu
                 continue
             if mtime < cutoff:
                 continue
+            if _is_consumed(entry):
+                continue  # R4: main path already wrote this stub's output
             if (cand := _parse_recovery_candidate(entry, mtime)) is not None:
                 candidates.append(cand)
     except OSError as e:
@@ -714,7 +725,7 @@ def _derive_audio_ts(path: str, entry: dict) -> datetime | None:
 
 def _find_best_candidate_by_duration(
     candidates, expected_duration_ms: int | None
-) -> tuple[float, datetime, int, str] | None:
+) -> tuple[float, datetime, int, str, Path] | None:
     """R8: Pick the most-recently-modified candidate whose duration matches expected within tolerance.
 
     The previous datetime-window match was unreliable because meta.json's `datetime` field
@@ -723,28 +734,35 @@ def _find_best_candidate_by_duration(
     the dir creation time is ~20h off from the audio recording time, and the window match
     fails. Duration is a stable per-audio identifier set by Superwhisper from the source
     audio file, so it survives sync delays and dir-creation-time skew.
+
+    Index-based (not unpacked) so the helper tolerates both the 4-tuples constructed
+    directly in tests and the 5-tuples produced by `_collect_recovery_candidates`.
     """
     if not expected_duration_ms:
         return None
     best = None
-    for mtime, rec_start, duration_ms, text in candidates:
+    for cand in candidates:
+        mtime, duration_ms = cand[0], cand[2]
         if (
             duration_ms
             and abs(duration_ms - expected_duration_ms) <= expected_duration_ms * DURATION_MATCH_TOLERANCE
             and (best is None or mtime > best[0])
         ):
-            best = (mtime, rec_start, duration_ms, text)
+            best = cand
     return best
 
 
-def _find_best_candidate(candidates, audio_utc: datetime) -> tuple[float, datetime, int, str] | None:
+def _find_best_candidate(candidates, audio_utc: datetime) -> tuple[float, datetime, int, str, Path] | None:
     """Legacy datetime-window match — kept as fallback when duration is unavailable.
 
     Window: [audio_start - 5min, audio_start + duration + 30min]. The wide upper
     bound covers JPR's recording start → stop → SW handoff → LLM pass start.
+
+    Index-based (not unpacked) so the helper tolerates both 4- and 5-tuple candidates.
     """
     best = None
-    for mtime, rec_start, duration_ms, text in candidates:
+    for cand in candidates:
+        mtime, rec_start, duration_ms = cand[0], cand[1], cand[2]
         if rec_start.tzinfo is None:
             # meta.datetime is written by Superwhisper on the user's Mac in local
             # time (Europe/Oslo). Treat naive as Oslo, not UTC — the previous UTC
@@ -753,7 +771,7 @@ def _find_best_candidate(candidates, audio_utc: datetime) -> tuple[float, dateti
         delta = (rec_start - audio_utc).total_seconds()
         upper = duration_ms / 1000 + 1800
         if -300 <= delta <= upper and (best is None or mtime > best[0]):
-            best = (mtime, rec_start, duration_ms, text)
+            best = cand
     return best
 
 
@@ -796,7 +814,7 @@ def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
         if match is None:
             continue
         best, matched_by_duration, audio_ts_fallback = match
-        _, _, _, text = best
+        text = best[3]
         try:
             category, ai_filename, analysis = parse_superwhisper_output(text)
         except PermanentFileError:
@@ -813,6 +831,9 @@ def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
             else "recovered from late-arriving Superwhisper llmResult"
         )
         print(f"   ♻️  {note} for {Path(path).name}: {output_path}", flush=True)
+        # R4: mark the matched stub consumed so a later salvage pass (or a near-matching
+        # failed entry) cannot re-match it and write a duplicate .md under another audio.
+        _mark_consumed(best[4])
         processed[path] = {
             "status": "complete",
             "category": category,
@@ -830,11 +851,11 @@ def recover_failed_permanent(state: dict, max_age_days: int = 7) -> int:
 
 
 def _match_recovery_candidate(
-    candidates: list[tuple[float, datetime, int, str]],
+    candidates: list[tuple[float, datetime, int, str, Path]],
     path: str,
     entry: dict,
     expected_duration_ms: int | None,
-) -> tuple[tuple[float, datetime, int, str], bool, datetime] | None:
+) -> tuple[tuple[float, datetime, int, str, Path], bool, datetime] | None:
     """Find the best Superwhisper stub for a failed_permanent entry.
 
     Tries duration match first (R8); falls back to legacy datetime-window match if
@@ -842,7 +863,7 @@ def _match_recovery_candidate(
     or None if no match. `audio_ts` is Europe/Oslo-aware (naive state timestamps
     are treated as Oslo wall-clock per R10).
     """
-    best: tuple[float, datetime, int, str] | None = None
+    best: tuple[float, datetime, int, str, Path] | None = None
     matched_by_duration = False
     if expected_duration_ms:
         best = _find_best_candidate_by_duration(candidates, expected_duration_ms)

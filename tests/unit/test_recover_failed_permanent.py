@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import CATEGORY_HEADER, recover_failed_permanent
+from pipeline import CATEGORY_HEADER, CONSUMED_SENTINEL, _mark_consumed, recover_failed_permanent
 
 
 @pytest.fixture
@@ -172,3 +172,60 @@ def test_picks_latest_stub_when_multiple_match(recordings_dir, state_with_failed
     files = list(out_dir.glob("*.md"))
     assert len(files) == 1
     assert "Second completion" in files[0].name
+
+
+def test_consumed_stub_is_skipped_by_salvage(recordings_dir, state_with_failed_entry, tmp_path, monkeypatch):
+    """A recording dir already marked consumed (its llmResult was returned by the main
+    path) must not be re-used by salvage, even when its duration matches a later
+    failed_permanent entry. Without the skip, the same stub is written again under a
+    different audio's timestamp — a salvage-path duplicate/misroute (the same class of
+    bug as the 2026-07-24 incident, now possible in the recovery path).
+    """
+    entry_path = "/recordings/2026-07-22/13-59-43.m4a"
+    # Duration matching is the primary correlation; give the failed entry a stored
+    # duration that matches the (already-consumed) stub below.
+    state_with_failed_entry["processed"][entry_path]["expected_duration_ms"] = 1299000
+
+    rec = _write_stub(
+        recordings_dir,
+        "1784723106",
+        {
+            "datetime": "2026-07-22T14:24:06",
+            "duration": 1299000,
+            "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: already consumed\n\nbody",
+        },
+    )
+    _mark_consumed(rec)  # main path already wrote this stub's output
+
+    out_dir = tmp_path / "vault" / "Minnesotere"
+    out_dir.mkdir(parents=True)
+    monkeypatch.setattr("pipeline.FOLDERS", {"MINNESOTERE": str(out_dir), "DEFAULT": str(out_dir)})
+
+    assert recover_failed_permanent(state_with_failed_entry) == 0
+    assert state_with_failed_entry["processed"][entry_path]["status"] == "failed_permanent"
+    assert list(out_dir.glob("*.md")) == [], "consumed stub must not be re-written by salvage"
+
+
+def test_recovered_stub_is_marked_consumed(recordings_dir, state_with_failed_entry, tmp_path, monkeypatch):
+    """After salvage writes output from a stub, that stub is marked consumed so a later
+    failed entry with a near-matching duration cannot re-match it on a subsequent
+    salvage pass (duplicate write). Closes R4's loop on the recovery path.
+    """
+    entry_path = "/recordings/2026-07-22/13-59-43.m4a"
+    state_with_failed_entry["processed"][entry_path]["expected_duration_ms"] = 1299000
+
+    rec = _write_stub(
+        recordings_dir,
+        "1784723106",
+        {
+            "datetime": "2026-07-22T14:24:06",
+            "duration": 1299000,
+            "llmResult": f"{CATEGORY_HEADER} MINNESOTERE\nFILENAME: Salvaged Sync\n\nbody",
+        },
+    )
+    out_dir = tmp_path / "vault" / "Minnesotere"
+    out_dir.mkdir(parents=True)
+    monkeypatch.setattr("pipeline.FOLDERS", {"MINNESOTERE": str(out_dir), "DEFAULT": str(out_dir)})
+
+    assert recover_failed_permanent(state_with_failed_entry) == 1
+    assert (rec / CONSUMED_SENTINEL).exists(), "recovered stub was not marked consumed"
