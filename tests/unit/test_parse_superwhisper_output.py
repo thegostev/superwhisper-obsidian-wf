@@ -51,6 +51,29 @@ def test_filename_colons_replaced():
     assert ":" not in filename
 
 
+def test_filename_strips_obsidian_hostile_chars():
+    """Obsidian breaks on # (headers/anchors), [] (wikilinks), | (table cells),
+    <> (link syntax), and ^ (block refs). The workspace naming convention forbids
+    these in file names; the sanitizer must strip them from LLM-emitted FILENAME:
+    values rather than passing them into the vault filename.
+    """
+    output = _make(filename="Q3 Review #2 [Draft] | notes <v2> ^ref")
+    _, filename, _ = parse_superwhisper_output(output)
+    for ch in "#[]|<>^":
+        assert ch not in filename, f"{ch!r} must be stripped, got {filename!r}"
+    assert "Q3 Review" in filename
+    assert "Draft" in filename
+
+
+def test_filename_still_replaces_slash_after_hostile_strip():
+    """Extending the delete set must not regress the / → - and : → . mappings."""
+    output = _make(filename="Work/Project: Sub")
+    _, filename, _ = parse_superwhisper_output(output)
+    assert "/" not in filename
+    assert ":" not in filename
+    assert filename == "Work-Project. Sub"
+
+
 def test_missing_analysis_body_raises():
     output = "CATEGORY: WORK\nFILENAME: Title\n\n"
     with pytest.raises(PermanentFileError):

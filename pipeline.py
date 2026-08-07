@@ -31,7 +31,12 @@ TIMESTAMP_FORMAT = "%y-%m-%d %H.%M"
 CATEGORY_HEADER = "CATEGORY:"
 FILENAME_HEADER = "FILENAME:"
 CATEGORY_SECTION_MARKER = "---CATEGORY---"  # section-marker fallback format
-_FILENAME_SANITIZE = str.maketrans("/\\:", "--.", '?"*')
+# Obsidian forbids `: [ ] # ^ | \ * " ? < >` in file names — they break wikilinks
+# (``[``/``]``), headers/anchors (``#``), table cells (``|``), link syntax (``<``/``>``),
+# and block refs (``^``). The LLM emits FILENAME: from arbitrary meeting titles, so we
+# map `/ \ :` → `- - .` and delete `? " * [ ] # ^ | < >`. CATEGORY: values are already
+# non-ASCII-stripped before folder lookup; this table protects the FILENAME path.
+_FILENAME_SANITIZE = str.maketrans("/\\:", "--.", '?"*[]#^|<>')
 
 DEFAULT_CATEGORY = "DEFAULT"
 DEFAULT_FILENAME = "Unknown Meeting"
