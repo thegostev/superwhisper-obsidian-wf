@@ -294,12 +294,11 @@ def _read_superwhisper_entry(path: Path) -> str | None:
         return None
 
 
-def _read_recording_meta(path: Path) -> dict[str, str | bool | int | None] | None:
+def _read_recording_meta(path: Path) -> dict[str, str | int | None] | None:
     """Read meta.json and return the fields relevant to result detection.
 
     Returns None if meta.json is missing or unreadable. Otherwise a dict with:
       - llm_result: str | None (the Custom Mode LLM output, may be empty/absent)
-      - has_transcript: bool (True if result/rawResult present and non-empty)
       - processing_time: int | None (Superwhisper's processingTime field; 0 = stub)
       - llm_processing_time: int | None (languageModelProcessingTime; None = LLM pass not started/finished)
       - duration_ms: int | None (audio duration in milliseconds; 0/None = stub or unknown)
@@ -309,13 +308,11 @@ def _read_recording_meta(path: Path) -> dict[str, str | bool | int | None] | Non
     except (OSError, ValueError):
         return None
     llm = meta.get("llmResult")
-    raw = meta.get("result") or meta.get("rawResult")
     pt = meta.get("processingTime")
     lpt = meta.get("languageModelProcessingTime")
     duration = meta.get("duration")
     return {
         "llm_result": str(llm) if llm is not None else None,
-        "has_transcript": bool(raw or raw == "") and bool(pt is not None or raw),
         "processing_time": int(pt) if isinstance(pt, (int, float)) else None,
         "llm_processing_time": int(lpt) if isinstance(lpt, (int, float)) else None,
         "duration_ms": int(duration) if isinstance(duration, (int, float)) else None,
@@ -685,16 +682,19 @@ def _parse_recovery_candidate(entry: Path, mtime: float) -> tuple[float, datetim
 
     The recording `entry` Path is threaded as the 5th element so the caller can mark
     the stub consumed after a successful recovery (R4 closure on the salvage path).
+
+    Reads meta.json exactly once and derives llmResult, datetime, and duration from
+    the same parse. Salvage scans every recording dir on startup and every
+    SALVAGE_PASS_EVERY_N_CYCLES, so the previous double read compounded as the
+    recordings dir filled with completed stubs.
     """
-    info = _read_recording_meta(entry)
-    if not info or not isinstance(info["llm_result"], str):
-        return None
-    text = info["llm_result"]
-    if CATEGORY_HEADER not in text and CATEGORY_SECTION_MARKER not in text:
-        return None
     try:
         meta = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return None
+    llm = meta.get("llmResult")
+    text = str(llm) if llm is not None else None
+    if not isinstance(text, str) or (CATEGORY_HEADER not in text and CATEGORY_SECTION_MARKER not in text):
         return None
     try:
         rec_start = datetime.fromisoformat(str(meta.get("datetime")).replace("Z", "+00:00"))
