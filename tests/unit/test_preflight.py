@@ -14,6 +14,7 @@ PREFLIGHT_NOTIFY=0, PREFLIGHT_PIP_CMD, PREFLIGHT_HEARTBEAT.
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -26,8 +27,9 @@ SCRIPT = PROJECT_DIR / "preflight.sh"
 CAND_OK = "/nonexistent/cand_ok"
 CAND_BAD = "/nonexistent/cand_bad"
 
-# The repo venv interpreter: >=3.12 with PyYAML — passes both probes.
-REAL_VENV_PYTHON = PROJECT_DIR / "venv" / "bin" / "python3"
+# The interpreter running pytest: >=3.12 with PyYAML in every CI matrix and in
+# the dev venv — passes both probes without depending on a repo venv layout.
+REAL_PROBE_PYTHON = Path(sys.executable)
 
 FAKE_CANDIDATE = """#!/bin/sh
 # Passes the candidate probe; `-m venv DIR` fabricates a python that passes
@@ -129,7 +131,7 @@ def write_heartbeat(deploy, payload, age=0):
 
 class TestVerbs:
     def test_probe_passes_real_venv_python(self, deploy):
-        assert run_preflight(deploy, "probe", str(REAL_VENV_PYTHON)).returncode == 0
+        assert run_preflight(deploy, "probe", str(REAL_PROBE_PYTHON)).returncode == 0
 
     def test_candidate_probe_rejects_system_python(self, deploy):
         # /usr/bin/python3 is 3.9.x — rejected by the version gate (PF-13)
@@ -137,19 +139,21 @@ class TestVerbs:
         assert result.returncode == 1
 
     def test_select_prefers_first_passing_candidate_in_order(self, deploy):
-        result = run_preflight(deploy, "select", candidates=f"/nonexistent/pythonA:{REAL_VENV_PYTHON}:/usr/bin/python3")
+        result = run_preflight(
+            deploy, "select", candidates=f"/nonexistent/pythonA:{REAL_PROBE_PYTHON}:/usr/bin/python3"
+        )
         assert result.returncode == 0
-        assert result.stdout.strip() == str(REAL_VENV_PYTHON)
+        assert result.stdout.strip() == str(REAL_PROBE_PYTHON)
 
     def test_select_fails_when_no_candidate_passes(self, deploy):
         result = run_preflight(deploy, "select", candidates="/nonexistent/a:/nonexistent/b")
         assert result.returncode == 1
 
     def test_candidates_verb_lists_pass_fail(self, deploy):
-        result = run_preflight(deploy, "candidates", candidates=f"/nonexistent/x:{REAL_VENV_PYTHON}")
+        result = run_preflight(deploy, "candidates", candidates=f"/nonexistent/x:{REAL_PROBE_PYTHON}")
         assert result.returncode == 0
         assert "FAIL /nonexistent/x" in result.stdout
-        assert f"PASS {REAL_VENV_PYTHON}" in result.stdout
+        assert f"PASS {REAL_PROBE_PYTHON}" in result.stdout
 
 
 class TestWrapperExec:

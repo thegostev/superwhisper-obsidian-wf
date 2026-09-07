@@ -70,7 +70,13 @@ def run_verb(tmp_path: Path, verb: str, launchctl_output: str, *extra: str) -> s
         (PROJECT_DIR / "health_check.py").read_text(encoding="utf-8"), encoding="utf-8"
     )
     shim_dir = make_launchctl_shim(tmp_path, launchctl_output)
-    env = {"PATH": f"{shim_dir}:/usr/bin:/bin", "HOME": str(tmp_path)}
+    env = {
+        "PATH": f"{shim_dir}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        # health_check.py invokes launchctl by absolute path (WD-8), which a
+        # PATH shim cannot intercept — redirect it to the shim for hermeticity.
+        "HEALTH_CHECK_LAUNCHCTL": str(shim_dir / "launchctl"),
+    }
     return subprocess.run(
         ["/bin/zsh", str(script_copy), verb, *extra], capture_output=True, text=True, env=env, timeout=60
     )

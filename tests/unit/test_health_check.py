@@ -494,6 +494,18 @@ class TestWdStatePersistence:
 
 
 class TestWatchdogWrappers:
+    def test_launchctl_bin_defaults_to_absolute_path(self, monkeypatch):
+        """WD-8: subprocess paths are absolute in production. The env hook
+        exists only so shell-level harnesses can shim launchctl (an absolute
+        path cannot be intercepted via PATH)."""
+        monkeypatch.delenv("HEALTH_CHECK_LAUNCHCTL", raising=False)
+        # Constant is computed at import; deleting the env var restores it.
+        import importlib
+
+        module = importlib.reload(health_check)
+        assert module.LAUNCHCTL_BIN == "/bin/launchctl"
+        importlib.reload(health_check)  # restore for subsequent tests
+
     def test_kickstart_uses_absolute_path_and_timeout(self, monkeypatch):
         recorded = {}
 

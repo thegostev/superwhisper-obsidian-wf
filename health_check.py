@@ -34,6 +34,11 @@ DEFAULT_HEARTBEAT_PATH = "~/.superwhisper_transcriber_heartbeat.json"
 DEFAULT_LABEL = "com.alex.transcriber"
 DEFAULT_SELF_LABEL = "com.alex.transcriber.watchdog"
 
+# WD-8: production always uses the absolute path. The env hook exists only so
+# shell-level test harnesses can shim launchctl (an absolute path cannot be
+# intercepted via PATH).
+LAUNCHCTL_BIN = os.environ.get("HEALTH_CHECK_LAUNCHCTL", "/bin/launchctl")
+
 # Watchdog constants (spec WD-*, PF-14, ES-3).
 WD_STATE_PATH = "~/.superwhisper_transcriber_watchdog.json"
 PAUSE_SENTINEL_PATH = "~/.superwhisper_transcriber_watchdog.pause"
@@ -110,7 +115,7 @@ def read_heartbeat(path: str) -> tuple[dict | None, float | None, str | None]:
 def run_launchctl_list() -> str:
     """Read-only `launchctl list` (HC-7: the only I/O the report path performs)."""
     result = subprocess.run(
-        ["/bin/launchctl", "list"], capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT
+        [LAUNCHCTL_BIN, "list"], capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT
     )
     return result.stdout
 
