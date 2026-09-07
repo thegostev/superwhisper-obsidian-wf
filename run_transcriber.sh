@@ -18,8 +18,9 @@ start() {
     fi
 
     # Refuse to start a second daemon if launchd already has the service loaded —
-    # the two would race for the same files and corrupt state.
-    if launchctl list 2>/dev/null | grep -q "com.alex.transcriber"; then
+    # the two would race for the same files and corrupt state. Exact field-3
+    # match: a substring grep would also hit com.alex.transcriber.watchdog (HC-6).
+    if launchctl list 2>/dev/null | awk '$3 == "com.alex.transcriber" { found = 1 } END { exit found ? 0 : 1 }'; then
         echo "Refusing to start: launchd service com.alex.transcriber is loaded."
         echo "Use 'launchctl unload ~/Library/LaunchAgents/com.alex.transcriber.plist' first,"
         echo "or use launchctl to manage the service instead of this script."
