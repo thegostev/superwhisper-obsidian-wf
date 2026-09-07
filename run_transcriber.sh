@@ -136,6 +136,13 @@ verify() {
     echo "✓ All checks passed — safe to push"
 }
 
+health_verb() {
+    # Read-only heartbeat-based health assessment (HC-8), or --notify-test to
+    # verify the escalation delivery path at deployment time (ES-9). Runs under
+    # /usr/bin/python3 — the interpreter Homebrew cannot break (HC-11).
+    /usr/bin/python3 "$SCRIPT_DIR/health_check.py" "$@"
+}
+
 case "${1:-start}" in
     start)  start ;;
     stop)   stop ;;
@@ -150,14 +157,19 @@ case "${1:-start}" in
     fix-categories) fix_categories "${@:2}" ;;
     fix-all) fix_all "${@:2}" ;;
     verify) verify ;;
+    health) health_verb "${@:2}" ;;
     *)
-        echo "Usage: $0 {start|stop|status|logs|restart|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all|verify}"
+        echo "Usage: $0 {start|stop|status|logs|restart|health|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all|verify}"
         echo "Service Management:"
         echo "  start          - Launch auto-transcriber in background (default)"
         echo "  stop           - Stop the running transcriber"
         echo "  status         - Check if running + last 5 log lines"
         echo "  logs           - Tail the log file (Ctrl+C to exit)"
         echo "  restart        - Stop then start"
+        echo ""
+        echo "Health:"
+        echo "  health         - Heartbeat-based health report (exit 0 healthy, 1 unhealthy)"
+        echo "  health --notify-test - Send a test escalation notification (ES-9)"
         echo ""
         echo "Catchup Operations:"
         echo "  catchup [days]         - Process last N days (default: 7)"
