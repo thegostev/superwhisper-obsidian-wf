@@ -133,10 +133,25 @@ class TestVerbs:
     def test_probe_passes_real_venv_python(self, deploy):
         assert run_preflight(deploy, "probe", str(REAL_PROBE_PYTHON)).returncode == 0
 
+    def test_candidate_probe_rejects_failing_interpreter(self, deploy):
+        """PF-13: an interpreter below 3.12 (e.g. macOS /usr/bin/python3, 3.9.x)
+        fails the candidate probe. Simulated hermetically — CI runners' system
+        python3 is 3.12+ and would legitimately pass."""
+        old_python = deploy.parent / "old_python"
+        old_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        old_python.chmod(0o755)
+        assert run_preflight(deploy, "candidate-probe", str(old_python)).returncode == 1
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only: /usr/bin/python3 is 3.9.x")
+    @pytest.mark.skipif(
+        subprocess.run(
+            ["/usr/bin/python3", "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)"]
+        ).returncode
+        != 1,
+        reason="system python3 is >= 3.12 — nothing to reject",
+    )
     def test_candidate_probe_rejects_system_python(self, deploy):
-        # /usr/bin/python3 is 3.9.x — rejected by the version gate (PF-13)
-        result = run_preflight(deploy, "candidate-probe", "/usr/bin/python3")
-        assert result.returncode == 1
+        assert run_preflight(deploy, "candidate-probe", "/usr/bin/python3").returncode == 1
 
     def test_select_prefers_first_passing_candidate_in_order(self, deploy):
         result = run_preflight(
