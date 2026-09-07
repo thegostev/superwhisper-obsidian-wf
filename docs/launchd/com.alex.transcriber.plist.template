@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Daemon agent template — install with the preflight wrapper (ADR 0010).
+
+    Fill in the __REPO__ and __HOME__ placeholders, then:
+      cp <template> ~/Library/LaunchAgents/com.alex.transcriber.plist
+      launchctl bootout gui/501/com.alex.transcriber 2>/dev/null; \
+      launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.alex.transcriber.plist
+
+    BEFORE any manual bootout/bootstrap: touch ~/.superwhisper_transcriber_watchdog.pause
+    (WD-10 — without the sentinel the watchdog turns every planned unload into a
+    false service_not_loaded escalation), and remove it after.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alex.transcriber</string>
+
+    <!-- PF-1: launchd runs the preflight wrapper, which execs the daemon —
+         so launchd tracks the daemon's own PID and signals reach it. The
+         wrapper sources the API-key env file (0600) before exec; keys are
+         never hardcoded here. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-c</string>
+        <string>[ -f "$HOME/.secrets/koding-transcriber.env" ] &amp;&amp; set -a &amp;&amp; source "$HOME/.secrets/koding-transcriber.env" &amp;&amp; set +a; exec '__REPO__/preflight.sh'</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>HF_HUB_DISABLE_XET</key>
+        <string>1</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/superwhisper-transcriber/transcriber.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/superwhisper-transcriber/transcriber.log</string>
+</dict>
+</plist>
