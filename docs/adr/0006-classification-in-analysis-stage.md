@@ -1,6 +1,6 @@
 # 0006 Classification moved to analysis stage
 
-**Status:** Accepted
+**Status:** Superseded by 0007
 **Date:** 2026-04-23
 **Project:** RecordingAnalyser
 

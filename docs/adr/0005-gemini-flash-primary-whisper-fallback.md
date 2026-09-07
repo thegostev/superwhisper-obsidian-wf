@@ -1,6 +1,6 @@
 # 0005 Gemini Flash primary transcription with local Whisper fallback
 
-**Status:** Accepted
+**Status:** Superseded by 0007
 **Date:** 2026-04-24
 **Project:** RecordingAnalyser
 

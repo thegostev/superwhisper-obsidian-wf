@@ -1,5 +1,7 @@
 # Ollama Integration
 
+**Status:** Un-numbered proposal — superseded by ADR 0007; never implemented. Retained for historical context only.
+
 RecordingAnalyser uses a local [Ollama](https://ollama.com) server for the analysis and classification stage of the pipeline. This replaces the previous cloud providers (Gemini, Claude Sonnet) with fully local inference — no API keys, no rate limits, no network dependency beyond the initial model pull.
 
 ---

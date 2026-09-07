@@ -1,7 +1,7 @@
 # ADR 0004 — Claude API Fallback for Analysis Stage
 
 **Date**: 2026-03-10
-**Status**: Accepted
+**Status**: Superseded by 0007
 **Deciders**: Owner/operator
 
 ---

@@ -1,6 +1,6 @@
 # 0001 Gemini API for audio transcription and analysis
 
-**Status:** Superseded by 0005 (transcription), partially active (analysis)
+**Status:** Superseded by 0007 (via 0005)
 **Date:** 2026-02-21
 **Project:** RecordingAnalyser
 
