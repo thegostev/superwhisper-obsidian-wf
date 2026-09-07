@@ -5,7 +5,7 @@
 **Project:** SuperwhisperObsidianWF
 **Implements:** ADR 0009 (heartbeat liveness signal), ADR 0010 (preflight wrapper and watchdog agent)
 
-**Implementation status:** decision accepted, **not yet implemented** — no artefact of this specification (writer calls, `health_check.py`, `preflight.sh`, plist templates, watchdog agent) exists yet. Tracked as post-mortem 26-09-07 action items #4–#10. The traceability table below is therefore *planned* verification.
+**Implementation status:** implemented (post-mortem 26-09-07 action items #4–#10). The heartbeat writer, `health_check.py`, `preflight.sh`, the plist templates in `docs/launchd/`, and the `run_transcriber.sh` `health` verb all exist, with tests. The traceability table below maps each requirement to its verification.
 
 ## Conventions
 
@@ -149,9 +149,9 @@ Executing the interpreter covers dyld resolution; the version check covers the f
 
 ## Traceability
 
-The "Verified by (planned)" column names the test or review that will verify each requirement once implemented (post-mortem 26-09-07 items #4–#10); none of the named artefacts exist yet. Every requirement in this document has a row.
+Every requirement in this document has a row naming the test or review that verifies it.
 
-| Requirement group | Verified by (planned) |
+| Requirement group | Verified by |
 |---|---|
 | HB-1 … HB-11 | `tests/unit/test_heartbeat.py` |
 | HC-1 … HC-6, HC-13, HC-15 | `tests/unit/test_health_check.py` — `assess_health`, `parse_launchctl_list` |

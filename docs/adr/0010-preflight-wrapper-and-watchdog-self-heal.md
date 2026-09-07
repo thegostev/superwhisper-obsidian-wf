@@ -1,6 +1,6 @@
 # 0010 Preflight wrapper and watchdog agent for launchd self-healing
 
-**Status:** Accepted — decision recorded; **not yet implemented** (post-mortem 26-09-07 items #4–#10)
+**Status:** Accepted — implemented (post-mortem 26-09-07 items #4–#10)
 **Date:** 2026-09-07
 **Project:** SuperwhisperObsidianWF
 

@@ -125,7 +125,28 @@ Run the service via the shell wrapper:
 ./run_transcriber.sh logs      # tail live log (Ctrl+C exits the tail, not the service)
 ```
 
-To make it start automatically on login, register with launchd by creating `~/Library/LaunchAgents/com.yourdomain.transcriber.plist` pointing at `venv/bin/python3` and `auto_transcribe.py`, then `launchctl load` it.
+To make it start automatically on login, install the launchd agents from the committed templates (`docs/launchd/`): fill in the `__REPO__`/`__HOME__` placeholders in `com.alex.transcriber.plist.template` (daemon) and `com.alex.transcriber.watchdog.plist.template` (watchdog), copy both to `~/Library/LaunchAgents/`, and `launchctl bootstrap gui/$(id -u)` them. The daemon plist does **not** point at `venv/bin/python3` directly — it runs `preflight.sh` (see Self-healing below).
+
+### Health
+
+The daemon writes a heartbeat JSON to `~/.superwhisper_transcriber_heartbeat.json` (mtime is the liveness signal; embedded timestamps are diagnostic). Check it at any time:
+
+```bash
+./run_transcriber.sh health                 # print report; exit 0 healthy, 1 unhealthy
+./run_transcriber.sh health --dry-run       # print report without persisting watchdog state
+./run_transcriber.sh health --notify-test   # send a test escalation notification
+```
+
+`health` runs under `/usr/bin/python3` — the system interpreter Homebrew upgrades cannot break — and never heals: it only reads the heartbeat and `launchctl list`.
+
+### Self-healing
+
+ADR 0009/0010 (see `docs/adr/`) give the service a liveness signal and automatic recovery:
+
+- **Heartbeat writer** (`pipeline.py`): the daemon atomically rewrites the heartbeat file on every scan cycle and at each lifecycle transition (`started`, `running`, `fatal`). A fatal failure (e.g. misconfiguration) records `fatal_reason`.
+- **Preflight wrapper** (`preflight.sh`): launchd execs the wrapper instead of the daemon. It refuses to rebuild the venv while a Homebrew operation is active or a heartbeat records a fresh fatal fault, rebuilds a broken venv onto a working Python ≥ 3.12 (recording any interpreter repoint), and execs the daemon so launchd tracks the daemon's own PID.
+- **Watchdog** (`health_check.py --heal`): a launchd agent on a 5-minute interval that reads the heartbeat. Fresh heartbeat → record health; stale → a restart ladder (two `launchctl kickstart` attempts, then escalation; hourly slow retry afterwards). Escalations share an hourly notification cooldown and are also written to `~/Library/Logs/superwhisper-transcriber/watchdog.log`; recovery after an escalation sends exactly one recovery notification.
+- **Pause sentinel**: `touch ~/.superwhisper_transcriber_watchdog.pause` makes the watchdog exit 0 without acting — place it before any *planned* manual `launchctl bootout`/`bootstrap` and remove it after, so maintenance is not mistaken for an outage.
 
 ### Catchup
 

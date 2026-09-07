@@ -170,6 +170,24 @@ Superwhisper integration improvements.
   `move_transcript_and_analysis()`, `scan_default_folder()`
 - **Dependencies**: filesystem only (no AI calls in current implementation)
 
+### S2.M4: Self-Healing (ADR 0009/0010)
+
+Liveness signal, read-only health assessment, and automatic recovery.
+
+- **Public interface**: `pipeline.write_heartbeat()` (called by the daemon
+  loop and lifecycle transitions); `health_check.py` CLI
+  (`--dry-run` read-only, `--heal` watchdog tick, `--notify-test`);
+  `preflight.sh` (launchd exec chain guard, venv rebuild)
+- **Internal data model**: heartbeat JSON
+  (`~/.superwhisper_transcriber_heartbeat.json`, schema version 1, mtime =
+  liveness); watchdog state `~/.superwhisper_transcriber_watchdog.json`
+  (restart counters, shared notification cooldown); pause sentinel
+  `~/.superwhisper_transcriber_watchdog.pause`
+- **Dependencies**: `launchctl`, `osascript` (notification), the venv
+  (rebuild only); the watchdog runs under `/usr/bin/python3` and shares
+  no code with the daemon — the heartbeat JSON schema is the contract
+- **Deployment**: plist templates in `docs/launchd/`
+
 ### S3.M1: Processing State
 
 JSON-backed persistent state tracking which audio files have been processed.
@@ -197,6 +215,9 @@ With single-file output, scans category root folders directly.
 > (timestamp prefix ensures uniqueness within a minute).
 > S2.M1: Rate-limited (5s between files, 5 files/cycle cap).
 > S2.M3: All operations support `--dry-run`.
+> S2.M4: Heartbeat mtime is the liveness signal (immune to clock skew);
+> watchdog restarts capped per episode, escalations cooldown-limited (1/h);
+> preflight defers to active Homebrew operations and fresh fatal heartbeats.
 > S3.M1: Returns empty dict on corrupt state file (self-healing).
 > S3.M2: Rebuilt from filesystem each startup.
 
@@ -299,6 +320,7 @@ With single-file output, scans category root folders directly.
           │  S2.M1 Daemon Loop                      │
           │  S2.M2 CLI Entry Points                 │
           │  S2.M3 Maintenance & Repair             │
+          │  S2.M4 Self-Healing                     │
           └──────────────┬──────────────────────────┘
                          │ invokes
                          ▼
@@ -329,7 +351,9 @@ With single-file output, scans category root folders directly.
 - **Level 4 (Atomic Tasks)** are tracked in `TASKS.md`, not in this file
 - Update this document when modules are added, split, or merged
 - Cross-reference ADRs in `docs/adr/` for technology decisions — ADR 0007
-  documents the switch from Whisper+Ollama/Gemini to Superwhisper
+  documents the switch from Whisper+Ollama/Gemini to Superwhisper;
+  ADR 0009/0010 document the heartbeat liveness signal and the
+  preflight/watchdog self-healing around it
 - **Known dependency**: `meta.json` schema is internal to Superwhisper and
   not a public API — field name `llmResult` could change across app versions
 - **Known limitation**: `--reprocess-partial` and AI-driven reclassification
