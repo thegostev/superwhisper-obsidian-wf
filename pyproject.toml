@@ -21,7 +21,7 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["auto_transcribe", "reclassify_and_fix", "ondemand_transcribe", "pipeline", "config"]
+py-modules = ["auto_transcribe", "reclassify_and_fix", "ondemand_transcribe", "pipeline", "config", "health_check"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -108,4 +108,4 @@ exclude = ["utils/", "tests/"]
 
 [tool.vulture]
 min_confidence = 80
-paths = ["auto_transcribe.py", "reclassify_and_fix.py", "ondemand_transcribe.py", "pipeline.py", "config.py"]
+paths = ["auto_transcribe.py", "reclassify_and_fix.py", "ondemand_transcribe.py", "pipeline.py", "config.py", "health_check.py"]
