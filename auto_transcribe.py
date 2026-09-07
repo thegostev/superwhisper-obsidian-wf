@@ -32,7 +32,18 @@ from pipeline import (
     process_audio,
     recover_failed_permanent,
     save_state,
+    write_heartbeat,
 )
+
+
+def _heartbeat_counts(state: dict) -> dict:
+    """Heartbeat context values derived from the pipeline state (HB-6)."""
+    statuses = [v.get("status") for v in state.get("processed", {}).values()]
+    return {
+        "state_complete": statuses.count("complete"),
+        "failed_permanent": statuses.count("failed_permanent"),
+    }
+
 
 # Emit a heartbeat log line every Nth idle cycle (keeps logs quiet but alive).
 IDLE_HEARTBEAT_EVERY_N_CYCLES = 10
@@ -78,6 +89,9 @@ def discover_audio_files(watch_folder, state, transcript_index):
 
 
 def run_scan_cycle(state, transcript_index, cycle_number):
+    # HB-1: at least one heartbeat attempt per scan cycle. The throttle (15 s)
+    # may suppress the file write; the 30 s scan interval keeps the file fresh.
+    write_heartbeat("scanning", cycle=cycle_number, **_heartbeat_counts(state))
     new_files = discover_audio_files(WATCH_FOLDER, state, transcript_index)
 
     if not new_files:
@@ -120,8 +134,15 @@ def main():
         flush=True,
     )
 
+    # HB-7 startup milestone 1/4: configuration loaded (imports/config resolved
+    # before main() runs). Forced writes bracket the slow windows of startup so
+    # a slow start is not mistaken for a dead daemon.
+    write_heartbeat("starting", force=True)
+
     state = load_state()
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
+    # HB-7 startup milestone 2/4: state loaded.
+    write_heartbeat("starting", **_heartbeat_counts(state), force=True)
     print(
         f"\n📚 Loaded state: {statuses.count('complete')} completed, {statuses.count('failed_permanent')} permanently failed",
         flush=True,
@@ -137,10 +158,17 @@ def main():
 
     print("📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)
+    # HB-7 startup milestone 3/4: transcript index built — build_transcript_index
+    # walks iCloud-backed vault folders and may stall; its walk also emits
+    # throttled heartbeats.
+    write_heartbeat("starting", **_heartbeat_counts(state), force=True)
     print(
         f"Found {len(transcript_index)} existing transcripts\n\n🔄 Starting scan loop (every {SCAN_INTERVAL}s)...\n",
         flush=True,
     )
+
+    # HB-7 startup milestone 4/4: scan loop entered.
+    write_heartbeat("scanning", force=True)
 
     for cycle in itertools.count(1):
         try:
@@ -162,6 +190,11 @@ def main():
 
             run_scan_cycle(state, transcript_index, cycle)
         except FatalAPIError as e:
+            # PF-16 (writer half): before exiting on a post-exec fatal error, write
+            # a phase="fatal" heartbeat so the watchdog escalates instead of
+            # kickstarting — the class KeepAlive{SuccessfulExit:false} would
+            # otherwise respawn forever. write_heartbeat always forces phase="fatal".
+            write_heartbeat("fatal", fatal_reason=str(e))
             print(f"\n🛑 FATAL: {e}\n   Unrecoverable error. Service stopping.", flush=True)
             sys.exit(1)
         except Exception as e:

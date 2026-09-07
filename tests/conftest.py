@@ -35,6 +35,7 @@ _TEST_CFG = {
         "DEFAULT": "/tmp/test-default",
     },
     "state_file": "/tmp/test-state.json",
+    "heartbeat_file": "/tmp/test-heartbeat.json",
     "failed_analysis_log": "/tmp/test-failed.log",
     "superwhisper_mode_key": "test-mode-key",
 }

@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from config import (
     FOLDERS,
+    HEARTBEAT_FILE,
     MAX_RETRIES,
     STATE_FILE,
     SUPERWHISPER_MODE_KEY,
@@ -25,6 +26,24 @@ from config import (
 )
 
 TIMESTAMP_FORMAT = "%y-%m-%d %H.%M"
+
+# ── Heartbeat (ADR 0009, spec HB-*) ────────────────────────────────────────
+# The heartbeat file is the daemon's liveness signal: written only by Python
+# code executing inside the running daemon, so a dyld-aborting interpreter can
+# never produce one. Staleness of the FILE MTIME (not the embedded timestamps)
+# is what health_check.py judges; updated_at/started_at are diagnostic.
+HEARTBEAT_SCHEMA_VERSION = 1
+HEARTBEAT_MIN_INTERVAL = 15.0  # HB-8: self-throttle so call sites need not reason about write amplification
+HEARTBEAT_WRITE_FAILURE_WARN_THRESHOLD = 4  # HB-10: consecutive failures before the runbook warning
+HEARTBEAT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # HB-9: RFC 3339 UTC with explicit offset
+
+# Writer state (module-level because write_heartbeat is called from many call
+# sites that must not thread state through). Tests reset these via the
+# fresh_writer_state fixture in tests/unit/test_heartbeat.py.
+_heartbeat_last_write: float = 0.0
+_heartbeat_failures: int = 0
+_heartbeat_started_at: float | None = None
+_heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
 
 # Output-contract markers emitted by the Superwhisper Custom Mode prompt.
 # The parser reads the header lines; everything after is the analysis body.
@@ -140,6 +159,102 @@ def save_state(state):
             tmp.unlink(missing_ok=True)
 
 
+def write_heartbeat(
+    phase: str,
+    *,
+    cycle: int | None = None,
+    failed_permanent: int | None = None,
+    state_complete: int | None = None,
+    fatal_reason: str | None = None,
+    force: bool = False,
+    min_interval: float = HEARTBEAT_MIN_INTERVAL,
+) -> bool:
+    """Write the daemon heartbeat file (ADR 0009, schema v1). Returns True if written.
+
+    Atomic: a temp file in the same directory, then ``os.replace`` (HB-2) — a
+    half-written heartbeat must never read as valid JSON to the watchdog.
+
+    Self-throttled to one write per ``min_interval`` seconds unless ``force``
+    (HB-8), so call sites need not reason about write amplification. A
+    ``phase="fatal"`` write is always forced (PF-16): the fatal heartbeat must
+    land before the process exits.
+
+    A failed write never raises (HB-3): it logs a ``⚠️`` warning and continues.
+    Consecutive failures are counted; past
+    ``HEARTBEAT_WRITE_FAILURE_WARN_THRESHOLD`` the warning names the runbook
+    cause (disk full, permission denied) — a daemon that cannot write its
+    heartbeat is indistinguishable from a dead one (HB-10).
+
+    ``cycle``/``failed_permanent``/``state_complete`` are cached module-level:
+    call sites that know them pass them in; call sites that don't (poll loop,
+    handoff) still emit the last known values, so the heartbeat always carries
+    ``failed_permanent`` (HB-6).
+
+    Args:
+        phase: One of "starting" | "scanning" | "processing" | "fatal".
+        cycle: Scan-cycle number, when the caller knows it.
+        failed_permanent: Count of permanently failed files, when known.
+        state_complete: Count of completed files in state, when known.
+        fatal_reason: Why the service is unrecoverable; written only when given.
+        force: Bypass the throttle.
+        min_interval: Throttle window in seconds.
+
+    Returns:
+        True if the heartbeat file was written, False if throttled or failed.
+    """
+    global _heartbeat_last_write, _heartbeat_failures, _heartbeat_started_at
+    now = time.time()
+    if phase == "fatal":
+        force = True
+    if not force and (now - _heartbeat_last_write) < min_interval:
+        return False
+    if _heartbeat_started_at is None:
+        _heartbeat_started_at = now
+    if cycle is not None:
+        _heartbeat_context["cycle"] = cycle
+    if failed_permanent is not None:
+        _heartbeat_context["failed_permanent"] = failed_permanent
+    if state_complete is not None:
+        _heartbeat_context["state_complete"] = state_complete
+    payload = {
+        "schema": HEARTBEAT_SCHEMA_VERSION,
+        "pid": os.getpid(),
+        "phase": phase,
+        "cycle": _heartbeat_context["cycle"],
+        "updated_at": datetime.now(timezone.utc).strftime(HEARTBEAT_TIME_FORMAT),
+        "started_at": datetime.fromtimestamp(_heartbeat_started_at, tz=timezone.utc).strftime(HEARTBEAT_TIME_FORMAT),
+        "state_complete": _heartbeat_context["state_complete"],
+        "failed_permanent": _heartbeat_context["failed_permanent"],
+    }
+    if fatal_reason is not None:
+        payload["fatal_reason"] = fatal_reason
+
+    path = Path(HEARTBEAT_FILE)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+        _heartbeat_last_write = now
+        _heartbeat_failures = 0
+        return True
+    except OSError as e:
+        _heartbeat_failures += 1
+        if _heartbeat_failures >= HEARTBEAT_WRITE_FAILURE_WARN_THRESHOLD:
+            print(
+                f"⚠️  Heartbeat write failed {_heartbeat_failures}× consecutively: {e}. "
+                "A daemon that cannot write its heartbeat is indistinguishable from a dead one — "
+                "check disk space and the heartbeat file's directory permissions before trusting a restart "
+                "as the fix (HB-10).",
+                flush=True,
+            )
+        else:
+            print(f"⚠️  Warning: Could not write heartbeat: {e}", flush=True)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        return False
+
+
 def get_audio_timestamp(audio_path: str) -> datetime:
     """Extract recording timestamp via mdls → dir/filename parse → file ctime.
 
@@ -226,6 +341,9 @@ def build_transcript_index(folders: dict[str, str]) -> dict[str, dict]:
     index: dict[str, dict] = {}
     for category, base_path in folders.items():
         if (base := Path(base_path)).exists():
+            # HB-7: throttled heartbeat during the walk — a slow iCloud-backed
+            # index build must not look like a dead daemon between milestones.
+            write_heartbeat("starting")
             try:
                 for filepath in base.glob(f"*{MARKDOWN_EXT}"):
                     if (name := filepath.name).endswith(ANALYSIS_SUFFIX) or len(name) < TIMESTAMP_KEY_LENGTH:
@@ -279,6 +397,10 @@ def switch_superwhisper_mode() -> None:
 def handoff_to_superwhisper(file_path: str) -> None:
     if not Path(file_path).exists():
         raise PermanentFileError(f"Audio file not found: {file_path}")
+    # HB-11: forced write at the top of each handoff — the handoff window
+    # (mode settle + idle wait + Superwhisper startup) can otherwise breach the
+    # staleness threshold on a healthy busy daemon.
+    write_heartbeat("processing", force=True)
     # R7: wait for Superwhisper to finish any in-flight LLM pass before issuing the
     # next `open -a Superwhisper`. Rapid successive opens while Superwhisper is busy
     # create empty recording stubs that never get filled — the documented known issue.
@@ -377,6 +499,9 @@ def _wait_for_superwhisper_idle(timeout: int = SUPERWHISPER_IDLE_CHECK_TIMEOUT) 
     """Block until Superwhisper has no in-flight LLM pass, or timeout. R7."""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # HB-11: throttled heartbeat inside the inter-file idle-wait loop, so the
+        # wait for a busy Superwhisper cannot breach the staleness threshold.
+        write_heartbeat("processing")
         if _is_superwhisper_idle():
             return
         time.sleep(SUPERWHISPER_IDLE_CHECK_INTERVAL)
@@ -441,6 +566,11 @@ def wait_for_superwhisper_result(
 
     while time.time() < deadline:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
+        # HB-1: heartbeat from inside the Superwhisper poll loop (every 3 s,
+        # throttled to 15 s). This is the load-bearing busy-state call site: a
+        # legitimately busy daemon would otherwise look dead for up to
+        # SUPERWHISPER_TIMEOUT × MAX_FILES_PER_CYCLE ≈ 5 hours.
+        write_heartbeat("processing")
         try:
             entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
         except OSError:

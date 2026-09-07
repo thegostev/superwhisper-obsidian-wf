@@ -56,6 +56,7 @@ folders:
 # JSON file tracking processed audio files (keyed by audio path).
 # Keeps per-machine state; do NOT commit this file.
 state_file: "~/.superwhisper_transcriber_state.json"
+heartbeat_file: "~/.superwhisper_transcriber_heartbeat.json"
 failed_analysis_log: "~/.superwhisper_transcriber_failed.log"
 
 # ── Service behavior ───────────────────────────────────────────────────────

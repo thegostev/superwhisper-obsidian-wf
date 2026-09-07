@@ -87,6 +87,7 @@ def load_config(config_path: Path = Path(__file__).parent / "config.yaml") -> di
 
     cfg["watch_folder"] = resolve_path(cfg["watch_folder"])
     cfg["state_file"] = resolve_path(cfg.get("state_file", "~/.meeting_transcriber_state.json"))
+    cfg["heartbeat_file"] = resolve_path(cfg.get("heartbeat_file", "~/.superwhisper_transcriber_heartbeat.json"))
     cfg["superwhisper_recordings_dir"] = resolve_path(
         cfg.get("superwhisper_recordings_dir", "~/Documents/superwhisper/recordings")
     )
@@ -100,6 +101,10 @@ _cfg = load_config()
 WATCH_FOLDER: str = _cfg["watch_folder"]
 FOLDERS: dict[str, str] = _cfg["folders"]
 STATE_FILE: str = _cfg["state_file"]
+
+# Daemon liveness signal (ADR 0009). A sibling of state_file, deliberately
+# outside the repository so a venv rebuild can never clobber it.
+HEARTBEAT_FILE: str = _cfg["heartbeat_file"]
 
 # Superwhisper integration
 SUPERWHISPER_MODE_KEY: str = _cfg.get("superwhisper_mode_key", "meeting")
