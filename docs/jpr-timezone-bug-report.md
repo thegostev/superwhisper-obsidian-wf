@@ -58,7 +58,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 JPR_FIXED_CET = timezone(timedelta(hours=1))  # JPR uses UTC+1 year-round
-OSLO_TZ = ZoneInfo("Europe/Oslo")            # user's local tz
+OSLO_TZ = ZoneInfo("Europe/Oslo")  # user's local tz
 
 naive_jpr = datetime(2026, 7, 23, 13, 8, 14)  # parsed from filename
 local_time = naive_jpr.replace(tzinfo=JPR_FIXED_CET).astimezone(OSLO_TZ).replace(tzinfo=None)

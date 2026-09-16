@@ -81,7 +81,7 @@ response = _ollama_client.chat(
     model=OLLAMA_MODEL,
     messages=[
         {"role": "system", "content": ANALYSIS_PROMPT},
-        {"role": "user",   "content": f"---TRANSCRIPT TO ANALYZE---\n{transcript_content}"},
+        {"role": "user", "content": f"---TRANSCRIPT TO ANALYZE---\n{transcript_content}"},
     ],
     think=OLLAMA_THINKING,
 )
