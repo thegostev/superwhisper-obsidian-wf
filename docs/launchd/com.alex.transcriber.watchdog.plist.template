@@ -24,6 +24,7 @@
     share the ES-3 cooldown stored in that file. A pause sentinel
     (~/.superwhisper_transcriber_watchdog.pause) makes the watchdog exit 0
     without acting (WD-10) — place it during any manual bootout/bootstrap.
+    The sentinel expires after 4h (removed + one notice, LAG-674).
 -->
 <plist version="1.0">
 <dict>

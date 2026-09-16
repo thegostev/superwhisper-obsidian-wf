@@ -29,6 +29,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 # Duplicated from config.py on purpose: config.py imports PyYAML, which does not
 # exist under /usr/bin/python3 (HC-11). The launchd watchdog plist passes the
@@ -47,6 +48,7 @@ LAUNCHCTL_BIN = os.environ.get("HEALTH_CHECK_LAUNCHCTL", "/bin/launchctl")
 # Watchdog constants (spec WD-*, PF-14, ES-3).
 WD_STATE_PATH = "~/.superwhisper_transcriber_watchdog.json"
 PAUSE_SENTINEL_PATH = "~/.superwhisper_transcriber_watchdog.pause"
+PAUSE_TTL = 4 * 3600.0  # WD-10 revision (LAG-674): an older sentinel is a forgotten one
 REBUILD_MARKER_PATH = "~/.superwhisper_transcriber_rebuild.json"  # PF-14 (written by preflight.sh)
 REPOINT_MARKER_PATH = "~/.superwhisper_transcriber_repoint.json"  # PF-15 (written by preflight.sh)
 SCAN_CYCLE = 30.0  # daemon scan interval — the WD-4 grace allowance
@@ -115,6 +117,54 @@ def read_heartbeat(path: str) -> tuple[dict | None, float | None, str | None]:
     if not isinstance(payload, dict):
         return None, None, "heartbeat_unreadable"
     return payload, age, None
+
+
+def pause_sentinel_status(path: str | Path, now: float, ttl: float = PAUSE_TTL) -> str:
+    """Classify the pause sentinel (WD-10 revision, LAG-674): "absent",
+    "paused" (mtime within ttl) or "expired" (older than ttl).
+
+    Pure apart from one stat — never deletes; removal is the acting tick's job
+    so --dry-run can report an expiry without touching the file. The 26-09-16
+    outage ran 59h because a sentinel left behind after maintenance had no TTL
+    and silently disabled healing.
+    """
+    try:
+        mtime = Path(path).expanduser().stat().st_mtime
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        # Unstat-able but present: honour it as a pause, like the old bare
+        # existence check did, rather than guessing its age.
+        return "paused"
+    return "expired" if now - mtime > ttl else "paused"
+
+
+def expire_pause_sentinel(path: str | Path) -> bool:
+    """Remove an expired sentinel. Returns True only when this call removed it,
+    so the one-time notice cannot repeat every tick. Never raises (ES-6)."""
+    try:
+        Path(path).expanduser().unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        print(f"⚠️ watchdog: could not remove expired pause sentinel {path}: {error}", file=sys.stderr)
+        return False
+    return True
+
+
+def retire_expired_pause() -> None:
+    """Acting half of the WD-10 revision (LAG-674): remove the expired sentinel
+    and send one notice, bound to the removal itself so it cannot repeat."""
+    if not expire_pause_sentinel(PAUSE_SENTINEL_PATH):
+        return
+    try:
+        notify(
+            "Transcriber watchdog",
+            f"Pause expired after {PAUSE_TTL / 3600:g}h — sentinel removed, healing resumed."
+            " Check no maintenance is running.",
+        )
+    except Exception as error:  # noqa: BLE001 — ES-6: never abort on notification failure
+        print(f"⚠️ watchdog: notification failed: {error}", file=sys.stderr)
 
 
 def run_launchctl_list() -> str:
@@ -455,7 +505,10 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
     """--heal: assess, decide, act (kickstart/notify), persist state."""
     now = time.time()
     wd_state = load_wd_state(os.path.expanduser(args.state))
-    paused = os.path.exists(os.path.expanduser(PAUSE_SENTINEL_PATH))
+    pause_status = pause_sentinel_status(PAUSE_SENTINEL_PATH, now)
+    paused = pause_status == "paused"
+    if pause_status == "expired":
+        print(f"watchdog: pause sentinel expired (older than {PAUSE_TTL / 3600:g}h) — healing resumes")
 
     try:
         status = parse_launchctl_list(run_launchctl_list(), args.label)
@@ -495,6 +548,9 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
     if decision["action"] == "pause":
         # WD-10: the sentinel means manual maintenance — exit 0, no actions.
         return 0
+
+    if pause_status == "expired":
+        retire_expired_pause()
 
     if decision["restart"]:
         # WD-2 is enforced in main(); kickstart/bootstrap failures are logged, never fatal (ES-6).

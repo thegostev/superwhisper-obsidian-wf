@@ -851,3 +851,114 @@ class TestHealCli:
         health_check.write_wd_state(state_path, wd_state(consecutive_failures=2, last_kickstart_at=NOW - 300.0))
         health_check.main(["--heal", "--heartbeat", str(tmp_path / "nope.json"), "--state", str(state_path)])
         assert any("repointed" in m for _t, m in told)
+
+
+class TestPauseSentinelTtl:
+    """WD-10 revision (LAG-674): the 26-09-16 outage ran 59h because a pause
+    sentinel left behind after maintenance disabled healing forever. A sentinel
+    older than PAUSE_TTL expires: removed, one notice, healing resumes."""
+
+    def test_missing_sentinel_is_absent(self, tmp_path):
+        assert health_check.pause_sentinel_status(tmp_path / "pause", time.time()) == "absent"
+
+    def test_fresh_sentinel_is_paused(self, tmp_path):
+        sentinel = tmp_path / "pause"
+        sentinel.write_text("", encoding="utf-8")
+        assert health_check.pause_sentinel_status(sentinel, time.time()) == "paused"
+
+    def test_sentinel_older_than_ttl_is_expired(self, tmp_path):
+        sentinel = tmp_path / "pause"
+        sentinel.write_text("", encoding="utf-8")
+        old = time.time() - health_check.PAUSE_TTL - 60
+        os.utime(sentinel, (old, old))
+        assert health_check.pause_sentinel_status(sentinel, time.time()) == "expired"
+
+    def test_sentinel_just_inside_ttl_is_paused(self, tmp_path):
+        sentinel = tmp_path / "pause"
+        sentinel.write_text("", encoding="utf-8")
+        recent = time.time() - health_check.PAUSE_TTL + 60
+        os.utime(sentinel, (recent, recent))
+        assert health_check.pause_sentinel_status(sentinel, time.time()) == "paused"
+
+    def test_ttl_is_four_hours(self):
+        assert health_check.PAUSE_TTL == 4 * 3600
+
+    def test_status_is_pure(self, tmp_path):
+        """Classification never deletes — removal belongs to the acting tick."""
+        sentinel = tmp_path / "pause"
+        sentinel.write_text("", encoding="utf-8")
+        old = time.time() - health_check.PAUSE_TTL - 60
+        os.utime(sentinel, (old, old))
+        health_check.pause_sentinel_status(sentinel, time.time())
+        assert sentinel.exists()
+
+
+class TestHealPauseSentinelTtl:
+    def setup(self, monkeypatch, tmp_path, *, sentinel_age=None):
+        state_path = tmp_path / "wd.json"
+        sentinel = tmp_path / "pause"
+        monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(sentinel))
+        monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
+        monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        kicked, told = [], []
+        monkeypatch.setattr(health_check, "kickstart", lambda label: kicked.append(label) or True)
+        monkeypatch.setattr(health_check, "notify", lambda t, m: told.append((t, m)) or True)
+        if sentinel_age is not None:
+            sentinel.write_text("", encoding="utf-8")
+            then = time.time() - sentinel_age
+            os.utime(sentinel, (then, then))
+        health_check.write_wd_state(state_path, wd_state())
+        return state_path, sentinel, kicked, told
+
+    def argv(self, tmp_path, state_path, *extra):
+        return ["--heal", "--heartbeat", str(tmp_path / "nope.json"), "--state", str(state_path), *extra]
+
+    def test_fresh_sentinel_still_pauses(self, tmp_path, monkeypatch, capsys):
+        state_path, sentinel, kicked, told = self.setup(monkeypatch, tmp_path, sentinel_age=60)
+        rc = health_check.main(self.argv(tmp_path, state_path))
+        assert rc == 0
+        assert kicked == [] and told == []
+        assert sentinel.exists()
+
+    def test_stale_sentinel_is_removed_notified_and_healing_resumes(self, tmp_path, monkeypatch, capsys):
+        state_path, sentinel, kicked, told = self.setup(monkeypatch, tmp_path, sentinel_age=health_check.PAUSE_TTL + 60)
+        rc = health_check.main(self.argv(tmp_path, state_path))
+        assert not sentinel.exists()
+        assert len(told) == 1
+        assert "pause expired" in told[0][1].lower()
+        assert "maintenance" in told[0][1].lower()
+        assert kicked == ["com.alex.transcriber"]  # healing resumed on the same tick
+        assert rc == 1
+
+    def test_expiry_notice_fires_only_once(self, tmp_path, monkeypatch, capsys):
+        state_path, sentinel, kicked, told = self.setup(monkeypatch, tmp_path, sentinel_age=health_check.PAUSE_TTL + 60)
+        health_check.main(self.argv(tmp_path, state_path))
+        health_check.main(self.argv(tmp_path, state_path))
+        assert sum("pause expired" in m.lower() for _, m in told) == 1
+
+    def test_missing_sentinel_heals_normally_without_notice(self, tmp_path, monkeypatch, capsys):
+        state_path, sentinel, kicked, told = self.setup(monkeypatch, tmp_path)
+        rc = health_check.main(self.argv(tmp_path, state_path))
+        assert rc == 1
+        assert kicked == ["com.alex.transcriber"]
+        assert told == []
+
+    def test_dry_run_reports_expiry_but_keeps_sentinel(self, tmp_path, monkeypatch, capsys):
+        state_path, sentinel, kicked, told = self.setup(monkeypatch, tmp_path, sentinel_age=health_check.PAUSE_TTL + 60)
+        health_check.main(self.argv(tmp_path, state_path, "--dry-run"))
+        assert sentinel.exists()
+        assert kicked == [] and told == []
+        assert "expired" in capsys.readouterr().out.lower()
+
+    def test_unremovable_stale_sentinel_does_not_pause_or_spam(self, tmp_path, monkeypatch, capsys):
+        state_path, sentinel, kicked, told = self.setup(monkeypatch, tmp_path, sentinel_age=health_check.PAUSE_TTL + 60)
+
+        def refuse(self, missing_ok=False):
+            raise PermissionError("read-only")
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        health_check.main(self.argv(tmp_path, state_path))
+        assert kicked == ["com.alex.transcriber"]  # an expired pause never blocks healing
+        assert told == []  # notice only after a successful removal — else it repeats every tick
+        assert "could not remove" in capsys.readouterr().err.lower()
