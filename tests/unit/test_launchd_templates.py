@@ -81,6 +81,15 @@ class TestWatchdogTemplate:
         assert "--label com.alex.transcriber" in joined
         assert "--self-label com.alex.transcriber.watchdog" in joined
 
+    def test_watchdog_passes_daemon_plist_for_bootstrap_repair(self, watchdog_template):
+        """WD-9 revision (LAG-673): the plist path is passed at install time so
+        the heal ladder can re-bootstrap a booted-out service. Without it the
+        watchdog can only escalate — the gap that made the 26-09-16 outage 63h."""
+        args = [str(a) for a in watchdog_template["ProgramArguments"]]
+        joined = " ".join(args)
+        assert "--plist" in joined
+        assert "__HOME__/Library/LaunchAgents/com.alex.transcriber.plist" in joined
+
     def test_watchdog_has_own_durable_log(self, watchdog_template):
         """ES-5: a watchdog crash must also be durable."""
         log = watchdog_template["StandardOutPath"]

@@ -36,6 +36,8 @@
         <string>com.alex.transcriber</string>
         <string>--self-label</string>
         <string>com.alex.transcriber.watchdog</string>
+        <string>--plist</string>
+        <string>__HOME__/Library/LaunchAgents/com.alex.transcriber.plist</string>
     </array>
 
     <key>WorkingDirectory</key>

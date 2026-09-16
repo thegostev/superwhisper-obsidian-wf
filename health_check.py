@@ -13,6 +13,11 @@ The 2026-09-07 incident (transcriber dead 8h) is encoded here:
     trusts it as a liveness source (HC-2/HC-3: no log/state-path parameters).
 
 Exit codes: 0 healthy, 1 unhealthy, 2 argparse error, 3 internal error.
+
+The 2026-09-16 incident (59h down via an unclosed redrive session) is encoded
+here too: on service_not_loaded the ladder re-bootstraps the daemon from the
+plist passed at install time (--plist, WD-9 revision, LAG-673) — without a
+plist it stays escalate-only, because `kickstart` cannot undo a `bootout`.
 """
 
 from __future__ import annotations
@@ -244,6 +249,7 @@ def decide_action(
     max_age: float,
     paused: bool = False,
     rebuild_busy: bool = False,
+    bootstrap_available: bool = False,
 ) -> dict:
     """Pure decision ladder (WD-1..WD-12, PF-14, PF-16 reader half, ES-3/ES-4).
 
@@ -252,8 +258,12 @@ def decide_action(
 
     Ladder: pause sentinel (WD-10) → first run (WD-5) → healthy (record /
     recovery notification ES-4) → rebuild-marker busy (PF-14) → sleep-gap
-    observational grace (WD-4) → restart ladder (WD-6), with fatal heartbeats
-    (PF-16) and service_not_loaded (WD-9) escalating without a restart.
+    observational grace (WD-4) → restart ladder (WD-6). Fatal heartbeats (PF-16)
+    and service_not_loaded (WD-9) escalate without a restart — except that a
+    service_not_loaded with a plist passed at install time (WD-9 revision,
+    LAG-673) is repairable: the ladder re-bootstraps the service, capped like
+    kickstarts, and notifies on the first tick (a bootout is deliberate human
+    action, not a crash loop — the first-tick silence must not apply).
     """
     state = dict(wd_state)
     first_run = wd_state.get("last_run_at") is None
@@ -301,7 +311,8 @@ def decide_action(
 
     state["consecutive_failures"] = int(state.get("consecutive_failures") or 0) + 1
     failures = state["consecutive_failures"]
-    escalate_only = reason in ("heartbeat_fatal", "service_not_loaded")
+    bootstrap_repair = reason == "service_not_loaded" and bootstrap_available
+    escalate_only = reason == "heartbeat_fatal" or (reason == "service_not_loaded" and not bootstrap_repair)
     if escalate_only:
         restart = False  # PF-16 / WD-9: restarting cannot help (or cannot work)
     elif failures <= RESTARTS_PER_EPISODE:
@@ -311,8 +322,12 @@ def decide_action(
 
     # ES-3: at most one unhealthy notification per hour. The first two kickstart
     # ticks stay silent — the escalation itself is the notification moment (WD-6).
+    # Bootstrap repair is exempt: an unbootstrapped service is visible harm in
+    # progress, so the first tick notifies too (WD-9 revision, LAG-673).
     cooldown_ok = (not state.get("escalated")) or (now - (state.get("last_notify_at") or 0.0)) >= NOTIFY_COOLDOWN
-    do_notify = cooldown_ok and not (restart and failures <= RESTARTS_PER_EPISODE and not escalate_only)
+    do_notify = cooldown_ok and (
+        bootstrap_repair or not (restart and failures <= RESTARTS_PER_EPISODE and not escalate_only)
+    )
     if restart:
         state["last_kickstart_at"] = now
     if do_notify:
@@ -320,7 +335,7 @@ def decide_action(
         state["escalated_at"] = now
         state["last_notify_at"] = now  # ES-3 shared cooldown
     if restart:
-        return finish("kickstart", restart=True, notify=do_notify)
+        return finish("bootstrap" if bootstrap_repair else "kickstart", restart=True, notify=do_notify)
     return finish("escalate" if do_notify else "wait", restart=False, notify=do_notify)
 
 
@@ -384,6 +399,31 @@ def kickstart(label: str) -> bool:
         return False
 
 
+def bootstrap_repair(label: str, plist_path: str) -> bool:
+    """Tier-0 repair for service_not_loaded (WD-9 revision, LAG-673):
+    `launchctl bootstrap gui/<uid>/<label> <plist>` — the only repair for a
+    `launchctl bootout`, which removes the job from the domain entirely
+    (`kickstart` cannot undo it; the 26-09-16 outage ran 63h on exactly that).
+
+    The plist path is passed at install time (--plist); the watchdog never
+    guesses it. Failure returns False, never raises (ES-6).
+    """
+    try:
+        result = subprocess.run(
+            [LAUNCHCTL_BIN, "bootstrap", f"gui/{os.getuid()}/{label}", plist_path],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode != 0:
+            print(f"⚠️ watchdog: bootstrap failed: {result.stderr.strip()}", file=sys.stderr)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"⚠️ watchdog: bootstrap failed: {error}", file=sys.stderr)
+        return False
+
+
 def notify(title: str, message: str) -> bool:
     """ES-1/ES-2/ES-6: notification via osascript, text passed as argv — never
     interpolated into AppleScript source. Failure returns False, never raises."""
@@ -429,7 +469,22 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         report["verdict"] = "unhealthy"
 
     rebuild_busy = load_rebuild_marker(os.path.expanduser(REBUILD_MARKER_PATH))
-    decision = decide_action(report, wd_state, now, max_age=args.max_age, paused=paused, rebuild_busy=rebuild_busy)
+    # WD-9 revision (LAG-673): the daemon plist path, passed at install time,
+    # unlocks bootstrap repair. A declared-but-missing plist degrades to the
+    # old escalate-only behaviour — visibly, never silently.
+    plist_path = os.path.expanduser(args.plist) if getattr(args, "plist", None) else None
+    bootstrap_available = bool(plist_path and os.path.exists(plist_path))
+    if args.plist and not bootstrap_available:
+        print(f"⚠️ watchdog: --plist not found at {args.plist} — bootstrap repair unavailable", file=sys.stderr)
+    decision = decide_action(
+        report,
+        wd_state,
+        now,
+        max_age=args.max_age,
+        paused=paused,
+        rebuild_busy=rebuild_busy,
+        bootstrap_available=bootstrap_available,
+    )
     print(f"watchdog: {decision['action']}")
     print_report(report)
 
@@ -442,8 +497,12 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         return 0
 
     if decision["restart"]:
-        # WD-2 is enforced in main(); kickstart failures are logged, never fatal (ES-6).
-        kickstart(args.label)
+        # WD-2 is enforced in main(); kickstart/bootstrap failures are logged, never fatal (ES-6).
+        if decision["action"] == "bootstrap":
+            if plist_path:  # the bootstrap action implies the plist was found
+                bootstrap_repair(args.label, plist_path)
+        else:
+            kickstart(args.label)
     if decision["notify"]:
         if decision["action"] == "notify_recovery":
             message = "Transcriber health restored — heartbeat is fresh again."
@@ -475,6 +534,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--heal", action="store_true", help="watchdog mode: decide and act on the verdict")
     parser.add_argument("--state", default=WD_STATE_PATH, help="watchdog state file (WD-3)")
+    parser.add_argument(
+        "--plist",
+        default=None,
+        help=(
+            "daemon plist path, passed at install time; enables bootstrap repair"
+            " of a booted-out service (WD-9 revision, LAG-673)"
+        ),
+    )
     parser.add_argument("--self-label", default=DEFAULT_SELF_LABEL, help="this watchdog's own label (WD-2)")
     parser.add_argument("--notify-test", action="store_true", help="send one test notification and exit (ES-9)")
     args = parser.parse_args(argv)

@@ -325,9 +325,15 @@ def wd_state(**overrides):
     return state
 
 
-def decide(state, reason, *, age=900.0, paused=False, rebuild_busy=False, max_age=300.0):
+def decide(state, reason, *, age=900.0, paused=False, rebuild_busy=False, max_age=300.0, bootstrap_available=False):
     return health_check.decide_action(
-        wd_report(reason, age), state, NOW, max_age=max_age, paused=paused, rebuild_busy=rebuild_busy
+        wd_report(reason, age),
+        state,
+        NOW,
+        max_age=max_age,
+        paused=paused,
+        rebuild_busy=rebuild_busy,
+        bootstrap_available=bootstrap_available,
     )
 
 
@@ -423,6 +429,50 @@ class TestDecideAction:
         out = decide(wd_state(), "service_not_loaded")
         assert not out["restart"]
         assert out["notify"]
+
+    # -- WD-9 revision (LAG-673): bootstrap repair when the plist is known ---
+    def test_service_not_loaded_bootstraps_and_notifies_when_plist_available(self):
+        """The 26-09-16 incident: bootout left the service unloaded for 63h
+        because the ladder had no repair for it. With a plist passed at install
+        time, the watchdog re-bootstraps — and notifies on the FIRST tick
+        (a bootout is a deliberate human action, not a crash loop, so the
+        WD-6 first-tick silence must not apply)."""
+        out = decide(wd_state(), "service_not_loaded", bootstrap_available=True)
+        assert out["action"] == "bootstrap"
+        assert out["restart"]
+        assert out["notify"]
+
+    def test_service_not_loaded_without_plist_stays_escalate_only(self):
+        """Without a plist path, kickstart cannot work and bootstrap cannot be
+        attempted — behaviour unchanged (escalate-only)."""
+        out = decide(wd_state(), "service_not_loaded", bootstrap_available=False)
+        assert not out["restart"]
+        assert out["notify"]
+
+    def test_bootstrap_is_capped_like_kickstarts(self):
+        """WD-6 capping applies to the bootstrap verb too: after the two
+        immediate attempts, at most one retry per hour."""
+        state = wd_state(
+            consecutive_failures=3, escalated=True, last_kickstart_at=NOW - 600.0, last_notify_at=NOW - 600.0
+        )
+        out = decide(state, "service_not_loaded", bootstrap_available=True)
+        assert not out["restart"]
+        assert out["action"] == "wait"
+
+    def test_bootstrap_slow_retry_resumes_after_an_hour(self):
+        state = wd_state(
+            consecutive_failures=3, escalated=True, last_kickstart_at=NOW - 7200.0, last_notify_at=NOW - 7200.0
+        )
+        out = decide(state, "service_not_loaded", bootstrap_available=True)
+        assert out["action"] == "bootstrap"
+        assert out["restart"]
+        assert out["notify"]
+
+    def test_paused_service_not_loaded_still_pauses(self):
+        """WD-10 precedence is untouched: the sentinel wins over any repair."""
+        out = decide(wd_state(), "service_not_loaded", paused=True, bootstrap_available=True)
+        assert out["action"] == "pause"
+        assert not out["restart"]
 
     # -- PF-14: fresh rebuild marker is busy ---------------------------------
     def test_rebuild_marker_busy_observes_without_counting_failure(self):
@@ -540,6 +590,40 @@ class TestWatchdogWrappers:
         assert cmd[-1] == "Title"
         assert recorded["kwargs"].get("timeout") is not None
 
+    def test_bootstrap_repair_uses_bootstrap_verb_plist_and_timeout(self, monkeypatch):
+        """WD-7/WD-8: absolute binary, gui/<uid>/<label> domain target, the plist
+        as the final argument, timeout set."""
+        recorded = {}
+
+        def fake_run(cmd, **kwargs):
+            recorded["cmd"], recorded["kwargs"] = cmd, kwargs
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert health_check.bootstrap_repair("com.alex.transcriber", "/tmp/daemon.plist") is True
+        cmd = recorded["cmd"]
+        assert cmd[0] == health_check.LAUNCHCTL_BIN  # WD-8
+        assert "bootstrap" in cmd
+        assert f"gui/{os.getuid()}/com.alex.transcriber" in cmd
+        assert cmd[-1] == "/tmp/daemon.plist"
+        assert recorded["kwargs"].get("timeout") is not None  # WD-7
+
+    def test_bootstrap_repair_failure_returns_false_not_raise(self, monkeypatch):
+        """ES-6: a failed repair is logged, never fatal."""
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 5, "", "Bootstrap failed: 5: Input/output error")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert health_check.bootstrap_repair("com.alex.transcriber", "/tmp/daemon.plist") is False
+
+    def test_bootstrap_repair_oserror_returns_false_not_raise(self, monkeypatch):
+        def boom(*_a, **_k):
+            raise OSError("launchctl missing")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert health_check.bootstrap_repair("com.alex.transcriber", "/tmp/daemon.plist") is False
+
     def test_notify_failure_does_not_raise(self, monkeypatch):
         """ES-6: a failed notification must not abort remaining logic."""
 
@@ -622,6 +706,76 @@ class TestHealCli:
         assert rc == 0
         assert kicked == []
         assert "pause" in capsys.readouterr().out.lower()
+
+    def test_heal_bootstraps_when_service_not_loaded_and_plist_given(self, tmp_path, monkeypatch, capsys):
+        state_path = self.setup_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "")  # service absent entirely
+        bootstrapped, told = [], []
+        monkeypatch.setattr(
+            health_check, "bootstrap_repair", lambda label, plist: bootstrapped.append((label, plist)) or True
+        )
+        monkeypatch.setattr(health_check, "notify", lambda t, m: told.append((t, m)) or True)
+        plist = tmp_path / "daemon.plist"
+        plist.write_text("<plist/>", encoding="utf-8")
+        health_check.write_wd_state(state_path, wd_state())
+        rc = health_check.main(
+            [
+                "--heal",
+                "--heartbeat",
+                str(tmp_path / "nope.json"),
+                "--state",
+                str(state_path),
+                "--plist",
+                str(plist),
+            ]
+        )
+        assert rc == 1  # still unhealthy on this tick — the repair just ran
+        assert bootstrapped == [("com.alex.transcriber", str(plist))]
+        assert len(told) == 1  # LAG-673: notify on the first tick, not after two silent ones
+        assert "service_not_loaded" in told[0][1]
+        saved = health_check.load_wd_state(state_path)
+        assert saved["consecutive_failures"] == 1
+        assert saved["last_action"] == "bootstrap"
+
+    def test_heal_without_plist_keeps_escalate_only(self, tmp_path, monkeypatch, capsys):
+        state_path = self.setup_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "")
+        bootstrapped, told = [], []
+        monkeypatch.setattr(
+            health_check, "bootstrap_repair", lambda label, plist: bootstrapped.append((label, plist)) or True
+        )
+        monkeypatch.setattr(health_check, "notify", lambda t, m: told.append((t, m)) or True)
+        health_check.write_wd_state(state_path, wd_state())
+        rc = health_check.main(["--heal", "--heartbeat", str(tmp_path / "nope.json"), "--state", str(state_path)])
+        assert rc == 1
+        assert bootstrapped == []  # no plist → no repair attempt
+        assert len(told) == 1  # escalation instead
+        assert health_check.load_wd_state(state_path)["last_action"] == "escalate"
+
+    def test_heal_plist_path_missing_treated_as_unavailable(self, tmp_path, monkeypatch, capsys):
+        state_path = self.setup_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "")
+        bootstrapped, told = [], []
+        monkeypatch.setattr(
+            health_check, "bootstrap_repair", lambda label, plist: bootstrapped.append((label, plist)) or True
+        )
+        monkeypatch.setattr(health_check, "notify", lambda t, m: told.append((t, m)) or True)
+        health_check.write_wd_state(state_path, wd_state())
+        rc = health_check.main(
+            [
+                "--heal",
+                "--heartbeat",
+                str(tmp_path / "nope.json"),
+                "--state",
+                str(state_path),
+                "--plist",
+                str(tmp_path / "gone.plist"),
+            ]
+        )
+        assert rc == 1
+        assert bootstrapped == []
+        assert len(told) == 1  # degrade to escalation, not to silence
+        assert "plist" in capsys.readouterr().err.lower()  # the gap is visible in the log
 
     def test_wd2_watchdog_refuses_to_target_itself(self, tmp_path, monkeypatch, capsys):
         state_path = self.setup_paths(monkeypatch, tmp_path)
