@@ -6,6 +6,13 @@
       cp <template> ~/Library/LaunchAgents/com.alex.transcriber.watchdog.plist
       launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.alex.transcriber.watchdog.plist
 
+    TCC (WD-13, discovered at first deployment 2026-09-16): launchd-spawned
+    /usr/bin/python3 is DENIED reads of ~/Documents until it holds a grant —
+    the first tick then dies with "[Errno 1] Operation not permitted" before
+    health_check.py even loads (zsh and /bin/cat are equally denied, so no
+    wrapper trick routes around it). One-time fix: System Settings → Privacy
+    & Security → Full Disk Access → add /usr/bin/python3. Verified 2026-09-16.
+
     WD-1/WD-11: StartInterval 300, RunAtLoad, and NO KeepAlive — KeepAlive on a
     run-once script is an instant infinite loop. Worst-case detection latency:
     interval + staleness threshold ≈ 10 minutes.

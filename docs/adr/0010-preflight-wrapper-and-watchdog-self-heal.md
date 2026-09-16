@@ -1,6 +1,6 @@
 # 0010 Preflight wrapper and watchdog agent for launchd self-healing
 
-**Status:** Accepted — code implemented (post-mortem 26-09-07 items #4–#10), but the watchdog agent was **never deployed**: the 2026-09-16 post-mortem (59 h outage via unclosed redrive session) confirmed no watchdog plist, state, or log exists. Deployment is tracked as Linear LAG-682, blocked by LAG-673 (bootstrap repair verb — WD-9 revision, added 2026-09-16).
+**Status:** Accepted — deployed 2026-09-16 (LAG-682; blocked by LAG-673, the bootstrap repair verb — WD-9 revision). Watchdog agent live: plist rendered from the template, ticked healthy on first run; the deployment surfaced a TCC requirement recorded in the template header (WD-13): launchd-spawned `/usr/bin/python3` needs a Full Disk Access grant before it can read `health_check.py` under `~/Documents`.
 **Date:** 2026-09-07
 **Project:** SuperwhisperObsidianWF
 
