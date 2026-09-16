@@ -1,292 +1,151 @@
-# SuperwhisperObsidianWF
+# superwhisper-obsidian-wf
 
-[![License: MIT](https://img.shields.io/github/license/thegostev/recording-analyser?color=green)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/thegostev/superwhisper-obsidian-wf?color=green)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org)
 [![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](https://support.apple.com/guide/launchd)
 [![Obsidian](https://img.shields.io/badge/output-Obsidian%20Markdown-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
+[![Last commit](https://img.shields.io/github/last-commit/thegostev/superwhisper-obsidian-wf/main)](https://github.com/thegostev/superwhisper-obsidian-wf/commits/main)
+[![Stars](https://img.shields.io/github/stars/thegostev/superwhisper-obsidian-wf)](https://github.com/thegostev/superwhisper-obsidian-wf/stargazers)
+[![Dependencies](https://img.shields.io/badge/dependencies-PyYAML%20only-3fb554)]()
 
-<img width="2814" height="1536" alt="Gemini_Generated_Image_588w7j588w7j588w" src="https://github.com/user-attachments/assets/ff60d7a8-9d9e-41e3-bddb-de8b4fc30a65" />
+<img width="2814" height="1536" alt="Superwhisper to Obsidian workflow" src="https://github.com/user-attachments/assets/ff60d7a8-9d9e-41e3-bddb-de8b4fc30a65" />
 
-> The service works stable and without issues after 100 test recordings over a last month.
-
-## Why
-
-Voice notes are easy to make then they should be analysed and stored properly for reuse. For example: after a morning walk where you clean up your head by talking thoughts out with [Just Press Record](https://www.openplanetsoftware.com/just-press-record/) app, you need them be available immediately in a folder.
-
-This tool removes any tech-related friction. You hit record, you stop record, you forget about it. A few minutes later a structured Markdown analysis lands in the correct (Obsidian vault) folder — already titled, categorized, summarized.
-
-**Benefits:**
-- **Zero friction capture** — recording on your phone is the only manual action
-- **Right vault, right folder** — recordings auto-route by topic (family, career, ideas, etc.) into the matching Obsidian vault
-- **Structured output** — each note has a meeting title, summary, decisions, action items — not a wall of raw transcript
-- **Local & private** — Superwhisper runs on-device; nothing leaves your Mac
-- **Set and forget** — runs as a background service; survives reboots when registered with launchd
-
-## What
-
-A macOS daemon that bridges Just Press Record → Superwhisper → Obsidian.
+A macOS service that turns voice recordings into organized Markdown notes in your Obsidian vault. You record with Just Press Record. Superwhisper transcribes, categorizes, and analyzes each recording — on-device or in the cloud, depending on your Superwhisper settings — and the service writes a titled note into the matching vault folder.
 
 ```
-.m4a file appears  →  Superwhisper Custom Mode  →  parse output  →  Markdown in Obsidian
-                      (transcribe + classify        (CATEGORY,        (routed by category)
-                       + analyze in one pass)        FILENAME,
-                                                     ANALYSIS)
+Just Press Record (.m4a) → Superwhisper Custom Mode → this service → Obsidian vault
 ```
 
-The Python service handles file discovery, handoff to Superwhisper, polling for the result, parsing the structured output, and writing the file to the matching vault folder. Superwhisper does the heavy lifting (transcription, classification, analysis) in a single Custom Mode pass — no separate Whisper or LLM step on the Python side.
+The service itself runs locally on your Mac. Its only Python dependency is PyYAML.
 
-State is tracked in `~/.superwhisper_transcriber_state.json` — files are never reprocessed.
+## Decide whether to use this project
 
-### Architecture
+The project is active (latest commit 2026-09-16) but is a single-maintainer, early-stage tool. Before you adopt it, read the following:
 
-The daemon watches a folder for new `.m4a` files, hands each to Superwhisper's Custom Mode (which transcribes + classifies + analyzes in one pass), polls `meta.json.llmResult` for the structured output, and writes a single Markdown file to the matching Obsidian vault folder. State in `~/.superwhisper_transcriber_state.json` guarantees no file is processed twice.
+- **Recordings were lost in production.** The author's postmortem (`docs/postmortem-2026-09-08-three-lost-recordings.md`) documents three lost recordings from two causes: an empty-stub race when Superwhisper is busy with another file — still unfixed for concurrent handoffs — and a cloud transcription that returned empty output and was misdiagnosed as that race. Don't feed the service recordings you can't afford to lose until you've validated it on your own recordings.
+- **Failures can be silent.** A file can be stranded without any error or notification once it leaves the 7-day scan window. A wrong Superwhisper mode key doesn't error either — Superwhisper just keeps processing through whatever mode is active.
+- **The project is hard-wired to one environment** (see [Adapt the checkout to your machine](#adapt-the-checkout-to-your-machine)):
+  - The timezone is hardcoded to Europe/Oslo. Outside Norway, timestamps in note filenames are wrong.
+  - Just Press Record's conventions are assumed (`YYYY-MM-DD/` subfolders and a fixed-CET quirk in its filename timestamps).
+  - Place the repo checkout inside a folder tree that contains a folder named `Obsidian`, or set the `SWOWF_OBSIDIAN_BASE` environment variable. The daemon and CLI entry points fail at startup otherwise.
+- **The pipeline depends on Superwhisper's undocumented `meta.json` schema.** A Superwhisper update can break the pipeline without warning.
+- **Some documented maintenance commands are stubs.** `fix-analysis`, `fix-categories`, and `fix-all` do nothing useful: their implementation is a TODO stub, and they scan a legacy folder layout, so on a current install they report success while finding nothing.
+- **CI runs unit tests only.** Twenty unit test modules run on macOS and Ubuntu; the integration and contract test directories are empty, and the coverage floor is 15%.
+- **The repo contains the author's personal data.** One-off incident scripts (`redrive_*.py`, `salvage_ops.py`) and two raw transcript files sit at the repo root. Don't run the scripts — they reference one specific machine — and don't copy either the scripts or the transcripts as templates.
 
-Three thin entry points share one `pipeline.py` module:
-- `auto_transcribe.py` — long-running daemon (scan loop, 30s default)
-- `ondemand_transcribe.py` — CLI for catchup against a backlog
-- `reclassify_and_fix.py` — maintenance: regenerate missing analysis, reclassify misrouted files
+## Requirements
 
-See `ARCHITECTURE.md` for the full WBS decomposition (subsystems S1–S3, modules, components) and `docs/adr/` for the decision history — ADR 0007 documents the switch to Superwhisper.
+- macOS (the service uses `launchd`, `afinfo`, and `open -a`; the service isn't portable)
+- Python 3.12 or later
+- [Superwhisper](https://superwhisper.com), launched at least once
+- [Just Press Record](https://www.openplanetsoftware.com/just-press-record/), or another app that saves `.m4a` files into `YYYY-MM-DD/` subfolders
 
-### Output format
+## Adapt the checkout to your machine
 
-Each recording produces a single Markdown file named `YY-MM-DD HH.MM - <meeting title>.md`, placed directly in the category's output folder (no subfolders). Example:
+Some of the author's machine settings are in the code, not the config. If any of these don't match yours — a timezone outside Europe/Oslo, a different launchd label, a different secrets path — hand this prompt to your coding agent:
 
-```markdown
-# 26-04-20 12.00 - Team Delta Sync
+```text
+Adapt this superwhisper-obsidian-wf checkout to my machine:
 
-## Summary
-...
-
-## Decisions
-- ...
-
-## Action items
-- [ ] ...
+1. Timezone: pipeline.py hardcodes OSLO_TZ = ZoneInfo("Europe/Oslo") and
+   JPR_FIXED_CET = timezone(timedelta(hours=1)) — a Just Press Record
+   filename quirk. Replace Europe/Oslo with my timezone: <YOUR TZ>.
+   Check get_audio_timestamp() and the note filename format for anything
+   else that assumes Oslo wall-clock time.
+2. tests/conftest.py pins TZ='Europe/Oslo' — change it to match.
+3. The launchd label 'com.alex.transcriber' appears in run_transcriber.sh
+   and in both templates in docs/launchd/ — rename it consistently.
+4. The daemon template in docs/launchd/ sources
+   $HOME/.secrets/koding-transcriber.env — point it at my env file or
+   remove that line.
+5. Delete the author's one-off ops scripts at the repo root
+   (redrive_*.py, salvage_ops.py, analyze_ops.py, transcript-*.txt) —
+   they reference the author's machine and data.
+6. Run python -m pytest tests/unit -v and confirm everything passes.
 ```
 
-The title comes from the Custom Mode's `FILENAME:` header. The body is whatever the Custom Mode prompt produces — you control the structure entirely through the prompt.
+The machine-specific config keys — watch folder, vault folders, mode key — stay in `locations/config.yaml` by design (see Install).
 
 ## Install
 
-**Prerequisites:**
-- macOS
-- Python 3.12+
-- [Superwhisper](https://superwhisper.com) installed and launched at least once
-- [Just Press Record](https://www.openplanetsoftware.com/just-press-record/) (or any app that drops `.m4a` files into `YYYY-MM-DD/` subfolders)
+1. Clone the repo inside your Obsidian vault tree — an ancestor directory must contain a folder named `Obsidian`:
 
-**1. Clone and set up the venv:**
+   ```bash
+   git clone https://github.com/thegostev/superwhisper-obsidian-wf
+   cd superwhisper-obsidian-wf
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -e .
+   ```
 
-```bash
-git clone <repo-url> superwhisper-obsidian-wf
-cd superwhisper-obsidian-wf
+   If you can't clone inside the vault tree, set `SWOWF_OBSIDIAN_BASE` to your vault root path before running the service.
 
-python3 -m venv venv
-source venv/bin/activate
-pip install -e .
-```
+2. Create a Superwhisper Custom Mode: in Superwhisper, go to Settings → Modes, create the mode, and write a prompt that makes the model output exactly this structure:
 
-**2. Configure Superwhisper Custom Mode:**
+   ```text
+   CATEGORY: <one of your category names>
+   FILENAME: <meeting title, no date, no .md extension, no slashes>
 
-In Superwhisper → Settings → Modes, create a Custom Mode (e.g. `meeting`) with a prompt that outputs exactly this structure:
+   <analysis in Markdown>
+   ```
 
-```
-CATEGORY: <one of your category names>
-FILENAME: <meeting title — no date, no .md extension, no slashes>
+   **Use the `CATEGORY:`/`FILENAME:` header format shown here, not the `---CATEGORY---` format in `config.example.yaml`.** The parser reads only the header format, and the example file's outdated template routes every note to the DEFAULT folder as "Unknown Meeting".
 
-<full analysis in Markdown>
-```
+   In the mode file under `~/Documents/superwhisper/modes/`, find the mode's `key` field — the service addresses modes by key, not by filename. A wrong key doesn't fail: Superwhisper silently keeps using whichever mode is active.
 
-Define your categories and what kind of recording each one matches inside the prompt. The mode key (the filename in `~/Documents/superwhisper/modes/`, without extension) goes into `config.yaml`. The category names in the prompt must match the `folders` keys in `config.yaml` exactly. The parser strips non-ASCII characters (emoji) from the `CATEGORY:` value before lookup, so `WORK 🍎` resolves to `WORK`.
+3. Create your configuration:
 
-**3. Configure the service:**
+   ```bash
+   mkdir -p locations
+   cp config.example.yaml locations/config.yaml
+   ```
 
-```bash
-mkdir -p locations
-cp config.example.yaml locations/config.yaml
-```
+   Edit `locations/config.yaml`:
 
-Edit `locations/config.yaml`:
-- `superwhisper_mode_key` — the Custom Mode you just created (e.g. `meeting`)
-- `watch_folder` — where Just Press Record saves audio
-- `folders` — map each `CATEGORY` value to an Obsidian vault folder (categories must match the prompt exactly). A `DEFAULT` entry is required as the fallback.
+   - `superwhisper_mode_key`: the mode key from step 2
+   - `watch_folder`: where recordings appear
+   - `folders`: uppercase category names mapped to vault folders, matching the categories in your prompt exactly. Include a `DEFAULT` entry as the fallback.
 
-> **Path resolution**: `~/...` paths expand against the home dir. `/abs/...` paths are used unchanged. Paths starting with `Obsidian/...` are resolved against the Obsidian vault root (found by walking up from `config.py`'s location until an `Obsidian` folder is found), so the same config works on any Mac regardless of where Obsidian lives.
+   Keep every key from the example file: its values differ from the code's built-in fallbacks (for example, timeout 3600 versus 300 seconds), so omitting keys silently changes behavior.
 
-## Use
+4. Start the service and check its status:
 
-Run the service via the shell wrapper:
+   ```bash
+   ./run_transcriber.sh start
+   ./run_transcriber.sh status
+   ```
 
-```bash
-./run_transcriber.sh start     # launch in background
-./run_transcriber.sh stop      # stop
-./run_transcriber.sh restart   # stop + start
-./run_transcriber.sh status    # running? + last 5 log lines
-./run_transcriber.sh logs      # tail live log (Ctrl+C exits the tail, not the service)
-```
+## Day-to-day commands
 
-To make it start automatically on login, install the launchd agents from the committed templates (`docs/launchd/`): fill in the `__REPO__`/`__HOME__` placeholders in `com.alex.transcriber.plist.template` (daemon) and `com.alex.transcriber.watchdog.plist.template` (watchdog), copy both to `~/Library/LaunchAgents/`, and `launchctl bootstrap gui/$(id -u)` them. The daemon plist does **not** point at `venv/bin/python3` directly — it runs `preflight.sh` (see Self-healing below).
+| Command | Purpose |
+|---|---|
+| `./run_transcriber.sh start` / `stop` / `restart` | Manage the background service |
+| `./run_transcriber.sh status` | Show running state and the last log lines |
+| `./run_transcriber.sh logs` | Follow the live log |
+| `./run_transcriber.sh health` | Report liveness; exit code 0 means healthy, 1 means unhealthy |
+| `./run_transcriber.sh catchup [days]` | Process recordings the service missed — default 7 days, including recordings already marked permanently failed. Back up your vault before running this against a large backlog |
+| `./run_transcriber.sh catchup-preview [days]` | Run catchup without processing files |
 
-### Health
+## Start on login (optional)
 
-The daemon writes a heartbeat JSON to `~/.superwhisper_transcriber_heartbeat.json` (mtime is the liveness signal; embedded timestamps are diagnostic). Check it at any time:
+The repo ships launchd templates in `docs/launchd/`. Fill in the `__REPO__` and `__HOME__` placeholders, copy both plists to `~/Library/LaunchAgents/`, and load them with `launchctl`.
 
-```bash
-./run_transcriber.sh health                 # print report; exit 0 healthy, 1 unhealthy
-./run_transcriber.sh health --dry-run       # print report without persisting watchdog state
-./run_transcriber.sh health --notify-test   # send a test escalation notification
-```
+The templates have two non-obvious requirements:
 
-`health` runs under `/usr/bin/python3` — the system interpreter Homebrew upgrades cannot break — and never heals: it only reads the heartbeat and `launchctl list`.
+- Grant `/usr/bin/python3` Full Disk Access in System Settings, or the watchdog can't read the recordings under `~/Documents` and dies on its first run.
+- Before planned maintenance with `launchctl`, touch the pause sentinel `~/.superwhisper_transcriber_watchdog.pause` so the watchdog doesn't mistake maintenance for an outage. The sentinel expires after four hours.
 
-### Self-healing
+The daemon template also sources `$HOME/.secrets/koding-transcriber.env` before starting — the author's personal secrets path. Edit or remove that line for your machine.
 
-ADR 0009/0010 (see `docs/adr/`) give the service a liveness signal and automatic recovery:
-
-- **Heartbeat writer** (`pipeline.py`): the daemon atomically rewrites the heartbeat file on every scan cycle and at each lifecycle transition (`started`, `running`, `fatal`). A fatal failure (e.g. misconfiguration) records `fatal_reason`.
-- **Preflight wrapper** (`preflight.sh`): launchd execs the wrapper instead of the daemon. It refuses to rebuild the venv while a Homebrew operation is active or a heartbeat records a fresh fatal fault, rebuilds a broken venv onto a working Python ≥ 3.12 (recording any interpreter repoint), and execs the daemon so launchd tracks the daemon's own PID.
-- **Watchdog** (`health_check.py --heal`): a launchd agent on a 5-minute interval that reads the heartbeat. Fresh heartbeat → record health; stale → a restart ladder (two `launchctl kickstart` attempts, then escalation; hourly slow retry afterwards). Escalations share an hourly notification cooldown and are also written to `~/Library/Logs/superwhisper-transcriber/watchdog.log`; recovery after an escalation sends exactly one recovery notification.
-- **Pause sentinel**: `touch ~/.superwhisper_transcriber_watchdog.pause` makes the watchdog exit 0 without acting — place it before any *planned* manual `launchctl bootout`/`bootstrap` and remove it after, so maintenance is not mistaken for an outage. A sentinel older than 4 hours expires: the watchdog removes it, sends one "pause expired" notice and resumes healing (LAG-674) — re-`touch` it if maintenance really runs longer.
-
-### Catchup
-
-Process recordings the daemon missed (downtime, new install, etc.):
-
-```bash
-./run_transcriber.sh catchup-preview        # dry run, last 7 days
-./run_transcriber.sh catchup                # process last 7 days
-./run_transcriber.sh catchup 14             # process last 14 days
-```
-
-### Maintenance
-
-Fix gaps without re-recording:
-
-```bash
-./run_transcriber.sh fix-analysis --dry-run   # preview missing analysis
-./run_transcriber.sh fix-analysis             # generate missing analysis files
-./run_transcriber.sh fix-categories --dry-run # preview reclassification
-./run_transcriber.sh fix-all --dry-run        # both at once
-```
-
-### Tests
-
-```bash
-source venv/bin/activate
-python -m pytest tests/ -v
-```
-
-## Configuration reference
-
-All settings live in `locations/config.yaml` (gitignored). Copy `config.example.yaml` to start. Key fields:
-
-| Setting | Default | Description |
-|---|---|---|
-| `superwhisper_mode_key` | `custom` | Custom Mode filename in `~/Documents/superwhisper/modes/` (no extension) |
-| `superwhisper_timeout` | `3600` | Seconds to wait for Superwhisper result before giving up |
-| `superwhisper_recordings_dir` | `~/Documents/superwhisper/recordings` | Where Superwhisper writes results |
-| `superwhisper_poll_interval` | `3` | Seconds between result polls |
-| `watch_folder` | — | Where audio files land (`YYYY-MM-DD/*.m4a` subfolders) |
-| `folders` | — | Category name → output vault folder. Must include a `DEFAULT` entry |
-| `state_file` | `~/.superwhisper_transcriber_state.json` | Tracks processed files (per-machine, do not commit) |
-| `failed_analysis_log` | `~/.superwhisper_transcriber_failed.log` | Log for permanently-failed files |
-| `scan_interval` | `30` | Seconds between scan cycles |
-| `scan_days_back` | `7` | How many days back to scan |
-| `delay_between_files` | `5` | Seconds between files (Superwhisper is local, no API rate limit) |
-| `max_files_per_cycle` | `5` | Files per scan cycle (prevents backlog stampede) |
-| `max_retries` | `3` | Retry attempts per stage |
-| `retry_backoff` | `[10, 30, 60]` | Seconds between retries |
-
-## Privacy & data flow
-
-**No audio, transcripts, or analysis leave your Mac.** Superwhisper runs on-device. The only network traffic from this service is `git push` if you choose to publish the repo. State and logs stay on your machine.
-
-The service reads audio from your watch folder, hands the file path to Superwhisper via `open -a Superwhisper`, polls `~/Documents/superwhisper/recordings/<id>/meta.json` for the result, and writes one Markdown file to your Obsidian vault. No telemetry, no analytics, no third-party calls.
+> When the launchd service is loaded, `./run_transcriber.sh start` won't start — this prevents two daemons from racing. Manage the service through one mechanism or the other, not both.
 
 ## Troubleshooting
 
-**`FatalAPIError` on startup** — `superwhisper_mode_key` is empty in `config.yaml`, or `~/Documents/superwhisper/recordings/` doesn't exist (Superwhisper not yet used). The default key is `custom` — the mode file is `~/Documents/superwhisper/modes/custom.json` (its `name` field is `Meeting`).
-
-**`failed_retry` (empty recording stub)** — Superwhisper creates an empty `meta.json` stub (`duration: 0, processingTime: 0, result: ""`) when `open file -a Superwhisper` fires faster than it can process — the file-open is received but the transcription/LLM pipeline never runs for that stub. The poller detects this after 5 consecutive unchanged-mtime polls (~15s) and raises `TimeoutError` so `process_audio` records `failed_retry` and re-queues the file on the next scan cycle. Re-opening the audio file later (when Superwhisper is idle) processes it correctly. If a file accumulates 3 `failed_retry` attempts it becomes `failed_permanent` — at that point, either Superwhisper genuinely can't process that file, or the backlog is large enough that it never gets a free slot. Catchup with `./run_transcriber.sh catchup` re-opens them in a paced single pass.
-
-**`failed_permanent` (LLM refused the contract)** — If `llmResult` is present but does NOT start with `CATEGORY:`, the Custom Mode LLM refused to produce the contract format — usually because the audio isn't a meeting (e.g. a 5-second connectivity check from Just Press Record). The poller raises `PermanentFileError` immediately (not transient — the audio content won't change on retry). Check the recording's `llmResult` in `meta.json` to see the refusal reason.
-
-**Wrong output format / DEFAULT fallback** — Custom Mode prompt changed or Superwhisper used a different mode. Check `meta.json` of the latest recording to verify `llmResult` starts with `CATEGORY:`. The parser strips non-ASCII characters (emoji) from the `CATEGORY:` value before lookup, so `TEAM 🍎` resolves to `TEAM`. If DEFAULT is still appearing, the category label itself is unrecognised — check the prompt's category definitions match `config.yaml` `folders` keys exactly.
-
-**Timeout (file marked `failed_retry`)** — Superwhisper didn't finish within `superwhisper_timeout` (default 3600s). Re-drop the audio file or clear the state entry to retry:
-
-```python
-python3 -c "
-import json, os
-path = os.path.expanduser('~/.superwhisper_transcriber_state.json')
-with open(path) as f: state = json.load(f)
-removed = [k for k, v in state['processed'].items() if v.get('status') != 'complete']
-for k in removed: del state['processed'][k]
-with open(path, 'w') as f: json.dump(state, f, indent=2)
-print(f'Cleared {len(removed)} entries')
-"
-```
-
-## Gotchas & constraints
-
-- **Superwhisper must be running**: `open -a Superwhisper` launches it if closed, but first-run latency adds to processing time.
-- **`meta.json` schema is internal**: `llmResult` field name is not a public API and could change across Superwhisper versions.
-- **Time-based correlation**: the daemon matches results to handoffs by timestamp. If you dictate manually while the daemon is processing a file, that dictation is ignored (no `CATEGORY:` in output). Extremely unlikely to cause false positives.
-- **iCloud sync latency**: output paths are iCloud-synced. The 2-second stability check (`is_file_stable`) may be insufficient on slow connections.
-- **5 files per cycle cap**: `MAX_FILES_PER_CYCLE=5` prevents backlog stampede.
-- **Superwhisper file-open concurrency**: `open file -a Superwhisper` creates an empty recording stub every time, but Superwhisper only processes one file at a time. Rapid successive opens (faster than `delay_between_files=5s`) cause earlier stubs to be abandoned. The poller's stability-based fast-fail detects these as `failed_retry` and re-queues them on the next cycle.
-
-## Development
-
-```bash
-source venv/bin/activate
-python -m pytest tests/ -v          # tests
-ruff check .                        # lint
-mypy pipeline.py config.py          # typecheck
-```
-
-The test suite mirrors the source layout: `tests/unit/`, `tests/integration/`, `tests/contract/`. Integration and contract tests are currently stubs — unit tests cover the pipeline.
-
-## Project structure
-
-```
-auto_transcribe.py        Long-running daemon (scan loop)
-ondemand_transcribe.py    Manual catchup CLI
-reclassify_and_fix.py     Maintenance: fix missing analysis, reclassify files
-pipeline.py               Shared pipeline: handoff, poll, parse, write, state
-config.py                 Loads config.yaml (resolves ~/..., /abs/..., Obsidian/...)
-config.example.yaml       Template — copy to locations/config.yaml
-run_transcriber.sh        Shell wrapper for all common operations
-audit_coverage.py         One-shot audit: audio files vs. processed state
-ARCHITECTURE.md           WBS decomposition (S1–S3)
-docs/adr/                 Architectural decision records (ADR 0007 = Superwhisper switch)
-tests/                    Test suite
-LICENSE                   MIT
-
-locations/                Machine-specific (gitignored — see .gitignore)
-├── config.yaml           Active configuration with your real paths
-├── logs/                 transcriber.log, catchup.log, failed_analysis.log
-├── state/                (optional) relocated state file
-└── launchd/              (optional) your plist lives here
-```
-
-## Notes
-
-- Superwhisper must be running. If it's closed, `open -a Superwhisper` launches it; first-run latency adds to processing time.
-- Output paths are typically iCloud-synced — large bursts may take a moment to appear in Obsidian.
-- The daemon polls `meta.json.llmResult` from Superwhisper's recordings folder and correlates results to handoffs by timestamp. If you dictate manually while a file is processing, that dictation is ignored (no `CATEGORY:` header).
-- File naming: `YY-MM-DD HH.MM - Meeting Title.md`.
-
-## Acknowledgements
-
-- [Just Press Record](https://www.openplanetsoftware.com/just-press-record/) — audio capture
-- [Superwhisper](https://superwhisper.com) — on-device transcription + Custom Mode analysis
-- [Obsidian](https://obsidian.md) — Markdown knowledge base
-
-## Disclaimer
-
-Use at your own risk. Back up your Obsidian vault before running `catchup` against a large backlog. The service writes files to iCloud-synced folders — large bursts may take a moment to propagate.
+- **Notes land in the DEFAULT folder as "Unknown Meeting"** — the Superwhisper prompt doesn't emit the `CATEGORY:` header format. Fix the prompt (step 2 of Install).
+- **`FatalAPIError` on startup** — `superwhisper_mode_key` is empty, or Superwhisper has never been used. Also check that the mode key matches the mode file's `key` field, not its filename.
+- **Files marked `failed_retry`** — usually the empty-stub race: the service handed the file to Superwhisper while Superwhisper was busy. An empty cloud-transcription result produces the same signature. The service re-queues failed files automatically; after three attempts a file becomes `failed_permanent`. Run `./run_transcriber.sh catchup` to re-process the failed recordings.
+- **Recordings have gone missing in production** (see the postmortem in `docs/`). Run `./run_transcriber.sh catchup-preview` to find unprocessed recordings, then `catchup`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. Use at your own risk.
