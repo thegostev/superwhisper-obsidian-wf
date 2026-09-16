@@ -18,21 +18,6 @@ Just Press Record (.m4a) → Superwhisper Custom Mode → this service → Obsid
 
 The service itself runs locally on your Mac. Its only Python dependency is PyYAML.
 
-## Decide whether to use this project
-
-The project is active (latest commit 2026-09-16) but is a single-maintainer, early-stage tool. Before you adopt it, read the following:
-
-- **Recordings were lost in production.** The author's postmortem (`docs/postmortem-2026-09-08-three-lost-recordings.md`) documents three lost recordings from two causes: an empty-stub race when Superwhisper is busy with another file — still unfixed for concurrent handoffs — and a cloud transcription that returned empty output and was misdiagnosed as that race. Don't feed the service recordings you can't afford to lose until you've validated it on your own recordings.
-- **Failures can be silent.** A file can be stranded without any error or notification once it leaves the 7-day scan window. A wrong Superwhisper mode key doesn't error either — Superwhisper just keeps processing through whatever mode is active.
-- **The project is hard-wired to one environment** (see [Adapt the checkout to your machine](#adapt-the-checkout-to-your-machine)):
-  - The timezone is hardcoded to Europe/Oslo. Outside Norway, timestamps in note filenames are wrong.
-  - Just Press Record's conventions are assumed (`YYYY-MM-DD/` subfolders and a fixed-CET quirk in its filename timestamps).
-  - Place the repo checkout inside a folder tree that contains a folder named `Obsidian`, or set the `SWOWF_OBSIDIAN_BASE` environment variable. The daemon and CLI entry points fail at startup otherwise.
-- **The pipeline depends on Superwhisper's undocumented `meta.json` schema.** A Superwhisper update can break the pipeline without warning.
-- **Some documented maintenance commands are stubs.** `fix-analysis`, `fix-categories`, and `fix-all` do nothing useful: their implementation is a TODO stub, and they scan a legacy folder layout, so on a current install they report success while finding nothing.
-- **CI runs unit tests only.** Twenty unit test modules run on macOS and Ubuntu; the integration and contract test directories are empty, and the coverage floor is 15%.
-- **The repo contains the author's personal data.** One-off incident scripts (`redrive_*.py`, `salvage_ops.py`) and two raw transcript files sit at the repo root. Don't run the scripts — they reference one specific machine — and don't copy either the scripts or the transcripts as templates.
-
 ## Requirements
 
 - macOS (the service uses `launchd`, `afinfo`, and `open -a`; the service isn't portable)
@@ -138,13 +123,6 @@ The templates have two non-obvious requirements:
 The daemon template also sources `$HOME/.secrets/koding-transcriber.env` before starting — the author's personal secrets path. Edit or remove that line for your machine.
 
 > When the launchd service is loaded, `./run_transcriber.sh start` won't start — this prevents two daemons from racing. Manage the service through one mechanism or the other, not both.
-
-## Troubleshooting
-
-- **Notes land in the DEFAULT folder as "Unknown Meeting"** — the Superwhisper prompt doesn't emit the `CATEGORY:` header format. Fix the prompt (step 2 of Install).
-- **`FatalAPIError` on startup** — `superwhisper_mode_key` is empty, or Superwhisper has never been used. Also check that the mode key matches the mode file's `key` field, not its filename.
-- **Files marked `failed_retry`** — usually the empty-stub race: the service handed the file to Superwhisper while Superwhisper was busy. An empty cloud-transcription result produces the same signature. The service re-queues failed files automatically; after three attempts a file becomes `failed_permanent`. Run `./run_transcriber.sh catchup` to re-process the failed recordings.
-- **Recordings have gone missing in production** (see the postmortem in `docs/`). Run `./run_transcriber.sh catchup-preview` to find unprocessed recordings, then `catchup`.
 
 ## License
 
