@@ -37,16 +37,18 @@ repos:
   - repo: local
     hooks:
       # Commit stage: fast test subset.
+      # entry pins the repo venv interpreter: bare `python` does not exist on macOS
+      # (CI's `python` comes from a pip-installed runner env; locally that env is venv/).
       - id: pytest-fast
         name: pytest-fast
-        entry: python -m pytest tests/ -m "not slow and not integration"
+        entry: venv/bin/python3 -m pytest tests/ -m "not slow and not integration"
         language: system
         pass_filenames: false
         always_run: true
       # Push stage: same gate as CI test-fast job.
       - id: pytest-fast-push
         name: pytest-fast (push gate)
-        entry: python -m pytest tests/ -m "not slow and not integration"
+        entry: venv/bin/python3 -m pytest tests/ -m "not slow and not integration"
         language: system
         pass_filenames: false
         always_run: true
