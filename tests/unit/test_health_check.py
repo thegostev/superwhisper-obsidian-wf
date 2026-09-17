@@ -1443,3 +1443,176 @@ class TestFrozenAliveEscalation:
         assert rc == 1
         assert kicked == []
         assert "dry-run" in capsys.readouterr().out
+
+
+class TestMaintenanceEnd:
+    """LAG-680: the 26-09-16 recovery (bootstrap, verify, sentinel removal) was
+    done by hand and ended half-way. `--maintenance-end` is the gated completion:
+    remove sentinel → bootstrap (if not loaded) → poll for a heartbeat written
+    AFTER the gate started → PASS 0 / FAIL 1 with diagnostics. Idempotent."""
+
+    LOADED = "8078\t0\tcom.alex.transcriber\n"
+    NOT_LOADED = "-\t0\tcom.alex.transcriber.watchdog\n"
+
+    def setup(self, monkeypatch, tmp_path, *, loaded=False, sentinel=True, plist=True, heartbeat_on_bootstrap=None):
+        sentinel_path = tmp_path / "pause"
+        if sentinel:
+            sentinel_path.write_text("", encoding="utf-8")
+        monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(sentinel_path))
+        plist_path = tmp_path / "com.alex.transcriber.plist"
+        if plist:
+            plist_path.write_text("<plist/>", encoding="utf-8")
+        hb_path = tmp_path / "hb.json"
+        world = {"loaded": loaded, "bootstraps": []}
+        monkeypatch.setattr(
+            health_check, "run_launchctl_list", lambda: self.LOADED if world["loaded"] else self.NOT_LOADED
+        )
+
+        def fake_bootstrap(label, path):
+            world["bootstraps"].append((label, path))
+            world["loaded"] = True
+            if heartbeat_on_bootstrap is not None:
+                hb_path.write_text(json.dumps(make_heartbeat(**heartbeat_on_bootstrap)), encoding="utf-8")
+            return True
+
+        monkeypatch.setattr(health_check, "bootstrap_repair", fake_bootstrap)
+        monkeypatch.setattr(health_check, "kickstart", lambda _l: pytest.fail("maintenance-end must never kickstart"))
+        monkeypatch.setattr(health_check, "notify", lambda *_a: True)
+        argv = [
+            "--maintenance-end",
+            "--heartbeat",
+            str(hb_path),
+            "--plist",
+            str(plist_path),
+            "--timeout",
+            "0.3",
+            "--poll-interval",
+            "0.05",
+        ]
+        return argv, world, sentinel_path, hb_path
+
+    def test_full_pass_removes_sentinel_bootstraps_and_sees_fresh_heartbeat(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, _hb = self.setup(monkeypatch, tmp_path, heartbeat_on_bootstrap={"phase": "starting"})
+        rc = health_check.main(argv)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert not sentinel.exists()
+        assert [label for label, _ in world["bootstraps"]] == ["com.alex.transcriber"]
+        assert "PASS" in out
+
+    def test_sentinel_removed_before_bootstrap(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path)
+        seen = []
+
+        def ordered_bootstrap(label, path):
+            seen.append(sentinel.exists())
+            world["loaded"] = True
+            hb.write_text(json.dumps(make_heartbeat()), encoding="utf-8")
+            return True
+
+        monkeypatch.setattr(health_check, "bootstrap_repair", ordered_bootstrap)
+        assert health_check.main(argv) == 0
+        assert seen == [False]
+
+    def test_idempotent_rerun_when_already_loaded_skips_bootstrap(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path, loaded=True, sentinel=False)
+
+        def daemon_tick(_seconds):
+            hb.write_text(json.dumps(make_heartbeat()), encoding="utf-8")
+
+        monkeypatch.setattr(health_check.time, "sleep", daemon_tick)
+        rc = health_check.main(argv)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert world["bootstraps"] == []
+        assert "already loaded" in out.lower()
+
+    def test_heartbeat_older_than_gate_is_not_proof_of_life(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path, loaded=True)
+        hb.write_text(json.dumps(make_heartbeat()), encoding="utf-8")
+        old = time.time() - 120
+        os.utime(hb, (old, old))
+        rc = health_check.main(argv)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "FAIL" in out
+        assert "no fresh heartbeat" in out.lower()
+
+    def test_timeout_without_heartbeat_fails_with_diagnostics(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path)
+        rc = health_check.main(argv)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "FAIL" in out
+        assert "launchctl" in out  # diagnostics include the service row
+        assert "launchctl print" in out  # and a next step
+
+    def test_fatal_heartbeat_fails_immediately(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(
+            monkeypatch, tmp_path, heartbeat_on_bootstrap={"phase": "fatal", "fatal_reason": "FatalAPIError"}
+        )
+        rc = health_check.main(argv)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "FatalAPIError" in out
+
+    def test_missing_plist_fails_without_bootstrap(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path, plist=False)
+        rc = health_check.main(argv)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert world["bootstraps"] == []
+        assert "plist" in out.lower()
+
+    def test_failed_bootstrap_but_service_loaded_by_race_continues(self, tmp_path, monkeypatch, capsys):
+        """The watchdog may bootstrap between sentinel removal and ours; launchctl
+        then refuses ours. A loaded service afterwards is success, not failure."""
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path)
+
+        def racing_bootstrap(label, path):
+            world["loaded"] = True
+            hb.write_text(json.dumps(make_heartbeat()), encoding="utf-8")
+            return False
+
+        monkeypatch.setattr(health_check, "bootstrap_repair", racing_bootstrap)
+        assert health_check.main(argv) == 0
+
+    def test_failed_bootstrap_and_not_loaded_fails(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path)
+        monkeypatch.setattr(health_check, "bootstrap_repair", lambda _l, _p: False)
+        rc = health_check.main(argv)
+        assert rc == 1
+        assert "bootstrap" in capsys.readouterr().out.lower()
+
+    def test_unremovable_sentinel_fails_before_bootstrap(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path)
+
+        def refuse(self, missing_ok=False):
+            raise PermissionError("read-only")
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        rc = health_check.main(argv)
+        assert rc == 1
+        assert world["bootstraps"] == []
+        assert "sentinel" in capsys.readouterr().out.lower()
+
+    def test_dry_run_changes_nothing(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path)
+        rc = health_check.main([*argv, "--dry-run"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert sentinel.exists()
+        assert world["bootstraps"] == []
+        assert "dry-run" in out.lower()
+
+    def test_default_timeout_is_sixty_seconds(self):
+        assert health_check.MAINTENANCE_END_TIMEOUT == 60.0
+
+    def test_launchctl_read_error_is_internal_error(self, tmp_path, monkeypatch, capsys):
+        argv, world, sentinel, hb = self.setup(monkeypatch, tmp_path)
+
+        def broken():
+            raise RuntimeError("launchctl exploded")
+
+        monkeypatch.setattr(health_check, "run_launchctl_list", broken)
+        assert health_check.main(argv) == 3

@@ -72,6 +72,11 @@ SLOW_RETRY_INTERVAL = 3600.0  # WD-6: at most one restart per hour while unhealt
 NOTIFY_COOLDOWN = 3600.0  # ES-3: one unhealthy notification per hour, shared with preflight
 REBUILD_BUDGET = 1800.0  # PF-10/PF-14: a rebuild marker older than this is stale
 SUBPROCESS_TIMEOUT = 30.0  # WD-7: every spawned subprocess gets a timeout
+MAINTENANCE_END_TIMEOUT = 60.0  # MT-1 (LAG-680): max wait for a post-gate heartbeat
+MAINTENANCE_END_POLL = 2.0
+# Allowance for coarse filesystem mtime resolution when comparing a heartbeat's
+# mtime against the gate start — far below the daemon's 30 s scan cycle.
+MTIME_SLACK = 1.0
 
 # WD-14 (LAG-684): the committed template is the deployment source of truth, and
 # the installed plist drifted away from it — it stopped routing through
@@ -882,6 +887,133 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
     return 0 if report["verdict"] == "healthy" else 1
 
 
+def remove_pause_sentinel(path: str | Path) -> str:
+    """MT-1 step 1 (LAG-680): "removed", "absent" (idempotent re-run) or "failed"."""
+    try:
+        Path(path).expanduser().unlink()
+    except FileNotFoundError:
+        return "absent"
+    except OSError as error:
+        print(f"⚠️ maintenance-end: could not remove pause sentinel {path}: {error}", file=sys.stderr)
+        return "failed"
+    return "removed"
+
+
+def wait_for_fresh_heartbeat(
+    path: str | Path,
+    since: float,
+    *,
+    timeout: float,
+    poll_interval: float,
+) -> tuple[dict | None, str]:
+    """MT-1 step 3: poll until a heartbeat written AFTER `since` appears.
+
+    A heartbeat that predates the gate proves nothing — a manual run or the
+    pre-maintenance daemon may have left it (the 26-09-16 forensics trap).
+    Returns (payload, outcome) with outcome "fresh", "fatal" or "timeout".
+    """
+    target = Path(path).expanduser()
+    deadline = time.time() + timeout
+    while True:
+        try:
+            mtime = target.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime is not None and mtime >= since - MTIME_SLACK:
+            payload, _age, reason = read_heartbeat(str(target))
+            if reason is None and payload is not None and payload.get("schema") == HEARTBEAT_SCHEMA_VERSION:
+                return payload, "fatal" if payload.get("phase") == "fatal" else "fresh"
+        if time.time() >= deadline:
+            return None, "timeout"
+        time.sleep(poll_interval)
+
+
+def _maintenance_fail(step: str, detail: str, label: str, heartbeat_path: str) -> int:
+    """FAIL banner plus the diagnostics a human needs for the next step."""
+    print(f"maintenance-end: FAIL at {step}: {detail}")
+    try:
+        status = parse_launchctl_list(run_launchctl_list(), label)
+    except Exception as error:  # noqa: BLE001 — diagnostics are best-effort
+        status = None
+        print(f"  launchctl: read failed ({error})")
+    else:
+        print(f"  launchctl: {status if status else 'service not loaded'}")
+    payload, age, reason = read_heartbeat(heartbeat_path)
+    if payload is None:
+        print(f"  heartbeat: {reason}")
+    else:
+        print(f"  heartbeat: phase={payload.get('phase')} age={age:.0f}s fatal_reason={payload.get('fatal_reason')}")
+    print(f"  next: launchctl print gui/{os.getuid()}/{label}  and check locations/logs/transcriber.log")
+    return 1
+
+
+def run_maintenance_end(args: argparse.Namespace) -> int:
+    """--maintenance-end (MT-1, LAG-680): gated completion of manual maintenance.
+
+    In order: remove the pause sentinel → bootstrap the daemon unless already
+    loaded → poll for a post-gate heartbeat. Exit 0 PASS, 1 FAIL (with
+    diagnostics), 3 internal error. Idempotent; never kickstarts, never sudo.
+    """
+    since = time.time()
+    label: str = args.label
+    heartbeat_path = os.path.expanduser(args.heartbeat)
+    plist = Path(args.plist).expanduser() if args.plist else None
+    sentinel = Path(PAUSE_SENTINEL_PATH).expanduser()
+
+    try:
+        loaded = parse_launchctl_list(run_launchctl_list(), label) is not None
+    except Exception as error:  # noqa: BLE001 — any launchctl failure is an internal error (exit 3)
+        print(f"internal error: launchctl read failed: {error}", file=sys.stderr)
+        return 3
+
+    if args.dry_run:
+        print("maintenance-end plan (dry-run): no changes made")
+        print(f"  1. pause sentinel {sentinel}: {'would remove' if sentinel.exists() else 'absent'}")
+        if loaded:
+            print(f"  2. {label}: already loaded — would skip bootstrap")
+        else:
+            state = "found" if plist and plist.exists() else "MISSING"
+            print(f"  2. {label}: not loaded — would bootstrap from plist {plist} ({state})")
+        print(f"  3. would wait ≤{args.timeout:g}s for a heartbeat at {heartbeat_path}")
+        return 0
+
+    # Step 1: sentinel first, so the watchdog is live again the moment we finish.
+    removal = remove_pause_sentinel(sentinel)
+    if removal == "failed":
+        return _maintenance_fail("pause sentinel", f"could not remove {sentinel}", label, heartbeat_path)
+    print(f"maintenance-end: 1/3 pause sentinel {removal}")
+
+    # Step 2: bootstrap only when needed — a re-run against a loaded service is a no-op.
+    if loaded:
+        print(f"maintenance-end: 2/3 {label} already loaded — bootstrap skipped")
+    else:
+        if plist is None or not plist.exists():
+            return _maintenance_fail("bootstrap", f"daemon plist not found: {plist}", label, heartbeat_path)
+        if not bootstrap_repair(label, str(plist)):
+            # The watchdog may have won the race after step 1; loaded is loaded.
+            try:
+                loaded = parse_launchctl_list(run_launchctl_list(), label) is not None
+            except Exception:  # noqa: BLE001 — treated as not loaded
+                loaded = False
+            if not loaded:
+                return _maintenance_fail("bootstrap", f"launchctl bootstrap of {plist} failed", label, heartbeat_path)
+        print(f"maintenance-end: 2/3 {label} bootstrapped")
+
+    # Step 3: proof of life written after the gate started.
+    payload, outcome = wait_for_fresh_heartbeat(
+        heartbeat_path, since, timeout=args.timeout, poll_interval=args.poll_interval
+    )
+    if outcome == "fatal":
+        reason = payload.get("fatal_reason") if payload else None
+        return _maintenance_fail("heartbeat", f"daemon reported phase=fatal ({reason})", label, heartbeat_path)
+    if outcome == "timeout":
+        return _maintenance_fail("heartbeat", f"no fresh heartbeat within {args.timeout:g}s", label, heartbeat_path)
+    phase = payload.get("phase") if payload else None
+    print(f"maintenance-end: 3/3 fresh heartbeat (phase={phase})")
+    print("maintenance-end: PASS")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Heartbeat-based health assessment and self-healing watchdog for the transcriber daemon."
@@ -913,12 +1045,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--home", default=os.path.expanduser("~"), help="expansion for the template's __HOME__ (WD-14)")
     parser.add_argument("--self-label", default=DEFAULT_SELF_LABEL, help="this watchdog's own label (WD-2)")
     parser.add_argument("--notify-test", action="store_true", help="send one test notification and exit (ES-9)")
+    parser.add_argument(
+        "--maintenance-end",
+        action="store_true",
+        help="end manual maintenance: remove pause sentinel, bootstrap, wait for a fresh heartbeat (MT-1, LAG-680)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=MAINTENANCE_END_TIMEOUT,
+        help="--maintenance-end: seconds to wait for a fresh heartbeat",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=MAINTENANCE_END_POLL,
+        help="--maintenance-end: seconds between heartbeat polls",
+    )
     args = parser.parse_args(argv)
 
     if args.notify_test:
         notify("Transcriber watchdog", "Test notification — delivery path OK")
         print("test notification sent")
         return 0
+
+    if args.maintenance_end:
+        return run_maintenance_end(args)
 
     if args.heal:
         if args.label == args.self_label:
