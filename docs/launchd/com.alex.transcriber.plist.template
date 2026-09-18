@@ -21,8 +21,13 @@
          so launchd tracks the daemon's own PID and signals reach it. The
          wrapper sources the API-key env file (0600) before exec; keys are
          never hardcoded here. -->
+    <!-- App Nap fix (2026-09-18 freeze): caffeinate -i + ProcessType=Interactive
+         keep the daemon from being App-Nap-suspended while the screen is locked.
+         Without it launchd suspends the process and the heartbeat stalls until unlock. -->
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
         <string>/bin/zsh</string>
         <string>-c</string>
         <string>[ -f "$HOME/.secrets/koding-transcriber.env" ] &amp;&amp; set -a &amp;&amp; source "$HOME/.secrets/koding-transcriber.env" &amp;&amp; set +a; exec '__REPO__/preflight.sh'</string>
@@ -40,6 +45,9 @@
         <key>HF_HUB_DISABLE_XET</key>
         <string>1</string>
     </dict>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
 
     <key>RunAtLoad</key>
     <true/>
