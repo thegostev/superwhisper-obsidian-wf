@@ -32,6 +32,7 @@ from pipeline import (
     process_audio,
     recover_failed_permanent,
     save_state,
+    set_heartbeat_writer,
     write_heartbeat,
 )
 
@@ -133,6 +134,11 @@ def main():
         f"Max retries: {MAX_RETRIES} per file | Max files/cycle: {MAX_FILES_PER_CYCLE}\nSuperwhisper timeout: {SUPERWHISPER_TIMEOUT}s | State file: {STATE_FILE}\n{'=' * 60}",
         flush=True,
     )
+
+    # HB-12: this process is the daemon. Declared before the first heartbeat —
+    # the writer defaults to "manual", so a heartbeat written ahead of this call
+    # would read as an ops run and cost the watchdog a PID probe (HC-17).
+    set_heartbeat_writer("daemon")
 
     # HB-7 startup milestone 1/4: configuration loaded (imports/config resolved
     # before main() runs). Forced writes bracket the slow windows of startup so
