@@ -1,4 +1,4 @@
-"""Heartbeat writer tests (ADR 0009, spec HB-1..HB-11).
+"""Heartbeat writer tests (ADR 0009, spec HB-1..HB-12).
 
 The heartbeat file is the daemon's liveness signal: a dyld-aborting interpreter
 can never produce one, and staleness of this file is what the watchdog judges.
@@ -10,12 +10,16 @@ import json
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
+import auto_transcribe
 import pipeline
 
 RFC3339_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+PROJECT_DIR = Path(__file__).parents[2]
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +33,7 @@ def fresh_writer_state():
     pipeline._heartbeat_failures = 0
     pipeline._heartbeat_context = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
     pipeline._heartbeat_started_at = None
+    pipeline._heartbeat_writer = pipeline.DEFAULT_HEARTBEAT_WRITER
     yield
 
 
@@ -192,3 +197,78 @@ class TestCallSites:
         pipeline.build_transcript_index({"WORK": str(base)})
         payload = read_heartbeat(heartbeat_path)
         assert payload["phase"] == "starting"
+
+
+class _FirstHeartbeatError(Exception):
+    """Sentinel: aborts the daemon main() at its first heartbeat write."""
+
+
+class TestWriterField:
+    """HB-12 (LAG-675): the heartbeat names the process that wrote it.
+
+    An ops script reaches write_heartbeat through the shared pipeline
+    functions, so a manual run refreshes the very file the watchdog reads.
+    The writer identity is what lets the reader tell the two apart.
+    """
+
+    def test_default_writer_is_manual(self, heartbeat_path):
+        """Fail-safe default: a caller that never declares itself is manual, so
+        forgetting the declaration cannot let an ops run pose as the daemon."""
+        assert pipeline.DEFAULT_HEARTBEAT_WRITER == "manual"
+        pipeline.write_heartbeat("processing", force=True)
+        assert read_heartbeat(heartbeat_path)["writer"] == "manual"
+
+    def test_daemon_declares_itself(self, heartbeat_path):
+        pipeline.set_heartbeat_writer("daemon")
+        pipeline.write_heartbeat("scanning", force=True)
+        assert read_heartbeat(heartbeat_path)["writer"] == "daemon"
+
+    def test_writer_is_sticky_across_writes(self, heartbeat_path):
+        pipeline.set_heartbeat_writer("daemon")
+        pipeline.write_heartbeat("starting", force=True)
+        pipeline.write_heartbeat("scanning", force=True)
+        assert read_heartbeat(heartbeat_path)["writer"] == "daemon"
+
+    def test_fatal_heartbeat_carries_the_writer_too(self, heartbeat_path):
+        pipeline.set_heartbeat_writer("daemon")
+        pipeline.write_heartbeat("fatal", fatal_reason="boom")
+        payload = read_heartbeat(heartbeat_path)
+        assert payload["phase"] == "fatal"
+        assert payload["writer"] == "daemon"
+
+    def test_unknown_writer_is_rejected(self):
+        with pytest.raises(ValueError, match="writer"):
+            pipeline.set_heartbeat_writer("cron")
+
+    def test_schema_version_is_unchanged(self, heartbeat_path):
+        """The writer field is additive: pre-HB-12 readers must keep working,
+        so schema v1 stays v1 (the reader defaults an absent writer to daemon)."""
+        pipeline.write_heartbeat("scanning", force=True)
+        assert read_heartbeat(heartbeat_path)["schema"] == 1
+
+
+class TestDaemonEntryPointDeclaresItself:
+    def test_daemon_main_declares_daemon_before_first_heartbeat(self, monkeypatch):
+        """HB-12: the daemon is the one caller that declares itself, and it must
+        do so before the first startup heartbeat (HB-7 milestone 1/4) — a
+        heartbeat written before the declaration would read as manual."""
+        seen = []
+
+        def record(writer):
+            seen.append(writer)
+
+        def stop(*_args, **_kwargs):
+            raise _FirstHeartbeatError
+
+        monkeypatch.setattr(auto_transcribe, "set_heartbeat_writer", record)
+        monkeypatch.setattr(auto_transcribe, "write_heartbeat", stop)
+        with pytest.raises(_FirstHeartbeatError):
+            auto_transcribe.main()
+        assert seen == ["daemon"]
+
+    def test_ops_entry_points_do_not_declare_daemon(self):
+        """Only the daemon may declare itself; every other entry point inherits
+        the manual default. Guards against a copy-paste into an ops script."""
+        for module in ("ondemand_transcribe.py", "redrive_ops.py", "salvage_ops.py", "reclassify_and_fix.py"):
+            source = (PROJECT_DIR / module).read_text(encoding="utf-8")
+            assert 'set_heartbeat_writer("daemon")' not in source, module

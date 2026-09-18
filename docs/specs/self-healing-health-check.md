@@ -40,6 +40,7 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
 - **HB-9** The heartbeat MUST record `updated_at` and `started_at` as RFC 3339 timestamps in UTC with an explicit offset (e.g. `2026-09-07T14:31:02Z`). Naive local timestamps are forbidden: they are ambiguous across DST transitions.
 - **HB-10** A failed heartbeat write MUST NOT terminate or interrupt the daemon beyond HB-3's warning. The writer MUST count consecutive write failures, and after a threshold of 4 consecutive failures SHOULD log a `⚠️` warning naming the likely cause (disk full, permission denied): a daemon that cannot write its heartbeat is indistinguishable from a dead one to the reader, and the runbook response is to check disk and permissions before trusting a restart as the fix.
 - **HB-11** The daemon SHOULD write a forced heartbeat (phase `processing`) at the top of each file handoff and inside any inter-file idle-wait loop, so the handoff and idle-wait windows cannot breach the staleness threshold on a healthy busy daemon.
+- **HB-12** The heartbeat MUST carry a `writer` field naming the process that produced it: `"daemon"` for the launchd daemon entry point, `"manual"` for every other caller (on-demand runs, redrives, salvage and other ops scripts, which reach the writer through the shared pipeline functions). The writer identity MUST default to `"manual"`: only the daemon entry point declares `"daemon"`, so a caller that forgets to declare cannot masquerade as the daemon. A manual run refreshes the same file the watchdog reads, so without this field a freshly refreshed heartbeat is indistinguishable from proof of life — it was during the 26-09-16 outage forensics (LAG-675).
 
 ### Heartbeat schema, version 1
 
@@ -48,6 +49,7 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
   "schema": 1,
   "pid": 8078,
   "phase": "starting" | "scanning" | "processing" | "fatal",
+  "writer": "daemon" | "manual",
   "cycle": 4321,
   "updated_at": "2026-09-07T14:31:02Z",
   "started_at": "2026-09-07T02:31:10Z",
@@ -56,6 +58,8 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
   "fatal_reason": "FatalAPIError: superwhisper_mode_key is empty"
 }
 ```
+
+`writer` is absent only in heartbeats written before HB-12; readers MUST treat an absent `writer` as `daemon` (the pre-HB-12 behaviour), because every post-HB-12 writer sets the field and defaults to `manual`.
 
 `fatal_reason` is present only when `phase` is `fatal`. `phase` and `cycle` are otherwise diagnostic only, and readers MUST NOT vary their staleness threshold by `phase` — except that `phase: "fatal"` carries normative meaning: it marks the service unrecoverable by restart (PF-16).
 
@@ -77,14 +81,17 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
 - **HC-12** `health_check.py` MUST use `from __future__ import annotations` so that the project's `X | None` annotation style does not evaluate at runtime under 3.9.
 - **HC-13** The health report MUST distinguish `service_not_loaded` from other unhealthy reasons, because it maps to a different action (WD-9).
 - **HC-14** The maximum heartbeat age MUST default to 300 seconds and MUST be an explicit configuration input to `health_check.py`. The default derives from the busy-state heartbeat cadence: several multiples of the HB-8 write throttle (15 s) plus the inter-call-site gap (HB-11), rounded up to a whole scan cycle (30 s).
-- **HC-15** The verdict MUST be *unhealthy* if and only if the heartbeat is missing, unreadable, of unknown schema, or stale (HC-1), the service label is absent (`service_not_loaded`, HC-13), or the heartbeat is fresh (age below the staleness threshold) with `phase: "fatal"` (`heartbeat_fatal` — PF-16). No other `launchctl list` observation MAY affect the verdict; launchctl data is corroborating and diagnostic only. A fresh heartbeat beside a missing PID MUST be reported as a `pid_missing_warning` in the report but MUST NOT by itself make the verdict unhealthy (HC-5).
+- **HC-15** The verdict MUST be *unhealthy* if and only if the heartbeat is missing, unreadable, of unknown schema, or stale (HC-1), the service label is absent (`service_not_loaded`, HC-13), the heartbeat is fresh (age below the staleness threshold) with `phase: "fatal"` (`heartbeat_fatal` — PF-16), or it is fresh but not written by the daemon with no live daemon PID to corroborate it (`heartbeat_not_daemon` — HC-17). No other `launchctl list` observation MAY affect the verdict; launchctl data is corroborating and diagnostic only. A fresh heartbeat beside a missing PID MUST be reported as a `pid_missing_warning` in the report but MUST NOT by itself make the verdict unhealthy (HC-5).
 - **HC-16** The daemon's scan loop MUST check the watchdog state file's `last_run_at` (WD-3) and MUST emit a `⚠️` warning when it exceeds twice the watchdog interval (WD-11). This is detection only: the daemon MUST NOT restart or bootstrap the watchdog, and the check MUST NOT feed into the heartbeat, the health verdict, or any escalation.
+- **HC-17** A fresh heartbeat whose `writer` is not `daemon` (HB-12) MUST NOT by itself count as proof of liveness: an ops script sharing the pipeline writer refreshes the same file the daemon does. Before concluding healthy on such a heartbeat the reader MUST cross-check the daemon's PID with `launchctl print gui/<uid>/<label>`, which reports a PID only for a job that is actually running — unlike the `launchctl list` PID column, which is sampled and lies in both directions (HC-4/HC-5). With a live PID the verdict stays healthy and the report MUST carry a `manual_heartbeat_warning`; with no live PID the verdict MUST be unhealthy with reason `heartbeat_not_daemon`, which maps to the ordinary restart ladder (WD-6) because the daemon really is gone. The cross-check MUST be performed only for non-daemon heartbeats, so the healthy steady state costs no extra subprocess, and a failed or timed-out probe MUST read as no live PID (ES-6).
 
 ### Reason codes
 
-`heartbeat_missing`, `heartbeat_unreadable`, `heartbeat_schema_unknown`, `heartbeat_stale`, `service_not_loaded`, `heartbeat_fatal`.
+`heartbeat_missing`, `heartbeat_unreadable`, `heartbeat_schema_unknown`, `heartbeat_stale`, `service_not_loaded`, `heartbeat_fatal`, `heartbeat_not_daemon`.
 
 `heartbeat_fatal` denotes a fresh heartbeat with `phase: "fatal"` (PF-16). It maps to escalate-without-restart, not to the restart ladder.
+
+`heartbeat_not_daemon` denotes a fresh heartbeat written by an ops script (`writer: "manual"`, HB-12) with no live daemon PID to corroborate it (HC-17). It maps to the ordinary restart ladder: the freshness is an artefact of the manual run, and the daemon behind it is dead.
 
 ---
 
@@ -154,6 +161,7 @@ Every requirement in this document has a row naming the test or review that veri
 | Requirement group | Verified by |
 |---|---|
 | HB-1 … HB-11 | `tests/unit/test_heartbeat.py` |
+| HB-12 | `tests/unit/test_heartbeat.py` — `TestWriterField` (LAG-675) |
 | HC-1 … HC-6, HC-13, HC-15 | `tests/unit/test_health_check.py` — `assess_health`, `parse_launchctl_list` |
 | HC-7 | structural: the pure functions take no path or handle arguments |
 | HC-2, HC-3 | structural: `assess_health` has no log-path or state-path parameter |
@@ -161,6 +169,7 @@ Every requirement in this document has a row naming the test or review that veri
 | HC-11, HC-12 | `test_health_check_imports_under_system_python` |
 | HC-14, WD-11 | pinned-default test asserting the threshold and interval constants |
 | HC-16 | code review of the scan loop — the check only logs |
+| HC-17 | `tests/unit/test_health_check.py` — `TestHeartbeatWriterCrossCheck` (LAG-675) |
 | WD-1 | plist template review — `StartInterval` present, `KeepAlive` absent |
 | WD-2 … WD-6, WD-9, WD-12 | `tests/unit/test_health_check.py` — `decide_action` table, `test_kickstart_refuses_to_target_its_own_label` |
 | WD-7, WD-8 | plist template review and code review |

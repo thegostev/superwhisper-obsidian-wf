@@ -37,6 +37,15 @@ HEARTBEAT_MIN_INTERVAL = 15.0  # HB-8: self-throttle so call sites need not reas
 HEARTBEAT_WRITE_FAILURE_WARN_THRESHOLD = 4  # HB-10: consecutive failures before the runbook warning
 HEARTBEAT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # HB-9: RFC 3339 UTC with explicit offset
 
+# HB-12 (LAG-675): who wrote this heartbeat. Ops scripts (on-demand runs,
+# redrives, salvage) reach this writer through the shared pipeline functions and
+# so refresh the very file the watchdog reads — during the 26-09-16 forensics a
+# heartbeat refreshed that way looked like proof of life. The default is
+# "manual" on purpose: only the daemon entry point declares itself, so a caller
+# that forgets to declare cannot masquerade as the daemon.
+HEARTBEAT_WRITERS: tuple[str, ...] = ("daemon", "manual")
+DEFAULT_HEARTBEAT_WRITER = "manual"
+
 # Writer state (module-level because write_heartbeat is called from many call
 # sites that must not thread state through). Tests reset these via the
 # fresh_writer_state fixture in tests/unit/test_heartbeat.py.
@@ -44,6 +53,7 @@ _heartbeat_last_write: float = 0.0
 _heartbeat_failures: int = 0
 _heartbeat_started_at: float | None = None
 _heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
+_heartbeat_writer: str = DEFAULT_HEARTBEAT_WRITER
 
 # Output-contract markers emitted by the Superwhisper Custom Mode prompt.
 # The parser reads the header lines; everything after is the analysis body.
@@ -159,6 +169,27 @@ def save_state(state):
             tmp.unlink(missing_ok=True)
 
 
+def set_heartbeat_writer(writer: str) -> None:
+    """Declare which process writes heartbeats from here on (HB-12).
+
+    Called once by the daemon entry point. Every other caller inherits
+    ``DEFAULT_HEARTBEAT_WRITER`` ("manual"), so an ops script cannot pass its
+    heartbeat off as the daemon's by omission.
+
+    Args:
+        writer: One of ``HEARTBEAT_WRITERS``.
+
+    Raises:
+        ValueError: If the writer is not a known identity. This is a wiring
+            mistake in an entry point, caught at startup rather than silently
+            producing heartbeats the reader cannot classify.
+    """
+    global _heartbeat_writer
+    if writer not in HEARTBEAT_WRITERS:
+        raise ValueError(f"unknown heartbeat writer {writer!r}: expected one of {HEARTBEAT_WRITERS}")
+    _heartbeat_writer = writer
+
+
 def write_heartbeat(
     phase: str,
     *,
@@ -184,6 +215,10 @@ def write_heartbeat(
     ``HEARTBEAT_WRITE_FAILURE_WARN_THRESHOLD`` the warning names the runbook
     cause (disk full, permission denied) — a daemon that cannot write its
     heartbeat is indistinguishable from a dead one (HB-10).
+
+    Every payload carries ``writer`` (HB-12): the daemon entry point declares
+    itself via ``set_heartbeat_writer``, and everything else is "manual", so the
+    watchdog can tell a daemon heartbeat from one an ops run refreshed.
 
     ``cycle``/``failed_permanent``/``state_complete`` are cached module-level:
     call sites that know them pass them in; call sites that don't (poll loop,
@@ -220,6 +255,7 @@ def write_heartbeat(
         "schema": HEARTBEAT_SCHEMA_VERSION,
         "pid": os.getpid(),
         "phase": phase,
+        "writer": _heartbeat_writer,  # HB-12
         "cycle": _heartbeat_context["cycle"],
         "updated_at": datetime.now(timezone.utc).strftime(HEARTBEAT_TIME_FORMAT),
         "started_at": datetime.fromtimestamp(_heartbeat_started_at, tz=timezone.utc).strftime(HEARTBEAT_TIME_FORMAT),

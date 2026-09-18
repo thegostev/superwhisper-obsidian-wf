@@ -26,6 +26,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -39,6 +40,16 @@ DEFAULT_MAX_AGE = 300.0
 DEFAULT_HEARTBEAT_PATH = "~/.superwhisper_transcriber_heartbeat.json"
 DEFAULT_LABEL = "com.alex.transcriber"
 DEFAULT_SELF_LABEL = "com.alex.transcriber.watchdog"
+
+# HB-12/HC-17 (LAG-675): ops scripts share the daemon's heartbeat writer, so a
+# manual run refreshes the file the watchdog reads. Heartbeats written before
+# HB-12 carry no writer field; reading those as the daemon keeps the upgrade
+# backwards compatible, because every post-HB-12 writer sets the field and
+# defaults to "manual".
+DAEMON_WRITER = "daemon"
+# `launchctl print` reports a pid only while the job is actually running, unlike
+# the sampled `launchctl list` PID column that lies in both directions (HC-4/HC-5).
+_LAUNCHCTL_PRINT_PID = re.compile(r"^\s*pid\s*=\s*(\d+)\s*$", re.MULTILINE)
 
 # WD-8: production always uses the absolute path. The env hook exists only so
 # shell-level test harnesses can shim launchctl (an absolute path cannot be
@@ -175,21 +186,92 @@ def run_launchctl_list() -> str:
     return result.stdout
 
 
+def heartbeat_writer(payload: dict | None) -> str:
+    """Which process wrote this heartbeat (HB-12). Pure.
+
+    An absent, non-string or missing value reads as ``"daemon"``: only
+    pre-HB-12 heartbeats lack the field, and every writer since sets it (and
+    defaults to "manual"), so the permissive default cannot hide a manual run.
+    """
+    if not isinstance(payload, dict):
+        return DAEMON_WRITER
+    writer = payload.get("writer")
+    return writer if isinstance(writer, str) else DAEMON_WRITER
+
+
+def parse_launchctl_print_pid(output: str) -> int | None:
+    """First ``pid = <n>`` line of `launchctl print` output, else None. Pure (HC-7).
+
+    The key must be exactly ``pid`` — ``active count`` and ``last exit code``
+    are numeric neighbours in the same block and must never be mistaken for it.
+    A job that is loaded but not running prints no ``pid`` line at all, which is
+    precisely the signal HC-17 needs.
+    """
+    match = _LAUNCHCTL_PRINT_PID.search(output)
+    return int(match.group(1)) if match else None
+
+
+def probe_daemon_pid(label: str) -> int | None:
+    """`launchctl print gui/<uid>/<label>` → the running PID, or None (HC-17).
+
+    Called only for a non-daemon heartbeat, so the healthy steady state costs no
+    extra subprocess. A non-zero exit (unknown service) or any subprocess
+    failure reads as no live PID — never raises (ES-6, WD-7, WD-8).
+    """
+    try:
+        result = subprocess.run(
+            [LAUNCHCTL_BIN, "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"⚠️ watchdog: launchctl print failed: {error}", file=sys.stderr)
+        return None
+    if result.returncode != 0:
+        return None
+    return parse_launchctl_print_pid(result.stdout)
+
+
+def cross_check_daemon_pid(payload: dict | None, label: str) -> int | None:
+    """HC-17 gate: probe `launchctl print` only when the daemon did not write
+    this heartbeat, so the healthy steady state spends no extra subprocess."""
+    if heartbeat_writer(payload) == DAEMON_WRITER:
+        return None
+    return probe_daemon_pid(label)
+
+
 def assess_health(
     payload: dict | None,
     age: float | None,
     launchctl_status: dict | None,
     max_age: float,
+    daemon_pid: int | None = None,
 ) -> dict:
-    """Pure decision function (HC-7). Verdict per HC-15/HC-13.
+    """Pure decision function (HC-7). Verdict per HC-15/HC-13/HC-17.
 
     Unhealthy iff: service not loaded, heartbeat missing/unreadable/unknown
-    schema/stale, or a FRESH phase="fatal" heartbeat (PF-16 — escalate without
-    restarting). A fresh heartbeat beside a missing PID is only a warning (HC-5
-    crash-loop sampling race); a nonzero last_exit_status never decides (HC-4).
+    schema/stale, a FRESH phase="fatal" heartbeat (PF-16 — escalate without
+    restarting), or a fresh heartbeat that the daemon did not write with no live
+    daemon PID to corroborate it (HC-17). A fresh heartbeat beside a missing
+    `launchctl list` PID is only a warning (HC-5 crash-loop sampling race); a
+    nonzero last_exit_status never decides (HC-4).
+
+    Args:
+        payload: Heartbeat contents, or None when it could not be read.
+        age: Heartbeat file age in seconds (HC-1), or None.
+        launchctl_status: Parsed `launchctl list` row, or None when the label is absent.
+        max_age: Staleness threshold in seconds (HC-14).
+        daemon_pid: Result of the `launchctl print` probe (HC-17): the running
+            daemon PID, or None for no live PID. Consulted only for a heartbeat
+            whose writer is not the daemon, so callers may leave it None for the
+            ordinary daemon-written case. The sampled `launchctl list` PID never
+            substitutes for it (HC-5).
     """
     reason = None
     fatal_reason = None
+    writer = heartbeat_writer(payload)
     if launchctl_status is None:
         reason = "service_not_loaded"
     elif payload is None:
@@ -201,6 +283,10 @@ def assess_health(
     elif payload.get("phase") == "fatal":
         reason = "heartbeat_fatal"
         fatal_reason = payload.get("fatal_reason")
+    elif writer != DAEMON_WRITER and daemon_pid is None:
+        # HC-17: an ops run refreshed the file the watchdog reads. Freshness
+        # here proves the ops run, not the daemon — and no live PID backs it.
+        reason = "heartbeat_not_daemon"
 
     pid_missing_warning = launchctl_status is not None and launchctl_status.get("pid") is None and payload is not None
     return {
@@ -208,6 +294,8 @@ def assess_health(
         "reason": reason,
         "fatal_reason": fatal_reason,
         "pid_missing_warning": pid_missing_warning,
+        "manual_heartbeat_warning": reason is None and writer != DAEMON_WRITER,
+        "writer": writer,
         "age": age,
         "heartbeat": payload,
         "launchctl": launchctl_status,
@@ -224,11 +312,17 @@ def print_report(report: dict, *, dry_run: bool = False) -> None:
         print(f"fatal_reason: {report['fatal_reason']}")
     if report["pid_missing_warning"]:
         print("warning: launchctl shows no live PID — heartbeat is the authoritative signal")
+    if report.get("manual_heartbeat_warning"):
+        print(
+            "warning: heartbeat was not written by the daemon (an ops run refreshed it) —"
+            " liveness confirmed by the launchctl print PID instead (HC-17)"
+        )
 
     heartbeat = report.get("heartbeat")
     if heartbeat:
         print(
-            f"heartbeat: phase={heartbeat.get('phase')} cycle={heartbeat.get('cycle')} age={report['age']:.0f}s"
+            f"heartbeat: phase={heartbeat.get('phase')} writer={heartbeat_writer(heartbeat)}"
+            f" cycle={heartbeat.get('cycle')} age={report['age']:.0f}s"
             if report["age"] is not None
             else "heartbeat: (no age)"
         )
@@ -516,7 +610,8 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         print(f"internal error: launchctl read failed: {error}", file=sys.stderr)
         return 3
     payload, age, read_reason = read_heartbeat(os.path.expanduser(args.heartbeat))
-    report = assess_health(payload, age, status, args.max_age)
+    # HC-17: a heartbeat an ops run refreshed needs a live daemon PID to count.
+    report = assess_health(payload, age, status, args.max_age, daemon_pid=cross_check_daemon_pid(payload, args.label))
     if read_reason == "heartbeat_unreadable":
         report["reason"] = "heartbeat_unreadable"
         report["verdict"] = "unhealthy"
@@ -625,7 +720,8 @@ def main(argv: list[str] | None = None) -> int:
 
     status = parse_launchctl_list(output, args.label)
     payload, age, read_reason = read_heartbeat(os.path.expanduser(args.heartbeat))
-    report = assess_health(payload, age, status, args.max_age)
+    # HC-17: a heartbeat an ops run refreshed needs a live daemon PID to count.
+    report = assess_health(payload, age, status, args.max_age, daemon_pid=cross_check_daemon_pid(payload, args.label))
     if read_reason == "heartbeat_unreadable":
         report["reason"] = "heartbeat_unreadable"
         report["verdict"] = "unhealthy"

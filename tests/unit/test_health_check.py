@@ -32,6 +32,7 @@ def make_heartbeat(**overrides):
         "schema": 1,
         "pid": 8078,
         "phase": "scanning",
+        "writer": "daemon",
         "cycle": 4321,
         "updated_at": "2026-09-07T14:31:02Z",
         "started_at": "2026-09-07T02:31:10Z",
@@ -223,6 +224,7 @@ class TestWriterReaderContract:
         pipeline._heartbeat_failures = 0
         pipeline._heartbeat_context = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
         pipeline._heartbeat_started_at = None
+        pipeline.set_heartbeat_writer("daemon")  # HB-12: this write stands in for the daemon's
         assert pipeline.write_heartbeat("scanning", cycle=7, failed_permanent=1, state_complete=2, force=True)
 
         payload, age, reason = health_check.read_heartbeat(path)
@@ -231,6 +233,27 @@ class TestWriterReaderContract:
         assert report["verdict"] == "healthy"
         assert payload["failed_permanent"] == 1
         assert payload["state_complete"] == 2
+        # HB-12/HC-17: the writer identity crosses the 3.13-writer / 3.9-reader boundary.
+        assert health_check.heartbeat_writer(payload) == "daemon"
+
+    def test_an_ops_run_heartbeat_reads_back_as_manual(self, tmp_path, monkeypatch):
+        """HB-12 (LAG-675): an ops script reaches the same writer through the
+        shared pipeline functions. Its heartbeat must not read as the daemon's."""
+        import pipeline
+
+        path = tmp_path / "hb.json"
+        monkeypatch.setattr(pipeline, "HEARTBEAT_FILE", str(path))
+        pipeline._heartbeat_last_write = 0.0
+        pipeline._heartbeat_started_at = None
+        pipeline._heartbeat_writer = pipeline.DEFAULT_HEARTBEAT_WRITER  # no declaration: an ops run
+        assert pipeline.write_heartbeat("processing", force=True)
+
+        payload, age, reason = health_check.read_heartbeat(path)
+        assert reason is None
+        assert health_check.heartbeat_writer(payload) == "manual"
+        report = health_check.assess_health(payload, age, {"pid": payload["pid"]}, 300, daemon_pid=None)
+        assert report["verdict"] == "unhealthy"
+        assert report["reason"] == "heartbeat_not_daemon"
 
 
 class TestCli:
@@ -962,3 +985,234 @@ class TestHealPauseSentinelTtl:
         assert kicked == ["com.alex.transcriber"]  # an expired pause never blocks healing
         assert told == []  # notice only after a successful removal — else it repeats every tick
         assert "could not remove" in capsys.readouterr().err.lower()
+
+
+LAUNCHCTL_PRINT_RUNNING = """\
+com.alex.transcriber = {
+	active count = 1
+	path = /Users/harald/Library/LaunchAgents/com.alex.transcriber.plist
+	state = running
+
+	program = /bin/bash
+	pid = 8078
+	immediate reason = speculative
+	forks = 0
+}
+"""
+
+LAUNCHCTL_PRINT_LOADED_NOT_RUNNING = """\
+com.alex.transcriber = {
+	active count = 0
+	path = /Users/harald/Library/LaunchAgents/com.alex.transcriber.plist
+	state = not running
+
+	last exit code = 0
+}
+"""
+
+LAUNCHCTL_PRINT_MISSING = 'Could not find service "com.alex.transcriber" in domain for login\n'
+
+
+class TestParseLaunchctlPrintPid:
+    """HC-17: `launchctl print` reports a pid only while the job actually runs."""
+
+    def test_running_job_yields_pid(self):
+        assert health_check.parse_launchctl_print_pid(LAUNCHCTL_PRINT_RUNNING) == 8078
+
+    def test_loaded_but_not_running_yields_none(self):
+        assert health_check.parse_launchctl_print_pid(LAUNCHCTL_PRINT_LOADED_NOT_RUNNING) is None
+
+    def test_unknown_service_yields_none(self):
+        assert health_check.parse_launchctl_print_pid(LAUNCHCTL_PRINT_MISSING) is None
+
+    def test_empty_output_yields_none(self):
+        assert health_check.parse_launchctl_print_pid("") is None
+
+    def test_does_not_match_other_pid_like_keys(self):
+        """`active count`/`last exit code` and the watchdog's own pid line must
+        not be mistaken for the daemon's pid."""
+        assert health_check.parse_launchctl_print_pid("\tactive count = 3\n\tlast exit code = 1\n") is None
+
+    def test_is_pure_no_subprocess(self, monkeypatch):
+        def forbidden(*_a, **_k):
+            raise AssertionError("parse_launchctl_print_pid must not spawn subprocesses (HC-7)")
+
+        monkeypatch.setattr(subprocess, "run", forbidden)
+        health_check.parse_launchctl_print_pid(LAUNCHCTL_PRINT_RUNNING)
+
+
+class TestProbeDaemonPid:
+    def test_uses_absolute_path_domain_target_and_timeout(self, monkeypatch):
+        """WD-7/WD-8: absolute binary, gui/<uid>/<label> target, timeout set."""
+        recorded = {}
+
+        def fake_run(cmd, **kwargs):
+            recorded["cmd"], recorded["kwargs"] = cmd, kwargs
+            return subprocess.CompletedProcess(cmd, 0, LAUNCHCTL_PRINT_RUNNING, "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert health_check.probe_daemon_pid("com.alex.transcriber") == 8078
+        assert recorded["cmd"][0] == health_check.LAUNCHCTL_BIN
+        assert "print" in recorded["cmd"]
+        assert f"gui/{os.getuid()}/com.alex.transcriber" in recorded["cmd"]
+        assert recorded["kwargs"].get("timeout") is not None
+
+    def test_nonzero_exit_reads_as_no_live_pid(self, monkeypatch):
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 113, "", LAUNCHCTL_PRINT_MISSING),
+        )
+        assert health_check.probe_daemon_pid("com.alex.transcriber") is None
+
+    def test_subprocess_failure_reads_as_no_live_pid(self, monkeypatch):
+        """ES-6: a failed or timed-out probe never raises — it reads as no PID."""
+
+        def boom(*_a, **_k):
+            raise subprocess.TimeoutExpired("launchctl", 30)
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert health_check.probe_daemon_pid("com.alex.transcriber") is None
+
+
+class TestHeartbeatWriter:
+    def test_manual_writer_is_read_back(self):
+        assert health_check.heartbeat_writer(make_heartbeat(writer="manual")) == "manual"
+
+    def test_daemon_writer_is_read_back(self):
+        assert health_check.heartbeat_writer(make_heartbeat(writer="daemon")) == "daemon"
+
+    def test_absent_writer_defaults_to_daemon(self):
+        """HB-12: pre-HB-12 heartbeats carry no writer. Reading them as daemon
+        keeps the upgrade backwards compatible — every post-HB-12 writer sets
+        the field, and defaults to manual on the writer side."""
+        payload = make_heartbeat()
+        payload.pop("writer", None)
+        assert health_check.heartbeat_writer(payload) == "daemon"
+
+    def test_missing_payload_defaults_to_daemon(self):
+        assert health_check.heartbeat_writer(None) == "daemon"
+
+    def test_non_string_writer_defaults_to_daemon(self):
+        assert health_check.heartbeat_writer(make_heartbeat(writer=17)) == "daemon"
+
+
+class TestHeartbeatWriterCrossCheck:
+    """HC-17 (LAG-675): a fresh manual heartbeat is not proof of liveness."""
+
+    def test_manual_heartbeat_without_live_pid_is_unhealthy(self):
+        report = health_check.assess_health(
+            make_heartbeat(writer="manual"), 5.0, {"pid": 8078, "last_exit_status": 0}, 300, daemon_pid=None
+        )
+        assert report["verdict"] == "unhealthy"
+        assert report["reason"] == "heartbeat_not_daemon"
+
+    def test_manual_heartbeat_with_live_pid_is_healthy_but_warned(self):
+        report = health_check.assess_health(
+            make_heartbeat(writer="manual"), 5.0, {"pid": 8078, "last_exit_status": 0}, 300, daemon_pid=8078
+        )
+        assert report["verdict"] == "healthy"
+        assert report["reason"] is None
+        assert report["manual_heartbeat_warning"] is True
+
+    def test_daemon_heartbeat_ignores_the_probe(self):
+        report = health_check.assess_health(
+            make_heartbeat(writer="daemon"), 5.0, {"pid": 8078, "last_exit_status": 0}, 300, daemon_pid=None
+        )
+        assert report["verdict"] == "healthy"
+        assert report["manual_heartbeat_warning"] is False
+
+    def test_legacy_heartbeat_without_writer_stays_healthy(self):
+        payload = make_heartbeat()
+        payload.pop("writer", None)
+        report = health_check.assess_health(payload, 5.0, {"pid": 8078}, 300, daemon_pid=None)
+        assert report["verdict"] == "healthy"
+
+    def test_the_launchctl_list_pid_does_not_substitute_for_the_probe(self):
+        """HC-5: the `launchctl list` PID column is sampled and lies in both
+        directions — only the `launchctl print` probe may clear a manual
+        heartbeat."""
+        report = health_check.assess_health(
+            make_heartbeat(writer="manual"), 5.0, {"pid": 4242, "last_exit_status": 0}, 300, daemon_pid=None
+        )
+        assert report["verdict"] == "unhealthy"
+
+    def test_staleness_outranks_the_writer_check(self):
+        report = health_check.assess_health(make_heartbeat(writer="manual"), 900.0, {"pid": 8078}, 300, daemon_pid=None)
+        assert report["reason"] == "heartbeat_stale"
+
+    def test_service_not_loaded_outranks_the_writer_check(self):
+        report = health_check.assess_health(make_heartbeat(writer="manual"), 5.0, None, 300, daemon_pid=None)
+        assert report["reason"] == "service_not_loaded"
+
+    def test_fatal_outranks_the_writer_check(self):
+        report = health_check.assess_health(
+            make_heartbeat(writer="manual", phase="fatal", fatal_reason="boom"),
+            5.0,
+            {"pid": 8078},
+            300,
+            daemon_pid=None,
+        )
+        assert report["reason"] == "heartbeat_fatal"
+
+    def test_assess_health_stays_pure(self, monkeypatch):
+        def forbidden(*_a, **_k):
+            raise AssertionError("assess_health must not perform I/O (HC-7)")
+
+        monkeypatch.setattr(subprocess, "run", forbidden)
+        health_check.assess_health(make_heartbeat(writer="manual"), 5.0, {"pid": 1}, 300, daemon_pid=None)
+
+
+class TestWriterCrossCheckCli:
+    def _write(self, tmp_path, payload):
+        path = tmp_path / "hb.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_manual_heartbeat_with_dead_daemon_exits_1(self, tmp_path, monkeypatch, capsys):
+        path = self._write(tmp_path, make_heartbeat(writer="manual"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        monkeypatch.setattr(health_check, "probe_daemon_pid", lambda _label: None)
+        rc = health_check.main(["--heartbeat", str(path), "--dry-run"])
+        assert rc == 1
+        assert "heartbeat_not_daemon" in capsys.readouterr().out
+
+    def test_manual_heartbeat_with_live_daemon_exits_0_and_warns(self, tmp_path, monkeypatch, capsys):
+        path = self._write(tmp_path, make_heartbeat(writer="manual"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        monkeypatch.setattr(health_check, "probe_daemon_pid", lambda _label: 8078)
+        rc = health_check.main(["--heartbeat", str(path), "--dry-run"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "writer=manual" in out
+        assert "not written by the daemon" in out
+
+    def test_daemon_heartbeat_never_probes(self, tmp_path, monkeypatch):
+        """HC-17: the healthy steady state costs no extra subprocess."""
+        path = self._write(tmp_path, make_heartbeat(writer="daemon"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+
+        def forbidden(_label):
+            raise AssertionError("a daemon-written heartbeat must not trigger the probe (HC-17)")
+
+        monkeypatch.setattr(health_check, "probe_daemon_pid", forbidden)
+        assert health_check.main(["--heartbeat", str(path), "--dry-run"]) == 0
+
+    def test_heal_tick_kickstarts_on_manual_heartbeat(self, tmp_path, monkeypatch, capsys):
+        """The freshness is an artefact of the ops run; the daemon behind it is
+        dead, so this maps to the ordinary restart ladder (WD-6)."""
+        path = self._write(tmp_path, make_heartbeat(writer="manual"))
+        state_path = tmp_path / "wd.json"
+        state = health_check.default_wd_state()
+        state["last_run_at"] = time.time() - 60
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        monkeypatch.setattr(health_check, "probe_daemon_pid", lambda _label: None)
+        monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "absent.pause"))
+        kicked = []
+        monkeypatch.setattr(health_check, "kickstart", lambda label: kicked.append(label) or True)
+        monkeypatch.setattr(health_check, "notify", lambda *_a: True)
+        rc = health_check.main(["--heal", "--heartbeat", str(path), "--state", str(state_path)])
+        assert rc == 1
+        assert kicked == ["com.alex.transcriber"]
+        assert "heartbeat_not_daemon" in capsys.readouterr().out
