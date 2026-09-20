@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
+import plistlib
 import re
 import subprocess
 import sys
@@ -68,6 +70,17 @@ SLOW_RETRY_INTERVAL = 3600.0  # WD-6: at most one restart per hour while unhealt
 NOTIFY_COOLDOWN = 3600.0  # ES-3: one unhealthy notification per hour, shared with preflight
 REBUILD_BUDGET = 1800.0  # PF-10/PF-14: a rebuild marker older than this is stale
 SUBPROCESS_TIMEOUT = 30.0  # WD-7: every spawned subprocess gets a timeout
+
+# WD-14 (LAG-684): the committed template is the deployment source of truth, and
+# the installed plist drifted away from it — it stopped routing through
+# preflight.sh, which is the whole of ADR 0010's self-heal story. The repo path
+# is the directory this module lives in, which is also what __REPO__ expands to
+# in the template.
+DEFAULT_REPO_DIR = str(Path(__file__).resolve().parent)
+DEFAULT_PLIST_TEMPLATE = str(
+    Path(__file__).resolve().parent / "docs" / "launchd" / "com.alex.transcriber.plist.template"
+)
+PREFLIGHT_WRAPPER = "preflight.sh"
 
 
 def _to_int(field: str) -> int | None:
@@ -302,6 +315,129 @@ def assess_health(
     }
 
 
+def render_plist_template(text: str, *, repo: str, home: str) -> str:
+    """Expand the template's __REPO__/__HOME__ placeholders (WD-14).
+
+    The committed template is not a plist until these are filled in, so every
+    comparison against an installed plist has to render first.
+    """
+    return text.replace("__REPO__", repo).replace("__HOME__", home)
+
+
+def plist_fingerprint(text: str) -> str | None:
+    """SHA-256 of a plist's *meaning*, or None when it does not parse (WD-14).
+
+    Hashing the raw bytes would report drift for a reflow or a changed comment,
+    and a warning that cries wolf gets ignored — which is how the installed
+    plist drifted unnoticed in the first place. So the hash is taken over the
+    parsed structure with keys sorted: same settings, same hash, whatever the
+    formatting.
+    """
+    try:
+        parsed = plistlib.loads(text.encode("utf-8"))
+    except Exception:  # noqa: BLE001 — any malformed plist is simply not fingerprintable
+        return None
+    canonical = json.dumps(parsed, sort_keys=True, default=repr, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _routes_through_preflight(text: str) -> bool:
+    """True when the plist's ProgramArguments run the preflight wrapper (PF-1/ADR 0010)."""
+    try:
+        parsed = plistlib.loads(text.encode("utf-8"))
+        arguments = parsed.get("ProgramArguments") or []
+        return any(PREFLIGHT_WRAPPER in str(argument) for argument in arguments)
+    except Exception:  # noqa: BLE001 — fall back to the raw text for an unparsable plist
+        return PREFLIGHT_WRAPPER in text
+
+
+def check_plist_drift(
+    installed_path: str | Path,
+    template_path: str | Path,
+    *,
+    repo: str,
+    home: str,
+) -> dict:
+    """Hash-compare the installed plist against the rendered template (WD-14).
+
+    Read-only by construction — no writes, no subprocesses — so --dry-run needs
+    no special case (HC-8/HC-9). Every failure mode is reported rather than
+    raised: a drift check that can crash the watchdog is worse than no drift
+    check at all (ES-6).
+
+    Args:
+        installed_path: The plist launchd actually loaded (~/Library/LaunchAgents/...).
+        template_path: The committed template under docs/launchd/.
+        repo: Expansion for the template's __REPO__ placeholder.
+        home: Expansion for the template's __HOME__ placeholder.
+
+    Returns:
+        A dict with `status` (clean | drift | installed_missing | template_missing
+        | unreadable), the two short hashes, `preflight_routed` (None when the
+        installed plist is absent), and a human-readable `detail` for the
+        non-comparable cases.
+    """
+    installed = Path(installed_path)
+    template = Path(template_path)
+    result: dict = {
+        "status": "unreadable",
+        "installed_hash": None,
+        "template_hash": None,
+        "preflight_routed": None,
+        "detail": None,
+    }
+
+    try:
+        installed_text = installed.read_text(encoding="utf-8")
+    except OSError as error:
+        result["status"] = "installed_missing"
+        result["detail"] = f"{installed}: {error.strerror or error}"
+        return result
+
+    result["preflight_routed"] = _routes_through_preflight(installed_text)
+
+    try:
+        template_text = template.read_text(encoding="utf-8")
+    except OSError as error:
+        result["status"] = "template_missing"
+        result["detail"] = f"{template}: {error.strerror or error}"
+        return result
+
+    installed_hash = plist_fingerprint(installed_text)
+    template_hash = plist_fingerprint(render_plist_template(template_text, repo=repo, home=home))
+    result["installed_hash"] = installed_hash
+    result["template_hash"] = template_hash
+    if installed_hash is None or template_hash is None:
+        result["status"] = "unreadable"
+        unreadable = installed if installed_hash is None else template
+        result["detail"] = f"{unreadable}: not a parsable plist"
+        return result
+
+    result["status"] = "clean" if installed_hash == template_hash else "drift"
+    return result
+
+
+def print_plist_drift(drift: dict | None) -> None:
+    """Warning-only drift reporting (WD-14).
+
+    A drifted plist says nothing about whether the daemon is alive, so it never
+    touches the verdict — it would otherwise make the watchdog restart a
+    perfectly healthy daemon over a deployment mismatch.
+    """
+    if not drift or drift["status"] == "clean":
+        return
+    status = drift["status"]
+    if status == "drift":
+        print(
+            "warning: installed plist has drifted from the committed template (WD-14) —"
+            f" installed {str(drift['installed_hash'])[:12]} != template {str(drift['template_hash'])[:12]}"
+        )
+    else:
+        print(f"warning: plist drift check inconclusive ({status}): {drift.get('detail')}")
+    if drift.get("preflight_routed") is False:
+        print(f"  installed plist does not run {PREFLIGHT_WRAPPER} — ADR 0010 self-heal is not in effect")
+
+
 def print_report(report: dict, *, dry_run: bool = False) -> None:
     """Human-readable one-screen summary."""
     line = f"verdict: {report['verdict']}"
@@ -338,6 +474,7 @@ def print_report(report: dict, *, dry_run: bool = False) -> None:
         )
     else:
         print("launchctl: service not loaded")
+    print_plist_drift(report.get("plist_drift"))  # WD-14: warning only, never the verdict
     if dry_run:
         print("dry-run: no actions taken")
 
@@ -595,6 +732,23 @@ def notify(title: str, message: str) -> bool:
         return False
 
 
+def attach_plist_drift(report: dict, args: argparse.Namespace) -> None:
+    """Add the WD-14 drift result to a report, when the installed plist path is known.
+
+    --plist is the path launchd was bootstrapped from (WD-9), so it is also the
+    only path worth comparing. Without it there is nothing to compare and the
+    report simply carries no `plist_drift` key.
+    """
+    if not getattr(args, "plist", None):
+        return
+    report["plist_drift"] = check_plist_drift(
+        os.path.expanduser(args.plist),
+        os.path.expanduser(getattr(args, "plist_template", DEFAULT_PLIST_TEMPLATE)),
+        repo=getattr(args, "repo", DEFAULT_REPO_DIR),
+        home=getattr(args, "home", os.path.expanduser("~")),
+    )
+
+
 def run_watchdog_tick(args: argparse.Namespace) -> int:
     """--heal: assess, decide, act (kickstart/notify), persist state."""
     now = time.time()
@@ -634,6 +788,7 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         bootstrap_available=bootstrap_available,
     )
     print(f"watchdog: {decision['action']}")
+    attach_plist_drift(report, args)  # WD-14: reported every cycle, never acted on
     print_report(report)
 
     if args.dry_run:
@@ -693,6 +848,13 @@ def main(argv: list[str] | None = None) -> int:
             " of a booted-out service (WD-9 revision, LAG-673)"
         ),
     )
+    parser.add_argument(
+        "--plist-template",
+        default=DEFAULT_PLIST_TEMPLATE,
+        help="committed plist template to hash-compare --plist against (WD-14, LAG-684)",
+    )
+    parser.add_argument("--repo", default=DEFAULT_REPO_DIR, help="expansion for the template's __REPO__ (WD-14)")
+    parser.add_argument("--home", default=os.path.expanduser("~"), help="expansion for the template's __HOME__ (WD-14)")
     parser.add_argument("--self-label", default=DEFAULT_SELF_LABEL, help="this watchdog's own label (WD-2)")
     parser.add_argument("--notify-test", action="store_true", help="send one test notification and exit (ES-9)")
     args = parser.parse_args(argv)
@@ -725,6 +887,7 @@ def main(argv: list[str] | None = None) -> int:
     if read_reason == "heartbeat_unreadable":
         report["reason"] = "heartbeat_unreadable"
         report["verdict"] = "unhealthy"
+    attach_plist_drift(report, args)  # WD-14
     print_report(report, dry_run=args.dry_run)
     return 0 if report["verdict"] == "healthy" else 1
 
