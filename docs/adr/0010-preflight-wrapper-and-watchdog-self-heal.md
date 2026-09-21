@@ -97,7 +97,7 @@ The watchdog is scheduled with `StartInterval 300` and **no `KeepAlive`**, which
 - The watchdog depends on `/usr/bin/python3`, which requires Command Line Tools to remain installed
 - Nothing restarts the watchdog. The daemon-side check of the watchdog's `last_run_at` (above) only makes its death visible as a log warning; if the watchdog dies, the system returns to unmonitored operation until a human notices. A second-level watchdog was considered and rejected as over-engineering for a single-user laptop service.
 - A rebuild that survives a watchdog kill leaves the rebuild lock behind; without the PF-10 staleness rule and the PF-14 busy marker, the ladder could starve the healer it serves. Both are now required, not incidental.
-- Two launchd artefacts must now be kept in sync with the repository; plist templates are committed under `docs/launchd/` to reduce drift
+- Two launchd artefacts must now be kept in sync with the repository; plist templates are committed under `docs/launchd/` to reduce drift. Committing them is not enough on its own: the installed `com.alex.transcriber` plist diverged anyway and stopped routing through `preflight.sh`, which makes this whole ladder inert while everything still looks healthy. The watchdog therefore hash-compares the installed plist against the rendered template on every cycle and reports drift as a warning (spec WD-14, LAG-684). It reports only — a drifted plist is a deployment fact, not a liveness fact, and healing it would mean `bootout`/`bootstrap` behind the operator's back.
 - `health_check.py` cannot import `config.py`, so its defaults are duplicated; mitigated by passing paths explicitly from the plist at install time and by a writer/reader round-trip test
 
 ### Neutral
