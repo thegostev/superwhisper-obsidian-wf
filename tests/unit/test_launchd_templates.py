@@ -59,6 +59,44 @@ class TestDaemonTemplate:
         assert daemon_template["StandardErrorPath"] == log
 
 
+class TestAppNapExemption:
+    """App Nap exemption (LAG-694 fix, WD-15, LAG-733).
+
+    Without it macOS SIGSTOPs the daemon whenever the screen locks: the
+    heartbeat freezes, meetings queue until unlock, and each resume leaves
+    `[Errno 4] Interrupted system call` in transcriber.log. The watchdog
+    cannot heal it — kickstart without -k has no effect on a frozen-but-alive
+    PID. Both halves of the exemption are load-bearing and MUST hold together.
+    """
+
+    def test_daemon_is_wrapped_in_caffeinate_preventing_idle_sleep(self, daemon_template):
+        """WD-15: ProgramArguments[0] is /usr/bin/caffeinate with -i — the
+        idle-assertion wrapper keeps the process from being App-Nap-suspended
+        while the screen is locked."""
+        args = [str(a) for a in daemon_template["ProgramArguments"]]
+        assert args[0] == "/usr/bin/caffeinate"
+        assert "-i" in args
+
+    def test_caffeinate_wrapper_still_execs_preflight(self, daemon_template):
+        """WD-15 / PF-1: the wrapper must still exec the preflight. caffeinate
+        sits in front of the chain, so a future edit to ProgramArguments that
+        drops the exec would break launchd PID tracking while keeping the
+        caffeinate assertion green — the two are pinned together here."""
+        args = [str(a) for a in daemon_template["ProgramArguments"]]
+        joined = " ".join(args)
+        assert "exec" in joined
+        assert "preflight.sh" in joined
+        # caffeinate -i /bin/zsh -c '<...exec preflight.sh>' — zsh is the shell
+        # the exec runs inside, not a daemon entry point of its own.
+        assert args[2] == "/bin/zsh"
+        assert args[3] == "-c"
+
+    def test_process_type_is_interactive(self, daemon_template):
+        """WD-15: ProcessType=Interactive is the launchd-native side of the
+        exemption; caffeinate alone must not be the only guard."""
+        assert daemon_template["ProcessType"] == "Interactive"
+
+
 class TestWatchdogTemplate:
     def test_runs_under_system_python(self, watchdog_template):
         args = [str(a) for a in watchdog_template["ProgramArguments"]]
