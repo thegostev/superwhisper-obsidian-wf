@@ -8,6 +8,7 @@ on a run-once script is an instant infinite loop.
 """
 
 import plistlib
+import re
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,46 @@ class TestAppNapExemption:
         """WD-15: ProcessType=Interactive is the launchd-native side of the
         exemption; caffeinate alone must not be the only guard."""
         assert daemon_template["ProcessType"] == "Interactive"
+
+
+class TestTccBridge:
+    """WD-16 (LAG-734): the wrapper reaches preflight.sh through the
+    TCC-granted venv interpreter, never through a bare shell exec.
+
+    launchd-spawned `/bin/bash` and `/bin/zsh` are denied reads of
+    `~/Documents` (WD-13's denial applies to the whole chain, not just the
+    watchdog's interpreter), so `exec '__REPO__/preflight.sh'` dies with
+    exit 126 — the kernel resolves the shebang, then bash cannot open the
+    script — and KeepAlive respawn-loops it with no PF-9 anti-storm in the
+    shell. The bridge hands the script to bash via stdin from the granted
+    interpreter, so no binary without a grant ever opens a repo file.
+    Confirmed live 2026-09-23: both the direct exec (exit 126) and the
+    zsh-redirect variant (`zsh: operation not permitted`) fail; the bridge
+    boots the daemon through the full preflight.
+    """
+
+    def test_wrapper_execs_preflight_via_granted_interpreter_bridge(self, daemon_template):
+        args = " ".join(str(a) for a in daemon_template["ProgramArguments"])
+        # the granted interpreter is the one that opens the script…
+        assert "venv/bin/python3' -c 'import os,sys" in args
+        # …and hands it to bash over stdin, not as a path argument —
+        # "bash -s" is the only form whose script source is stdin.
+        assert "os.open(sys.argv[1],os.O_RDONLY)" in args
+        assert "os.dup2(fd,0)" in args
+        assert 'os.execv("/bin/bash",["bash","-s"])' in args
+
+    def test_preflight_is_never_execd_directly_by_the_shell(self, daemon_template):
+        """A plain `exec '__REPO__/preflight.sh'` (or a shell-redirect variant
+        like `exec /bin/bash -s < …`) reintroduces WD-16: the shell itself
+        opens the script and is denied. Pin its absence: whatever follows the
+        shell's `exec` must be the granted bridge interpreter, never the
+        script."""
+        args = [str(a) for a in daemon_template["ProgramArguments"]]
+        joined = " ".join(args)
+        assert "bash -s <" not in joined
+        match = re.search(r"; exec '([^']+)'", joined)
+        assert match, "wrapper lost its shell exec entirely"
+        assert "venv/bin/python3" in match.group(1)
 
 
 class TestWatchdogTemplate:

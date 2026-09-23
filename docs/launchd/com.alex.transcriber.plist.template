@@ -24,13 +24,18 @@
     <!-- App Nap fix (2026-09-18 freeze): caffeinate -i + ProcessType=Interactive
          keep the daemon from being App-Nap-suspended while the screen is locked.
          Without it launchd suspends the process and the heartbeat stalls until unlock. -->
+    <!-- WD-16 (LAG-734): launchd-spawned /bin/bash and /bin/zsh are denied reads
+         of ~/Documents (WD-13 applies to the whole chain), so a plain
+         `exec '__REPO__/preflight.sh'` dies exit 126 and KeepAlive respawn-loops
+         it. The bridge hands the script to bash via stdin from the granted
+         interpreter — bash never opens a repo file. -->
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/caffeinate</string>
         <string>-i</string>
         <string>/bin/zsh</string>
         <string>-c</string>
-        <string>[ -f "$HOME/.secrets/koding-transcriber.env" ] &amp;&amp; set -a &amp;&amp; source "$HOME/.secrets/koding-transcriber.env" &amp;&amp; set +a; exec '__REPO__/preflight.sh'</string>
+        <string>[ -f "$HOME/.secrets/koding-transcriber.env" ] &amp;&amp; set -a &amp;&amp; source "$HOME/.secrets/koding-transcriber.env" &amp;&amp; set +a; exec '__REPO__/venv/bin/python3' -c 'import os,sys; fd=os.open(sys.argv[1],os.O_RDONLY); os.dup2(fd,0); os.execv("/bin/bash",["bash","-s"])' '__REPO__/preflight.sh'</string>
     </array>
 
     <key>WorkingDirectory</key>
