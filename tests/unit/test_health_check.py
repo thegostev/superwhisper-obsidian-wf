@@ -348,7 +348,17 @@ def wd_state(**overrides):
     return state
 
 
-def decide(state, reason, *, age=900.0, paused=False, rebuild_busy=False, max_age=300.0, bootstrap_available=False):
+def decide(
+    state,
+    reason,
+    *,
+    age=900.0,
+    paused=False,
+    rebuild_busy=False,
+    max_age=300.0,
+    bootstrap_available=False,
+    daemon_alive=False,
+):
     return health_check.decide_action(
         wd_report(reason, age),
         state,
@@ -357,6 +367,7 @@ def decide(state, reason, *, age=900.0, paused=False, rebuild_busy=False, max_ag
         paused=paused,
         rebuild_busy=rebuild_busy,
         bootstrap_available=bootstrap_available,
+        daemon_alive=daemon_alive,
     )
 
 
@@ -543,6 +554,63 @@ class TestDecideAction:
         out = decide(state, None, age=5.0)
         assert out["action"] == "notify_recovery"
 
+    # -- WD-17 frozen-but-alive escalation (LAG-753) -------------------------
+    def test_stale_heartbeat_with_live_daemon_escalates_to_kickstart_kill(self):
+        """WD-17: a stale heartbeat beside a live PID is the SIGSTOP/App-Nap
+        shape — plain kickstart is a no-op, so the ladder must use `-k`."""
+        out = decide(wd_state(), "heartbeat_stale", daemon_alive=True)
+        assert out["action"] == "kickstart_kill"
+        assert out["restart"]
+        assert out["state"]["consecutive_failures"] == 1
+        assert out["state"]["last_kickstart_at"] == NOW
+
+    def test_stale_heartbeat_without_live_daemon_keeps_plain_kickstart(self):
+        """WD-6 unchanged: process-absent still takes the ordinary path."""
+        out = decide(wd_state(), "heartbeat_stale", daemon_alive=False)
+        assert out["action"] == "kickstart"
+        assert out["restart"]
+
+    def test_frozen_alive_is_capped_like_kickstarts(self):
+        """WD-6 capping applies unchanged: the third tick escalates instead."""
+        state = wd_state(consecutive_failures=2, last_kickstart_at=NOW - 300.0)
+        out = decide(state, "heartbeat_stale", daemon_alive=True)
+        assert out["action"] == "escalate"
+        assert not out["restart"]
+        assert out["notify"]
+
+    def test_frozen_alive_slow_retry_kills_again_after_an_hour(self):
+        state = wd_state(
+            consecutive_failures=3, escalated=True, last_kickstart_at=NOW - 7200.0, last_notify_at=NOW - 7200.0
+        )
+        out = decide(state, "heartbeat_stale", daemon_alive=True)
+        assert out["action"] == "kickstart_kill"
+        assert out["restart"]
+
+    def test_sleep_gap_grace_still_wins_over_frozen_alive(self):
+        """WD-4 is unchanged: staleness explained by the watchdog's own gap is
+        observational, even though the daemon PID is alive throughout a sleep."""
+        state = wd_state()
+        state["last_run_at"] = NOW - GAP
+        out = decide(state, "heartbeat_stale", age=GAP + SCAN_CYCLE, daemon_alive=True)
+        assert out["action"] == "observational"
+        assert not out["restart"]
+
+    def test_service_not_loaded_is_unaffected_by_the_liveness_flag(self):
+        """WD-9 owns the absent-job case; a stray alive flag must not divert it."""
+        out = decide(wd_state(), "service_not_loaded", bootstrap_available=True, daemon_alive=True)
+        assert out["action"] == "bootstrap"
+
+    def test_fatal_heartbeat_is_unaffected_by_the_liveness_flag(self):
+        """PF-16: a fatal daemon is alive by definition and must not be killed."""
+        out = decide(wd_state(), "heartbeat_fatal", daemon_alive=True)
+        assert out["action"] == "escalate"
+        assert not out["restart"]
+
+    def test_healthy_tick_is_unaffected_by_the_liveness_flag(self):
+        out = decide(wd_state(), None, age=5.0, daemon_alive=True)
+        assert out["action"] == "record"
+        assert not out["restart"]
+
 
 class TestWdStatePersistence:
     def test_roundtrip(self, tmp_path):
@@ -592,6 +660,31 @@ class TestWatchdogWrappers:
         assert "kickstart" in recorded["cmd"]
         assert f"gui/{os.getuid()}/com.alex.transcriber" in recorded["cmd"]
         assert recorded["kwargs"].get("timeout") is not None  # WD-7
+        assert "-k" not in recorded["cmd"]  # WD-17: the plain verb stays plain
+
+    def test_kickstart_kill_adds_the_k_flag(self, monkeypatch):
+        """WD-17: `-k` kills the job before restarting it — the only verb that
+        moves a frozen-but-alive PID."""
+        recorded = {}
+
+        def fake_run(cmd, **kwargs):
+            recorded["cmd"], recorded["kwargs"] = cmd, kwargs
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert health_check.kickstart("com.alex.transcriber", kill=True) is True
+        assert recorded["cmd"][0] == "/bin/launchctl"  # WD-8
+        assert recorded["cmd"][1] == "kickstart"
+        assert "-k" in recorded["cmd"]
+        assert recorded["cmd"][-1] == f"gui/{os.getuid()}/com.alex.transcriber"
+        assert recorded["kwargs"].get("timeout") is not None  # WD-7
+
+    def test_kickstart_kill_failure_returns_false_not_raise(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "no such process")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert health_check.kickstart("com.alex.transcriber", kill=True) is False
 
     def test_notify_passes_text_as_argv_not_interpolation(self, monkeypatch):
         """ES-2: message/title arrive as arguments to an `on run argv` handler."""
@@ -1216,3 +1309,103 @@ class TestWriterCrossCheckCli:
         assert rc == 1
         assert kicked == ["com.alex.transcriber"]
         assert "heartbeat_not_daemon" in capsys.readouterr().out
+
+
+class TestFrozenAliveEscalation:
+    """WD-17 (LAG-753): the heal ladder must see a frozen-but-alive daemon.
+
+    The 2026-09-18 App Nap freeze (LAG-694) ran for hours with the watchdog
+    firing kickstarts that a live-but-SIGSTOPped PID simply ignored.
+    """
+
+    def setup_paths(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "wd.json"
+        monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "pause"))
+        monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
+        monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        return state_path
+
+    def stale_heartbeat(self, tmp_path):
+        """A daemon-written heartbeat whose mtime is well past the threshold."""
+        path = tmp_path / "hb.json"
+        path.write_text(json.dumps(make_heartbeat(writer="daemon")), encoding="utf-8")
+        old = time.time() - 4000
+        os.utime(path, (old, old))
+        return path
+
+    # -- the pure predicate --------------------------------------------------
+    def test_liveness_is_probed_only_for_a_stale_heartbeat(self, monkeypatch):
+        """WD-17 keeps HC-17's economy: no extra subprocess off the stale path."""
+
+        def forbidden(_label):
+            raise AssertionError("only a stale heartbeat may probe for liveness (WD-17)")
+
+        monkeypatch.setattr(health_check, "probe_daemon_pid", forbidden)
+        for reason in (None, "heartbeat_missing", "service_not_loaded", "heartbeat_fatal"):
+            assert health_check.daemon_frozen_alive({"reason": reason}, "com.alex.transcriber") is False
+
+    def test_stale_heartbeat_with_a_printed_pid_is_frozen_alive(self, monkeypatch):
+        monkeypatch.setattr(health_check, "probe_daemon_pid", lambda _label: 8078)
+        assert health_check.daemon_frozen_alive({"reason": "heartbeat_stale"}, "com.alex.transcriber") is True
+
+    def test_stale_heartbeat_without_a_printed_pid_is_not_frozen_alive(self, monkeypatch):
+        """HC-17's probe, not the sampled `launchctl list` column (HC-4/HC-5)."""
+        monkeypatch.setattr(health_check, "probe_daemon_pid", lambda _label: None)
+        assert health_check.daemon_frozen_alive({"reason": "heartbeat_stale"}, "com.alex.transcriber") is False
+
+    # -- wired through --heal ------------------------------------------------
+    def test_heal_kills_and_restarts_a_frozen_daemon(self, tmp_path, monkeypatch, capsys):
+        state_path = self.setup_paths(monkeypatch, tmp_path)
+        path = self.stale_heartbeat(tmp_path)
+        monkeypatch.setattr(health_check, "probe_daemon_pid", lambda _label: 8078)
+        kicked = []
+        monkeypatch.setattr(health_check, "kickstart", lambda label, kill=False: kicked.append((label, kill)) or True)
+        monkeypatch.setattr(health_check, "notify", lambda *_a: True)
+        health_check.write_wd_state(state_path, wd_state())
+        rc = health_check.main(["--heal", "--heartbeat", str(path), "--state", str(state_path)])
+        assert rc == 1
+        assert kicked == [("com.alex.transcriber", True)]
+        assert "kickstart_kill" in capsys.readouterr().out
+        assert health_check.load_wd_state(state_path)["last_action"] == "kickstart_kill"
+
+    def test_heal_falls_back_to_a_plain_kickstart_when_the_pid_is_gone(self, tmp_path, monkeypatch):
+        """WD-9/WD-6 path unchanged: a dead daemon needs no kill."""
+        state_path = self.setup_paths(monkeypatch, tmp_path)
+        path = self.stale_heartbeat(tmp_path)
+        monkeypatch.setattr(health_check, "probe_daemon_pid", lambda _label: None)
+        kicked = []
+        monkeypatch.setattr(health_check, "kickstart", lambda label, kill=False: kicked.append((label, kill)) or True)
+        monkeypatch.setattr(health_check, "notify", lambda *_a: True)
+        health_check.write_wd_state(state_path, wd_state())
+        assert health_check.main(["--heal", "--heartbeat", str(path), "--state", str(state_path)]) == 1
+        assert kicked == [("com.alex.transcriber", False)]
+
+    def test_a_failed_probe_degrades_to_the_plain_kickstart(self, tmp_path, monkeypatch):
+        """ES-6: a launchctl print that errors reads as not-alive, never raises."""
+        state_path = self.setup_paths(monkeypatch, tmp_path)
+        path = self.stale_heartbeat(tmp_path)
+
+        def boom(_cmd, **_kwargs):
+            raise OSError("launchctl unavailable")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        kicked = []
+        monkeypatch.setattr(health_check, "kickstart", lambda label, kill=False: kicked.append((label, kill)) or True)
+        monkeypatch.setattr(health_check, "notify", lambda *_a: True)
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        health_check.write_wd_state(state_path, wd_state())
+        assert health_check.main(["--heal", "--heartbeat", str(path), "--state", str(state_path)]) == 1
+        assert kicked == [("com.alex.transcriber", False)]
+
+    def test_heal_dry_run_kills_nothing(self, tmp_path, monkeypatch, capsys):
+        state_path = self.setup_paths(monkeypatch, tmp_path)
+        path = self.stale_heartbeat(tmp_path)
+        monkeypatch.setattr(health_check, "probe_daemon_pid", lambda _label: 8078)
+        kicked = []
+        monkeypatch.setattr(health_check, "kickstart", lambda label, kill=False: kicked.append((label, kill)) or True)
+        health_check.write_wd_state(state_path, wd_state())
+        rc = health_check.main(["--heal", "--heartbeat", str(path), "--state", str(state_path), "--dry-run"])
+        assert rc == 1
+        assert kicked == []
+        assert "dry-run" in capsys.readouterr().out

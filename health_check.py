@@ -18,6 +18,8 @@ The 2026-09-16 incident (59h down via an unclosed redrive session) is encoded
 here too: on service_not_loaded the ladder re-bootstraps the daemon from the
 plist passed at install time (--plist, WD-9 revision, LAG-673) — without a
 plist it stays escalate-only, because `kickstart` cannot undo a `bootout`.
+A stale heartbeat beside a PID that is still running is the other shape the
+plain verb cannot move, and escalates to `kickstart -k` (WD-17, LAG-753).
 """
 
 from __future__ import annotations
@@ -253,6 +255,20 @@ def cross_check_daemon_pid(payload: dict | None, label: str) -> int | None:
     if heartbeat_writer(payload) == DAEMON_WRITER:
         return None
     return probe_daemon_pid(label)
+
+
+def daemon_frozen_alive(report: dict, label: str) -> bool:
+    """WD-17: is this a stale heartbeat beside a daemon PID that is still there?
+
+    The frozen-but-alive shape (SIGSTOP, App Nap before WD-15) that plain
+    `kickstart` cannot move. The probe is HC-17's `launchctl print` PID, never
+    the sampled `launchctl list` column (HC-4/HC-5), and it runs only on a
+    stale heartbeat, so the healthy steady state still costs no extra
+    subprocess. A failed probe reads as not-alive (ES-6).
+    """
+    if report.get("reason") != "heartbeat_stale":
+        return False
+    return probe_daemon_pid(label) is not None
 
 
 def assess_health(
@@ -531,6 +547,7 @@ def decide_action(
     paused: bool = False,
     rebuild_busy: bool = False,
     bootstrap_available: bool = False,
+    daemon_alive: bool = False,
 ) -> dict:
     """Pure decision ladder (WD-1..WD-12, PF-14, PF-16 reader half, ES-3/ES-4).
 
@@ -545,6 +562,11 @@ def decide_action(
     LAG-673) is repairable: the ladder re-bootstraps the service, capped like
     kickstarts, and notifies on the first tick (a bootout is deliberate human
     action, not a crash loop — the first-tick silence must not apply).
+
+    `daemon_alive` is the caller's WD-17 liveness answer (LAG-753). A stale
+    heartbeat beside a live PID is frozen-but-alive, and its restart becomes
+    `kickstart_kill`; the ladder order, the WD-6 capping and every other
+    reason are unchanged.
     """
     state = dict(wd_state)
     first_run = wd_state.get("last_run_at") is None
@@ -593,6 +615,9 @@ def decide_action(
     state["consecutive_failures"] = int(state.get("consecutive_failures") or 0) + 1
     failures = state["consecutive_failures"]
     bootstrap_repair = reason == "service_not_loaded" and bootstrap_available
+    # WD-17: only the stale-heartbeat reason can be frozen-alive; a fatal or
+    # absent job is a different failure with a different repair.
+    frozen_alive = reason == "heartbeat_stale" and daemon_alive
     escalate_only = reason == "heartbeat_fatal" or (reason == "service_not_loaded" and not bootstrap_repair)
     if escalate_only:
         restart = False  # PF-16 / WD-9: restarting cannot help (or cannot work)
@@ -616,7 +641,13 @@ def decide_action(
         state["escalated_at"] = now
         state["last_notify_at"] = now  # ES-3 shared cooldown
     if restart:
-        return finish("bootstrap" if bootstrap_repair else "kickstart", restart=True, notify=do_notify)
+        if bootstrap_repair:
+            action = "bootstrap"
+        elif frozen_alive:
+            action = "kickstart_kill"
+        else:
+            action = "kickstart"
+        return finish(action, restart=True, notify=do_notify)
     return finish("escalate" if do_notify else "wait", restart=False, notify=do_notify)
 
 
@@ -662,11 +693,22 @@ def read_repoint_note(path: str) -> str:
     return f" {note}" if isinstance(note, str) and note else ""
 
 
-def kickstart(label: str) -> bool:
-    """Tier-1 repair: `launchctl kickstart gui/<uid>/<label>` (WD-7, WD-8)."""
+def kickstart(label: str, *, kill: bool = False) -> bool:
+    """Tier-1 repair: `launchctl kickstart gui/<uid>/<label>` (WD-7, WD-8).
+
+    With ``kill`` the verb becomes `kickstart -k`, which terminates the job
+    before restarting it (WD-17). Plain `kickstart` is a no-op against a PID
+    that is alive but frozen, so the ladder needs `-k` for that one case; it
+    stays off by default, because `-k` on a healthy-but-slow daemon would cut a
+    transcription short.
+    """
+    argv = ["/bin/launchctl", "kickstart"]
+    if kill:
+        argv.append("-k")
+    argv.append(f"gui/{os.getuid()}/{label}")
     try:
         result = subprocess.run(
-            ["/bin/launchctl", "kickstart", f"gui/{os.getuid()}/{label}"],
+            argv,
             capture_output=True,
             text=True,
             check=False,
@@ -749,6 +791,23 @@ def attach_plist_drift(report: dict, args: argparse.Namespace) -> None:
     )
 
 
+def perform_repair(action: str, label: str, plist_path: str | None) -> None:
+    """Run the repair the ladder chose. WD-2 is enforced in main(); every repair
+    failure is logged inside its wrapper and never fatal (ES-6).
+
+    Three verbs, one per failure shape: `bootstrap` for a job that is gone
+    (WD-9), `kickstart -k` for one that is alive but frozen (WD-17), and the
+    plain `kickstart` for the ordinary dead-but-loaded case (WD-6).
+    """
+    if action == "bootstrap":
+        if plist_path:  # the bootstrap action implies the plist was found
+            bootstrap_repair(label, plist_path)
+    elif action == "kickstart_kill":
+        kickstart(label, kill=True)
+    else:
+        kickstart(label)
+
+
 def run_watchdog_tick(args: argparse.Namespace) -> int:
     """--heal: assess, decide, act (kickstart/notify), persist state."""
     now = time.time()
@@ -786,6 +845,8 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         paused=paused,
         rebuild_busy=rebuild_busy,
         bootstrap_available=bootstrap_available,
+        # WD-17: read-only, and gated on the stale reason (LAG-753).
+        daemon_alive=daemon_frozen_alive(report, args.label),
     )
     print(f"watchdog: {decision['action']}")
     attach_plist_drift(report, args)  # WD-14: reported every cycle, never acted on
@@ -803,12 +864,7 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         retire_expired_pause()
 
     if decision["restart"]:
-        # WD-2 is enforced in main(); kickstart/bootstrap failures are logged, never fatal (ES-6).
-        if decision["action"] == "bootstrap":
-            if plist_path:  # the bootstrap action implies the plist was found
-                bootstrap_repair(args.label, plist_path)
-        else:
-            kickstart(args.label)
+        perform_repair(decision["action"], args.label, plist_path)
     if decision["notify"]:
         if decision["action"] == "notify_recovery":
             message = "Transcriber health restored — heartbeat is fresh again."
