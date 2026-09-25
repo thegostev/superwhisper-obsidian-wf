@@ -686,6 +686,24 @@ class TestWatchdogWrappers:
         monkeypatch.setattr(subprocess, "run", fake_run)
         assert health_check.kickstart("com.alex.transcriber", kill=True) is False
 
+    def test_kickstart_honours_the_launchctl_shim(self, monkeypatch):
+        """WD-8 (LAG-757): the env hook must reach `kickstart`, not only the reads.
+
+        `kickstart` is the one launchctl call with a side effect. A drill
+        harness that shims launchctl to observe a restart would, with a
+        hardcoded path here, fake every read and still kick the live daemon.
+        """
+        recorded = {}
+
+        def fake_run(cmd, **kwargs):
+            recorded["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(health_check, "LAUNCHCTL_BIN", "/tmp/launchctl-shim")
+        health_check.kickstart("com.alex.transcriber")
+        assert recorded["cmd"][0] == "/tmp/launchctl-shim"
+
     def test_notify_passes_text_as_argv_not_interpolation(self, monkeypatch):
         """ES-2: message/title arrive as arguments to an `on run argv` handler."""
         recorded = {}
@@ -772,6 +790,22 @@ class TestWatchdogWrappers:
         marker = tmp_path / "rebuild.json"
         marker.write_text("nope", encoding="utf-8")
         assert health_check.load_rebuild_marker(marker) is False
+
+
+class TestLaunchctlCallSites:
+    """LAG-757: every launchctl invocation resolves through LAUNCHCTL_BIN.
+
+    Three of the four call sites honoured the constant and `kickstart` did
+    not, which no per-function test caught. This reads the module source so a
+    fifth call site added later cannot reintroduce the split.
+    """
+
+    def test_the_absolute_path_appears_only_as_the_launchctl_bin_default(self) -> None:
+        source = (PROJECT_DIR / "health_check.py").read_text(encoding="utf-8")
+        citing = [line.strip() for line in source.splitlines() if '"/bin/launchctl"' in line]
+        assert citing == ['LAUNCHCTL_BIN = os.environ.get("HEALTH_CHECK_LAUNCHCTL", "/bin/launchctl")'], (
+            f"WD-8 keeps the absolute path, but only as the LAUNCHCTL_BIN default; a call site hardcodes it: {citing}"
+        )
 
 
 class TestHealCli:

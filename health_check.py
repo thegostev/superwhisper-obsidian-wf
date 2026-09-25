@@ -702,7 +702,7 @@ def kickstart(label: str, *, kill: bool = False) -> bool:
     stays off by default, because `-k` on a healthy-but-slow daemon would cut a
     transcription short.
     """
-    argv = ["/bin/launchctl", "kickstart"]
+    argv = [LAUNCHCTL_BIN, "kickstart"]
     if kill:
         argv.append("-k")
     argv.append(f"gui/{os.getuid()}/{label}")
