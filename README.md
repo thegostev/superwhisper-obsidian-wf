@@ -108,6 +108,7 @@ The machine-specific config keys — watch folder, vault folders, mode key — s
 | `./run_transcriber.sh status` | Show running state and the last log lines |
 | `./run_transcriber.sh logs` | Follow the live log |
 | `./run_transcriber.sh health` | Report liveness; exit code 0 means healthy, 1 means unhealthy |
+| `./run_transcriber.sh maintenance-end` | Finish `launchctl` maintenance: remove the pause sentinel, bootstrap the daemon, wait up to 60 s for a fresh heartbeat. Exit 0 means PASS |
 | `./run_transcriber.sh catchup [days]` | Process recordings the service missed — default 7 days, including recordings already marked permanently failed. Back up your vault before running this against a large backlog |
 | `./run_transcriber.sh catchup-preview [days]` | Run catchup without processing files |
 
@@ -118,7 +119,7 @@ The repo ships launchd templates in `docs/launchd/`. Fill in the `__REPO__` and 
 The templates have two non-obvious requirements:
 
 - Grant `/usr/bin/python3` Full Disk Access in System Settings, or the watchdog can't read the recordings under `~/Documents` and dies on its first run.
-- Before planned maintenance with `launchctl`, touch the pause sentinel `~/.superwhisper_transcriber_watchdog.pause` so the watchdog doesn't mistake maintenance for an outage. The sentinel expires after four hours.
+- Before planned maintenance with `launchctl`, touch the pause sentinel `~/.superwhisper_transcriber_watchdog.pause` so the watchdog doesn't mistake maintenance for an outage. The sentinel expires after four hours. When maintenance is done, run `./run_transcriber.sh maintenance-end`: it removes the sentinel, bootstraps the daemon if it isn't loaded, and exits 0 only once a fresh heartbeat appears (add `--dry-run` to preview).
 
 The daemon template also sources `$HOME/.secrets/koding-transcriber.env` before starting — the author's personal secrets path. Edit or remove that line for your machine.
 

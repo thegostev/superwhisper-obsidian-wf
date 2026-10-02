@@ -112,3 +112,22 @@ def test_health_verb_in_dispatch():
     assert "health)" in source
     assert "health_check.py" in source
     assert "--notify-test" in source or "notify-test" in source
+
+
+def test_maintenance_end_verb_in_dispatch():
+    """LAG-680: the gated completion verb exists and delegates to health_check.py
+    with the installed daemon plist."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "maintenance-end)" in source
+    assert "--maintenance-end" in source
+    assert "Library/LaunchAgents/com.alex.transcriber.plist" in source
+
+
+@pytest.mark.skipif(not Path("/bin/zsh").exists(), reason="zsh unavailable (ubuntu CI runners)")
+def test_maintenance_end_dry_run_through_shell_changes_nothing(tmp_path):
+    sentinel = tmp_path / ".superwhisper_transcriber_watchdog.pause"
+    sentinel.write_text("", encoding="utf-8")
+    result = run_verb(tmp_path, "maintenance-end", "PID\tStatus\tLabel\n", "--dry-run")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "dry-run" in result.stdout.lower()
+    assert sentinel.exists()

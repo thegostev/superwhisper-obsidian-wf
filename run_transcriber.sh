@@ -143,6 +143,15 @@ health_verb() {
     /usr/bin/python3 "$SCRIPT_DIR/health_check.py" "$@"
 }
 
+maintenance_end() {
+    # Gated completion of manual launchctl maintenance (LAG-680): remove the
+    # pause sentinel → bootstrap the daemon (skipped if loaded) → wait ≤60 s for
+    # a heartbeat written after the gate started. Exit 0 PASS, non-zero FAIL
+    # with diagnostics. Idempotent, no sudo; --dry-run changes nothing.
+    /usr/bin/python3 "$SCRIPT_DIR/health_check.py" --maintenance-end \
+        --plist "$HOME/Library/LaunchAgents/com.alex.transcriber.plist" "$@"
+}
+
 case "${1:-start}" in
     start)  start ;;
     stop)   stop ;;
@@ -158,8 +167,9 @@ case "${1:-start}" in
     fix-all) fix_all "${@:2}" ;;
     verify) verify ;;
     health) health_verb "${@:2}" ;;
+    maintenance-end) maintenance_end "${@:2}" ;;
     *)
-        echo "Usage: $0 {start|stop|status|logs|restart|health|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all|verify}"
+        echo "Usage: $0 {start|stop|status|logs|restart|health|maintenance-end|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all|verify}"
         echo "Service Management:"
         echo "  start          - Launch auto-transcriber in background (default)"
         echo "  stop           - Stop the running transcriber"
@@ -170,6 +180,7 @@ case "${1:-start}" in
         echo "Health:"
         echo "  health         - Heartbeat-based health report (exit 0 healthy, 1 unhealthy)"
         echo "  health --notify-test - Send a test escalation notification (ES-9)"
+        echo "  maintenance-end - Finish launchctl maintenance: drop pause sentinel, bootstrap, verify heartbeat (--dry-run to preview)"
         echo ""
         echo "Catchup Operations:"
         echo "  catchup [days]         - Process last N days (default: 7)"
