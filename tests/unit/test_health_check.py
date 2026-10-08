@@ -358,9 +358,14 @@ def decide(
     max_age=300.0,
     bootstrap_available=False,
     daemon_alive=False,
+    hb=None,
+    thresholds=None,
 ):
+    report = wd_report(reason, age)
+    if hb is not None:
+        report["heartbeat"] = hb
     return health_check.decide_action(
-        wd_report(reason, age),
+        report,
         state,
         NOW,
         max_age=max_age,
@@ -368,7 +373,437 @@ def decide(
         rebuild_busy=rebuild_busy,
         bootstrap_available=bootstrap_available,
         daemon_alive=daemon_alive,
+        **(thresholds or {}),
     )
+
+
+def healthy_report(hb):
+    """A healthy report carrying the full heartbeat payload, as run_watchdog_tick builds it."""
+    report = wd_report(None)
+    report["heartbeat"] = hb
+    return report
+
+
+def throughput_tracker(**overrides):
+    """The TP-1 heartbeat-diff tracker as persisted in the watchdog state file."""
+    tracker = {"state_complete": 219, "failed_permanent": 0, "phase": "processing", "since_at": NOW - 3600.0}
+    tracker.update(overrides)
+    return tracker
+
+
+THRESHOLDS = {
+    "plateau_processing_age": 5 * 3600.0,
+    "plateau_any_age": 12 * 3600.0,
+    "fp_stall_flat_age": 2 * 3600.0,
+}
+
+
+class TestThroughputPlateau:
+    """LAG-799 (TP-1..TP-8): the 26-10-08 zombie kept every heartbeat fresh for
+    49 h while state_complete sat pinned at 219 — 5,998 consecutive healthy
+    verdicts. The heartbeat itself carries the only signal that separates
+    "busy" from "wedged": net throughput. The rule samples it on healthy ticks
+    and alerts WITHOUT touching the repair ladder — the daemon is alive, and a
+    kickstart mid-wait could interrupt a legitimate wait."""
+
+    def test_flat_completions_while_processing_alerts_after_threshold(self):
+        state = wd_state(throughput=throughput_tracker(since_at=NOW - 6 * 3600.0))
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["action"] == "notify_throughput"
+        assert out["alert"] == "throughput-plateau"
+        assert out["notify"]
+        assert not out["restart"]
+
+    def test_processing_flat_exactly_at_threshold_is_silent(self):
+        """Strict > — the boundary window is one tick past the threshold."""
+        state = wd_state(throughput=throughput_tracker(since_at=NOW - 5 * 3600.0))
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["action"] == "record"
+
+    def test_scanning_between_thresholds_is_a_quiet_evening_not_a_fault(self):
+        state = wd_state(throughput=throughput_tracker(phase="scanning", since_at=NOW - 7 * 3600.0))
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="scanning", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["action"] == "record"
+
+    def test_scanning_beyond_any_phase_threshold_alerts(self):
+        state = wd_state(throughput=throughput_tracker(phase="scanning", since_at=NOW - 12 * 3600.0 - 1))
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="scanning", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["action"] == "notify_throughput"
+        assert out["alert"] == "throughput-plateau"
+
+    def test_advancing_completions_reset_the_baseline_silently(self):
+        state = wd_state(throughput=throughput_tracker(since_at=NOW - 30 * 3600.0))
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=220), thresholds=THRESHOLDS
+        )
+        assert out["action"] == "record"
+        tracked = out["state"]["throughput"]
+        assert tracked["state_complete"] == 220
+        assert tracked["since_at"] == NOW  # fresh baseline, no inherited flatness
+
+    def test_decreasing_completions_rebaseline_silently(self):
+        state = wd_state(throughput=throughput_tracker(state_complete=220, since_at=NOW - 30 * 3600.0))
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["action"] == "record"
+        assert out["state"]["throughput"]["state_complete"] == 219
+
+    def test_plateau_realerts_hourly_while_it_persists(self):
+        hb = make_heartbeat(phase="processing", state_complete=219)
+        first = health_check.decide_action(
+            healthy_report(hb),
+            wd_state(throughput=throughput_tracker(since_at=NOW - 6 * 3600.0)),
+            NOW,
+            max_age=300.0,
+            **THRESHOLDS,
+        )
+        assert first["action"] == "notify_throughput"
+        quiet = health_check.decide_action(healthy_report(hb), first["state"], NOW + 60.0, max_age=300.0, **THRESHOLDS)
+        assert quiet["action"] == "record"  # cooldown suppresses the repeat
+        again = health_check.decide_action(
+            healthy_report(hb), quiet["state"], NOW + 3600.0 + 60.0, max_age=300.0, **THRESHOLDS
+        )
+        assert again["action"] == "notify_throughput"  # one page per hour while stalled
+
+    def test_throughput_alert_does_not_consume_the_es3_cooldown(self):
+        """TP-4: the throughput axis has its own cooldown field. It must not
+        arm the ES-4 recovery notification, count as a launchd failure, or be
+        suppressed by (or suppress) the health ladder's shared cooldown —
+        the two axes failed independently in 26-10-08 (health green, throughput
+        zero)."""
+        state = wd_state(throughput=throughput_tracker(since_at=NOW - 6 * 3600.0))
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["state"]["last_throughput_notify_at"] == NOW
+        assert out["state"]["last_notify_at"] is None  # ES-3 shared field untouched
+        assert out["state"]["escalated"] is False
+        assert out["state"]["consecutive_failures"] == 0
+
+    def test_recovery_notification_wins_after_an_escalated_episode(self):
+        state = wd_state(escalated=True, throughput=throughput_tracker(since_at=NOW - 6 * 3600.0))
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["action"] == "notify_recovery"
+
+    def test_unhealthy_period_does_not_count_as_plateau(self):
+        """TP-5: the outage gap must not page as plateau on the recovery tick —
+        the alert must still fire later if the stall itself is real."""
+        state = wd_state(throughput=throughput_tracker(since_at=NOW - 4 * 3600.0))
+        out1 = health_check.decide_action(
+            healthy_report(make_heartbeat(phase="processing", state_complete=219)),
+            state,
+            NOW + 300.0,
+            max_age=300.0,
+            **THRESHOLDS,
+        )
+        assert out1["action"] == "record"  # flat 4h05 < 5h
+        out2 = health_check.decide_action(
+            wd_report("heartbeat_missing"), out1["state"], NOW + 300.0 + 10 * 3600.0, max_age=300.0, **THRESHOLDS
+        )
+        assert out2["restart"]  # the outage is paged by the health ladder
+        out3 = health_check.decide_action(
+            healthy_report(make_heartbeat(phase="processing", state_complete=219)),
+            out2["state"],
+            NOW + 300.0 + 10 * 3600.0 + 300.0,
+            max_age=300.0,
+            **THRESHOLDS,
+        )
+        assert out3["action"] == "record"  # recovery: flat ≈ 4h05 — the outage was not plateau evidence
+        out4 = health_check.decide_action(
+            healthy_report(make_heartbeat(phase="processing", state_complete=219)),
+            out3["state"],
+            NOW + 300.0 + 10 * 3600.0 + 300.0 + 6 * 3600.0,
+            max_age=300.0,
+            **THRESHOLDS,
+        )
+        assert out4["alert"] == "throughput-plateau"  # a real stall still pages
+
+    def test_sleep_gap_does_not_count_as_plateau(self):
+        state = wd_state(throughput=throughput_tracker(since_at=NOW - 4.9 * 3600.0))
+        out = health_check.decide_action(
+            wd_report("heartbeat_stale", GAP - 60.0), state, NOW + GAP, max_age=300.0, **THRESHOLDS
+        )
+        assert out["action"] == "observational"
+        assert out["state"]["throughput"]["since_at"] == NOW - 4.9 * 3600.0 + GAP + 300.0  # gap + a normal tick spacing
+
+    def test_pause_tick_is_unobservable_not_plateau_time(self):
+        state = wd_state(throughput=throughput_tracker(since_at=NOW - 3600.0))
+        out = decide(state, None, age=5.0, paused=True, hb=make_heartbeat(phase="processing"), thresholds=THRESHOLDS)
+        assert out["action"] == "pause"
+        assert not out["notify"]
+        assert out["state"]["throughput"]["since_at"] == NOW - 3600.0 + 300.0  # gap shift only, no sample
+
+    def test_first_run_baselines_without_alerting(self):
+        out = health_check.decide_action(
+            healthy_report(make_heartbeat(phase="processing", state_complete=219)),
+            health_check.default_wd_state(),
+            NOW,
+            max_age=300.0,
+            **THRESHOLDS,
+        )
+        assert out["action"] == "first_run"
+        assert out["state"]["throughput"]["since_at"] == NOW
+        later = health_check.decide_action(
+            healthy_report(make_heartbeat(phase="processing", state_complete=219)),
+            out["state"],
+            NOW + 6 * 3600.0,
+            max_age=300.0,
+            **THRESHOLDS,
+        )
+        assert later["alert"] == "throughput-plateau"  # a fresh deployment still pages the zombie pattern
+
+    def test_heartbeat_without_counters_never_alerts(self):
+        """TP-8: HB-6 guarantees the counters; without them the rule cannot diff.
+        It must degrade to not tracking — never alert on a guess."""
+        state = wd_state(throughput=throughput_tracker(since_at=NOW - 9 * 3600.0))
+        missing_completions = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=None), thresholds=THRESHOLDS
+        )
+        assert missing_completions["action"] == "record"
+        missing_permanent = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", failed_permanent=None), thresholds=THRESHOLDS
+        )
+        assert missing_permanent["action"] == "record"
+
+    def test_no_tracker_yet_baselines_silently(self):
+        state = wd_state(throughput=None)
+        out = decide(state, None, age=5.0, hb=make_heartbeat(phase="processing"), thresholds=THRESHOLDS)
+        assert out["action"] == "record"
+        assert out["state"]["throughput"]["since_at"] == NOW
+
+    def test_malformed_tracker_rebaselines_silently(self):
+        state = wd_state(throughput={"state_complete": "219", "since_at": "garbage"})
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["action"] == "record"
+        assert out["state"]["throughput"]["since_at"] == NOW
+
+    def test_rule_is_pure_and_preserves_its_inputs(self, monkeypatch):
+        """HC-7/TP-6: the rule must not perform I/O or mutate the caller's state."""
+
+        def forbidden(*_a, **_k):
+            raise AssertionError("throughput_diff must not perform I/O (HC-7/TP-6)")
+
+        monkeypatch.setattr(subprocess, "run", forbidden)
+        tracker = throughput_tracker(since_at=NOW - 2 * 3600.0)
+        snapshot = json.loads(json.dumps(tracker))
+        state = wd_state(throughput=tracker)
+        out = decide(
+            state, None, age=5.0, hb=make_heartbeat(phase="processing", state_complete=219), thresholds=THRESHOLDS
+        )
+        assert out["state"]["throughput"]["since_at"] == tracker["since_at"]  # flat sample: value preserved
+        assert tracker == snapshot  # the caller's tracker was not mutated
+
+    def test_thresholds_are_pinned_defaults_with_config_overrides(self):
+        """TP-4 (HC-14 style): defaults are pinned, overrides reach the ladder —
+        the post-mortem left the 4–6 h processing window open on purpose."""
+        assert health_check.DEFAULT_PLATEAU_PROCESSING_AGE == 5 * 3600.0
+        assert health_check.DEFAULT_PLATEAU_ANY_AGE == 12 * 3600.0
+        assert health_check.DEFAULT_FP_STALL_FLAT_AGE == 2 * 3600.0
+        override_processing = decide(
+            wd_state(throughput=throughput_tracker(since_at=NOW - 90 * 60.0)),
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="processing", state_complete=219),
+            thresholds={
+                "plateau_processing_age": 80 * 60.0,
+                "plateau_any_age": 12 * 3600.0,
+                "fp_stall_flat_age": 2 * 3600.0,
+            },
+        )
+        assert override_processing["alert"] == "throughput-plateau"
+        override_weekend = decide(
+            wd_state(throughput=throughput_tracker(phase="scanning", since_at=NOW - 13 * 3600.0)),
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="scanning", state_complete=219),
+            thresholds={
+                "plateau_processing_age": 5 * 3600.0,
+                "plateau_any_age": 36 * 3600.0,
+                "fp_stall_flat_age": 2 * 3600.0,
+            },
+        )
+        assert override_weekend["action"] == "record"  # a raised any-phase threshold silences a quiet weekend
+
+
+class TestPermanentFailureStall:
+    """LAG-800 (TP-2/TP-3): during 26-10-08 the dependency converted its own
+    unavailability into permanent data exclusion — three otherwise-good files
+    flipped failed_permanent while state_complete was flat (three 3600 s burns
+    each), with six more queued for the same. The watchdog held both deltas
+    every 5 minutes and never compared them."""
+
+    def test_fp_rise_while_completions_are_stale_flat_alerts(self):
+        state = wd_state(throughput=throughput_tracker(failed_permanent=10, since_at=NOW - 3 * 3600.0))
+        out = decide(
+            state,
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="processing", state_complete=219, failed_permanent=11),
+            thresholds=THRESHOLDS,
+        )
+        assert out["action"] == "notify_throughput"
+        assert out["alert"] == "permanent-failure-stall"
+        assert out["notify"]
+        assert not out["restart"]
+
+    def test_fp_rise_minutes_after_a_completion_is_not_a_false_alarm(self):
+        """TP-3: a fast-fail (contract refusal) shortly after the last completion
+        is the system working — sane severity, no alert."""
+        state = wd_state(throughput=throughput_tracker(failed_permanent=10, since_at=NOW - 30 * 60.0))
+        out = decide(
+            state,
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="processing", state_complete=219, failed_permanent=11),
+            thresholds=THRESHOLDS,
+        )
+        assert out["action"] == "record"
+
+    def test_fp_rise_on_the_exact_flat_window_is_silent(self):
+        state = wd_state(throughput=throughput_tracker(failed_permanent=10, since_at=NOW - 2 * 3600.0))
+        out = decide(
+            state,
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="processing", state_complete=219, failed_permanent=11),
+            thresholds=THRESHOLDS,
+        )
+        assert out["action"] == "record"  # strict > — one tick past the window still alerts
+
+    def test_fp_rise_just_past_the_flat_window_alerts(self):
+        state = wd_state(throughput=throughput_tracker(failed_permanent=10, since_at=NOW - 2 * 3600.0 - 60.0))
+        out = decide(
+            state,
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="processing", state_complete=219, failed_permanent=11),
+            thresholds=THRESHOLDS,
+        )
+        assert out["alert"] == "permanent-failure-stall"
+
+    def test_fp_rise_while_completions_advance_silently(self):
+        """TP-3 combined case in one consecutive-heartbeat window: both counters
+        moved — the dependency is producing and excluding at once, not stalled."""
+        state = wd_state(throughput=throughput_tracker(failed_permanent=10))
+        out = decide(
+            state,
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="processing", state_complete=220, failed_permanent=11),
+            thresholds=THRESHOLDS,
+        )
+        assert out["action"] == "record"
+
+    def test_fp_decrease_never_alerts(self):
+        """Rebuild/salvage can lower the count — it is never a throughput signal.
+        Flat-time sits inside the fp-stall window and below the plateau one, so
+        only the fp-delta logic is under test."""
+        state = wd_state(throughput=throughput_tracker(failed_permanent=11, since_at=NOW - 3 * 3600.0))
+        out = decide(
+            state,
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="processing", state_complete=219, failed_permanent=9),
+            thresholds=THRESHOLDS,
+        )
+        assert out["action"] == "record"
+
+    def test_flat_fp_beyond_plateau_threshold_rides_the_plateau_label(self):
+        """No fp delta, but flat for hours: the plateau rule owns the page."""
+        state = wd_state(throughput=throughput_tracker(failed_permanent=11, since_at=NOW - 6 * 3600.0))
+        out = decide(
+            state,
+            None,
+            age=5.0,
+            hb=make_heartbeat(phase="processing", state_complete=219, failed_permanent=11),
+            thresholds=THRESHOLDS,
+        )
+        assert out["alert"] == "throughput-plateau"
+
+
+class TestThroughputHealCli:
+    """The tick surface: a throughput alert prints its distinct label, sends at
+    most one notification per hour on its own cooldown, never kickstarts, and
+    persists the tracker."""
+
+    def setup(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "wd.json"
+        monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "pause"))
+        monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
+        monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        kicked, told = [], []
+        monkeypatch.setattr(health_check, "kickstart", lambda label: kicked.append(label) or True)
+        monkeypatch.setattr(health_check, "notify", lambda t, m: told.append((t, m)) or True)
+        return state_path, kicked, told
+
+    def hb_path(self, tmp_path, **overrides):
+        path = tmp_path / "hb.json"
+        path.write_text(json.dumps(make_heartbeat(**overrides)), encoding="utf-8")
+        return path
+
+    def tracker_now(self, **overrides):
+        tracker = {
+            "state_complete": 219,
+            "failed_permanent": 0,
+            "phase": "processing",
+            "since_at": time.time() - 6 * 3600.0,
+        }
+        tracker.update(overrides)
+        return tracker
+
+    def test_plateau_tick_notifies_without_touching_the_daemon(self, tmp_path, monkeypatch, capsys):
+        state_path, kicked, told = self.setup(monkeypatch, tmp_path)
+        hb = self.hb_path(tmp_path, phase="processing", state_complete=219)
+        health_check.write_wd_state(state_path, wd_state(throughput=self.tracker_now()))
+        rc = health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        assert rc == 0  # the daemon is healthy — this is a warning, not a fault
+        assert kicked == []
+        assert len(told) == 1
+        assert "plateau" in told[0][1].lower()
+        out = capsys.readouterr().out
+        assert "throughput-plateau" in out
+        assert "notify_throughput" in out
+        saved = health_check.load_wd_state(state_path)
+        assert saved["throughput"]["state_complete"] == 219
+        assert saved["last_action"] == "notify_throughput"
+        assert saved["last_throughput_notify_at"] is not None
+        assert saved["escalated"] is False
+        assert saved["consecutive_failures"] == 0
+
+    def test_cooldown_suppresses_the_immediate_repeat(self, tmp_path, monkeypatch, capsys):
+        state_path, _kicked, told = self.setup(monkeypatch, tmp_path)
+        hb = self.hb_path(tmp_path, phase="processing", state_complete=219)
+        health_check.write_wd_state(state_path, wd_state(throughput=self.tracker_now()))
+        health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        assert sum("plateau" in m.lower() for _, m in told) == 1
+
+    def test_fp_stall_tick_names_the_failure_mode(self, tmp_path, monkeypatch, capsys):
+        state_path, kicked, told = self.setup(monkeypatch, tmp_path)
+        hb = self.hb_path(tmp_path, phase="processing", state_complete=219, failed_permanent=11)
+        health_check.write_wd_state(
+            state_path, wd_state(throughput=self.tracker_now(failed_permanent=10, since_at=time.time() - 3 * 3600.0))
+        )
+        rc = health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        assert rc == 0
+        assert kicked == []
+        assert len(told) == 1
+        assert "permanent exclusion" in told[0][1].lower()
+        assert "permanent-failure-stall" in capsys.readouterr().out
 
 
 class TestDecideAction:

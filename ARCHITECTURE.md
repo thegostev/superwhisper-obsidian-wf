@@ -180,8 +180,10 @@ Liveness signal, read-only health assessment, and automatic recovery.
   `preflight.sh` (launchd exec chain guard, venv rebuild)
 - **Internal data model**: heartbeat JSON
   (`~/.superwhisper_transcriber_heartbeat.json`, schema version 1, mtime =
-  liveness); watchdog state `~/.superwhisper_transcriber_watchdog.json`
-  (restart counters, shared notification cooldown); pause sentinel
+  liveness, counters = throughput); watchdog state
+  `~/.superwhisper_transcriber_watchdog.json` (restart counters, shared
+  notification cooldown, throughput tracker for the LAG-799/800 plateau
+  and permanent-failure-stall rules); pause sentinel
   `~/.superwhisper_transcriber_watchdog.pause`
 - **Dependencies**: `launchctl`, `osascript` (notification), the venv
   (rebuild only); the watchdog runs under `/usr/bin/python3` and shares

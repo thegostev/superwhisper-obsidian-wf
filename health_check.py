@@ -20,6 +20,14 @@ plist passed at install time (--plist, WD-9 revision, LAG-673) — without a
 plist it stays escalate-only, because `kickstart` cannot undo a `bootout`.
 A stale heartbeat beside a PID that is still running is the other shape the
 plain verb cannot move, and escalates to `kickstart -k` (WD-17, LAG-753).
+
+The 2026-10-08 incident (49h zombie Superwhisper instance, 5,998 consecutive
+"verdict: healthy" observations at zero throughput; LAG-799/LAG-800, spec TP-*)
+is encoded here too: two heartbeat-diff rules run on healthy ticks — a
+completions plateau (state_complete unchanged too long) and a permanent-failure
+stall (failed_permanent rising while completions are flat). They are
+notification-only: the daemon itself is alive, so they never touch the restart
+ladder and never count as launchd failures.
 """
 
 from __future__ import annotations
@@ -88,6 +96,16 @@ DEFAULT_PLIST_TEMPLATE = str(
     Path(__file__).resolve().parent / "docs" / "launchd" / "com.alex.transcriber.plist.template"
 )
 PREFLIGHT_WRAPPER = "preflight.sh"
+
+# Throughput rules (LAG-799/LAG-800, spec TP-*, post-mortem 26-10-08 rec 1a/1b).
+# All thresholds are seconds of flat-time measured on the persisted tracker, and
+# are explicit configuration inputs (--plateau-processing-age, --plateau-any-age,
+# --fp-stall-flat-age) like --max-age (HC-14).
+PLATEAU_ALERT = "throughput-plateau"  # TP-7: distinct alert label for downstream surfaces (LAG-676)
+FP_STALL_ALERT = "permanent-failure-stall"  # TP-7: "dependency converting failures to permanent exclusion"
+DEFAULT_PLATEAU_PROCESSING_AGE = 5.0 * 3600.0  # TP-4: PM left 4–6 h open; 5 h paged 26-10-08 on Oct 7 ~10:00
+DEFAULT_PLATEAU_ANY_AGE = 12.0 * 3600.0  # TP-4: any phase — an idle weekend raises this via config
+DEFAULT_FP_STALL_FLAT_AGE = 2.0 * 3600.0  # TP-2: healthy completion spacing is bounded by the 3600 s attempt deadline
 
 
 def _to_int(field: str) -> int | None:
@@ -513,6 +531,8 @@ def default_wd_state() -> dict:
         "last_kickstart_at": None,
         "last_action": None,
         "last_action_at": None,
+        "throughput": None,  # TP-1: heartbeat-diff tracker {state_complete, failed_permanent, phase, since_at}
+        "last_throughput_notify_at": None,  # TP-4: throughput cooldown, independent of ES-3
     }
 
 
@@ -543,87 +563,130 @@ def load_wd_state(path: str) -> dict:
     return merged
 
 
-def decide_action(
-    report: dict,
-    wd_state: dict,
+def _counter_or_none(value: int | None) -> int | None:
+    """A heartbeat counter: a real int (bool excluded) or nothing."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def throughput_tracker_shift(tracker: dict | None, gap: float | None) -> dict | None:
+    """TP-5: an unobservable period must not count toward the plateau clock.
+
+    Called on every tick that does not observe a fresh healthy heartbeat —
+    outage, suspension, pause sentinel. Shifting `since_at` (not just
+    suspending) is what stops a recovery tick from attributing the outage to a
+    stalled dependency. Returns a fresh dict; the input is never mutated.
+    """
+    if tracker is None or not gap or gap <= 0:
+        return tracker
+    shifted = dict(tracker)
+    shifted["since_at"] = float(tracker["since_at"]) + gap
+    return shifted
+
+
+def throughput_diff(
+    tracker: dict | None,
+    payload: dict | None,
     now: float,
     *,
-    max_age: float,
-    paused: bool = False,
-    rebuild_busy: bool = False,
-    bootstrap_available: bool = False,
-    daemon_alive: bool = False,
-) -> dict:
-    """Pure decision ladder (WD-1..WD-12, PF-14, PF-16 reader half, ES-3/ES-4).
+    plateau_processing_age: float = DEFAULT_PLATEAU_PROCESSING_AGE,
+    plateau_any_age: float = DEFAULT_PLATEAU_ANY_AGE,
+    fp_stall_flat_age: float = DEFAULT_FP_STALL_FLAT_AGE,
+) -> tuple[dict | None, str | None]:
+    """Pure heartbeat-diff on consecutive healthy ticks (LAG-799/LAG-800, TP-6).
 
-    Returns {"action", "restart", "notify", "state"} where "state" is the
-    successor state — main() never computes state itself.
-
-    Ladder: pause sentinel (WD-10) → first run (WD-5) → healthy (record /
-    recovery notification ES-4) → rebuild-marker busy (PF-14) → sleep-gap
-    observational grace (WD-4) → restart ladder (WD-6). Fatal heartbeats (PF-16)
-    and service_not_loaded (WD-9) escalate without a restart — except that a
-    service_not_loaded with a plist passed at install time (WD-9 revision,
-    LAG-673) is repairable: the ladder re-bootstraps the service, capped like
-    kickstarts, and notifies on the first tick (a bootout is deliberate human
-    action, not a crash loop — the first-tick silence must not apply).
-
-    `daemon_alive` is the caller's WD-17 liveness answer (LAG-753). A stale
-    heartbeat beside a live PID is frozen-but-alive, and its restart becomes
-    `kickstart_kill`; the ladder order, the WD-6 capping and every other
-    reason are unchanged.
+    Returns (successor tracker, alert label or None). `since_at` is when the
+    currently tracked `state_complete` value was first observed (re-baselined on
+    change or gap shift). The alert order matters: a failed_permanent rise names
+    the precise failure mode (LAG-800) and wins over the bare plateau label;
+    both are only evaluated while completions are flat (TP-3).
     """
-    state = dict(wd_state)
-    first_run = wd_state.get("last_run_at") is None
-    gap = None if first_run else now - wd_state["last_run_at"]
-    state["last_run_at"] = now
-    state["last_action_at"] = now
+    if not isinstance(payload, dict):
+        return tracker, None
+    completions = _counter_or_none(payload.get("state_complete"))
+    permanent = _counter_or_none(payload.get("failed_permanent"))
+    phase = payload.get("phase")
+    if completions is None or permanent is None:
+        return tracker, None  # TP-8: an unusable sample never alerts
+    if tracker is None:
+        return {"state_complete": completions, "failed_permanent": permanent, "phase": phase, "since_at": now}, None
+    tracked = dict(tracker)
+    since = tracked.get("since_at")
+    base = _counter_or_none(tracked.get("state_complete"))
+    base_permanent = _counter_or_none(tracked.get("failed_permanent"))
+    if base is None or base_permanent is None or not isinstance(since, (int, float)):
+        # TP-8: a malformed tracker is re-baselined from this sample, silently.
+        return {"state_complete": completions, "failed_permanent": permanent, "phase": phase, "since_at": now}, None
+    flat_for = now - since
+    permanent_delta = permanent > base_permanent
+    if completions != base:
+        # TP-3: completions advanced (or regressed) — fresh baseline; a
+        # failed_permanent moving alongside is the dependency producing AND
+        # excluding at once, which is sane severity, not an alarm.
+        return {"state_complete": completions, "failed_permanent": permanent, "phase": phase, "since_at": now}, None
+    alert = None
+    if permanent_delta and flat_for > fp_stall_flat_age:
+        # LAG-800 first, while flat: names "dependency converting failures to
+        # permanent exclusion" rather than the generic plateau.
+        alert = FP_STALL_ALERT
+    elif flat_for > plateau_any_age or (phase == "processing" and flat_for > plateau_processing_age):
+        # LAG-799: the 26-10-08 signature — state_complete pinned while phase=processing.
+        alert = PLATEAU_ALERT
+    tracked["failed_permanent"] = permanent
+    tracked["phase"] = phase
+    return tracked, alert
 
-    def finish(action: str, *, restart: bool = False, notify: bool = False) -> dict:
-        state["last_action"] = action
-        return {"action": action, "restart": restart, "notify": notify, "state": state}
 
-    if paused:
-        return finish("pause")
-    if first_run:
-        return finish("first_run")
+def _healthy_tick(
+    state: dict,
+    report: dict,
+    now: float,
+    *,
+    plateau_processing_age: float,
+    plateau_any_age: float,
+    fp_stall_flat_age: float,
+) -> tuple[str, str | None]:
+    """Healthy-tick bookkeeping (TP-1..TP-5): diff the heartbeat counters, reset
+    the health counters, and return which action the tick takes —
 
-    verdict, reason, age = report.get("verdict"), report.get("reason"), report.get("age")
-    if verdict == "healthy":
-        if state.get("escalated"):
-            # ES-4: recovery notification; the sender resets counters and episode.
-            state["escalated"] = False
-            state["escalated_at"] = None
-            state["consecutive_failures"] = 0
-            return finish("notify_recovery", notify=True)
+    ("notify_recovery", None) once an escalated episode ends (ES-4: the recovery
+    notification wins over any throughput alert); ("notify_throughput", label)
+    when a throughput rule pages (TP-4: one page per hour on its own cooldown,
+    independent of ES-3); or ("record", None).
+    """
+    tracked, alert = throughput_diff(
+        state.get("throughput"),
+        report.get("heartbeat"),
+        now,
+        plateau_processing_age=plateau_processing_age,
+        plateau_any_age=plateau_any_age,
+        fp_stall_flat_age=fp_stall_flat_age,
+    )
+    state["throughput"] = tracked
+    if state.get("escalated"):
+        # ES-4: recovery notification; the sender resets counters and episode.
+        state["escalated"] = False
+        state["escalated_at"] = None
         state["consecutive_failures"] = 0
-        return finish("record")
+        return "notify_recovery", None
+    state["consecutive_failures"] = 0
+    if alert and (now - (state.get("last_throughput_notify_at") or 0.0)) >= NOTIFY_COOLDOWN:
+        state["last_throughput_notify_at"] = now
+        return "notify_throughput", alert
+    return "record", None
 
-    if rebuild_busy:
-        # PF-14: kickstart -k during a rebuild signals the preflight itself —
-        # observe, and do not count a failure.
-        return finish("observe_busy")
 
-    if (
-        reason == "heartbeat_stale"
-        and gap is not None
-        and gap > max_age
-        and age is not None
-        and age <= gap + SCAN_CYCLE
-    ):
-        # WD-4: staleness fully explained by the gap — daemon was suspended
-        # alongside the watchdog (StartInterval does not fire while asleep).
-        # Counters reset; escalation state survives (only a healthy tick clears it).
-        state["consecutive_failures"] = 0
-        return finish("observational")
-
-    state["consecutive_failures"] = int(state.get("consecutive_failures") or 0) + 1
-    failures = state["consecutive_failures"]
-    bootstrap_repair = reason == "service_not_loaded" and bootstrap_available
-    # WD-17: only the stale-heartbeat reason can be frozen-alive; a fatal or
-    # absent job is a different failure with a different repair.
-    frozen_alive = reason == "heartbeat_stale" and daemon_alive
-    escalate_only = reason == "heartbeat_fatal" or (reason == "service_not_loaded" and not bootstrap_repair)
+def _failure_ladder(
+    state: dict,
+    now: float,
+    *,
+    failures: int,
+    bootstrap_repair: bool,
+    frozen_alive: bool,
+    escalate_only: bool,
+) -> tuple[str, bool, bool]:
+    """Unhealthy ladder (WD-6, WD-9, WD-17, PF-16, ES-3): choose the repair,
+    cap it, and pick the escalation moment. Returns (action, restart, do_notify)
+    and records the kickstart/escalation timestamps on `state`."""
     if escalate_only:
         restart = False  # PF-16 / WD-9: restarting cannot help (or cannot work)
     elif failures <= RESTARTS_PER_EPISODE:
@@ -652,8 +715,123 @@ def decide_action(
             action = "kickstart_kill"
         else:
             action = "kickstart"
-        return finish(action, restart=True, notify=do_notify)
-    return finish("escalate" if do_notify else "wait", restart=False, notify=do_notify)
+    else:
+        action = "escalate" if do_notify else "wait"
+    return action, restart, do_notify
+
+
+def decide_action(
+    report: dict,
+    wd_state: dict,
+    now: float,
+    *,
+    max_age: float,
+    paused: bool = False,
+    rebuild_busy: bool = False,
+    bootstrap_available: bool = False,
+    daemon_alive: bool = False,
+    plateau_processing_age: float = DEFAULT_PLATEAU_PROCESSING_AGE,
+    plateau_any_age: float = DEFAULT_PLATEAU_ANY_AGE,
+    fp_stall_flat_age: float = DEFAULT_FP_STALL_FLAT_AGE,
+) -> dict:
+    """Pure decision ladder (WD-1..WD-12, PF-14, PF-16 reader half, ES-3/ES-4, TP-1..TP-8).
+
+    Returns {"action", "restart", "notify", "alert", "state"} where "state" is
+    the successor state — main() never computes state itself. "alert" carries
+    the distinct throughput alert label (TP-7) when one fired, otherwise None.
+
+    Ladder: pause sentinel (WD-10) → first run (WD-5) → healthy (record /
+    recovery notification ES-4 / throughput alert TP-1) → rebuild-marker busy
+    (PF-14) → sleep-gap observational grace (WD-4) → restart ladder (WD-6).
+    Fatal heartbeats (PF-16) and service_not_loaded (WD-9) escalate without a
+    restart — except that a service_not_loaded with a plist passed at install
+    time (WD-9 revision, LAG-673) is repairable: the ladder re-bootstraps the
+    service, capped like kickstarts, and notifies on the first tick (a bootout
+    is deliberate human action, not a crash loop — the first-tick silence must
+    not apply).
+
+    `daemon_alive` is the caller's WD-17 liveness answer (LAG-753). A stale
+    heartbeat beside a live PID is frozen-but-alive, and its restart becomes
+    `kickstart_kill`; the ladder order, the WD-6 capping and every other
+    reason are unchanged.
+    """
+    state = dict(wd_state)
+    first_run = wd_state.get("last_run_at") is None
+    gap = None if first_run else now - wd_state["last_run_at"]
+    state["last_run_at"] = now
+    state["last_action_at"] = now
+
+    def finish(action: str, *, restart: bool = False, notify: bool = False, alert: str | None = None) -> dict:
+        state["last_action"] = action
+        return {"action": action, "restart": restart, "notify": notify, "alert": alert, "state": state}
+
+    if paused:
+        # TP-5: maintenance does not produce observations — shift, don't count.
+        state["throughput"] = throughput_tracker_shift(state.get("throughput"), gap)
+        return finish("pause")
+    if first_run:
+        # TP-1/TP-8: take a baseline sample; the plateau clock starts here.
+        state["throughput"], _ = throughput_diff(None, report.get("heartbeat"), now)
+        return finish("first_run")
+
+    verdict, reason, age = report.get("verdict"), report.get("reason"), report.get("age")
+    if verdict == "healthy":
+        # TP-1: sample the heartbeat-diff first. A throughput alert rides on an
+        # otherwise-healthy tick — no restart, no failure counter, verdict stays
+        # healthy: kickstarting a live daemon mid-wait could interrupt a
+        # legitimate wait (the 26-10-08 zombie kept every such signal green).
+        kind, alert = _healthy_tick(
+            state,
+            report,
+            now,
+            plateau_processing_age=plateau_processing_age,
+            plateau_any_age=plateau_any_age,
+            fp_stall_flat_age=fp_stall_flat_age,
+        )
+        if kind == "notify_recovery":
+            return finish("notify_recovery", notify=True)
+        if kind == "notify_throughput":
+            return finish("notify_throughput", notify=True, alert=alert)
+        return finish("record")
+
+    # TP-5: every tick that does not observe a fresh healthy heartbeat is an
+    # unobservable period for throughput — neither an outage nor a lid-close
+    # suspension counts as plateau time.
+    state["throughput"] = throughput_tracker_shift(state.get("throughput"), gap)
+
+    if rebuild_busy:
+        # PF-14: kickstart -k during a rebuild signals the preflight itself —
+        # observe, and do not count a failure.
+        return finish("observe_busy")
+
+    if (
+        reason == "heartbeat_stale"
+        and gap is not None
+        and gap > max_age
+        and age is not None
+        and age <= gap + SCAN_CYCLE
+    ):
+        # WD-4: staleness fully explained by the gap — daemon was suspended
+        # alongside the watchdog (StartInterval does not fire while asleep).
+        # Counters reset; escalation state survives (only a healthy tick clears it).
+        state["consecutive_failures"] = 0
+        return finish("observational")
+
+    state["consecutive_failures"] = int(state.get("consecutive_failures") or 0) + 1
+    bootstrap_repair = reason == "service_not_loaded" and bootstrap_available
+    # WD-17: only the stale-heartbeat reason can be frozen-alive; a fatal or
+    # absent job is a different failure with a different repair.
+    frozen_alive = reason == "heartbeat_stale" and daemon_alive
+    escalate_only = reason == "heartbeat_fatal" or (reason == "service_not_loaded" and not bootstrap_repair)
+    action, restart, do_notify = _failure_ladder(
+        state,
+        now,
+        failures=state["consecutive_failures"],
+        bootstrap_repair=bootstrap_repair,
+        frozen_alive=frozen_alive,
+        escalate_only=escalate_only,
+    )
+    return finish(action, restart=restart, notify=do_notify)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -813,6 +991,39 @@ def perform_repair(action: str, label: str, plist_path: str | None) -> None:
         kickstart(label)
 
 
+def _throughput_message(decision: dict, now: float) -> str:
+    """TP-7: compose the throughput alert text. The message names the failure
+    mode and carries the numbers the operator needs to act on it."""
+    tracker = (decision.get("state") or {}).get("throughput") or {}
+    hours = (now - tracker.get("since_at", now)) / 3600.0
+    flat = tracker.get("state_complete")
+    phase = tracker.get("phase") or "unknown-phase"
+    if decision.get("alert") == FP_STALL_ALERT:
+        return (
+            f"Transcriber dependency fault: failed_permanent is now at {tracker.get('failed_permanent')} while "
+            f"state_complete was flat at {flat} for {hours:.1f}h (phase={phase}) — the dependency is converting "
+            "failures into permanent exclusion. Check Superwhisper."
+        )
+    return (
+        f"Transcriber throughput plateau: state_complete flat at {flat} for {hours:.1f}h (phase={phase}) — no note "
+        "produced. Check Superwhisper: a wedged instance keeps the daemon looking busy."
+    )
+
+
+def _escalation_message(decision: dict, report: dict, now: float) -> str:
+    """Compose the notification text (ES-8, TP-7): state the reason, name the
+    failure mode, and record any interpreter repoint."""
+    if decision["action"] == "notify_recovery":
+        return "Transcriber health restored — heartbeat is fresh again."
+    if decision.get("alert") in (PLATEAU_ALERT, FP_STALL_ALERT):
+        # The 26-10-08 page would have said exactly what to try (relaunch the app).
+        return _throughput_message(decision, now)
+    message = f"Transcriber unhealthy: {report['reason']}"
+    if report.get("fatal_reason"):
+        message += f" ({report['fatal_reason']})"
+    return message + read_repoint_note(os.path.expanduser(REPOINT_MARKER_PATH))
+
+
 def run_watchdog_tick(args: argparse.Namespace) -> int:
     """--heal: assess, decide, act (kickstart/notify), persist state."""
     now = time.time()
@@ -852,10 +1063,16 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         bootstrap_available=bootstrap_available,
         # WD-17: read-only, and gated on the stale reason (LAG-753).
         daemon_alive=daemon_frozen_alive(report, args.label),
+        plateau_processing_age=args.plateau_processing_age,
+        plateau_any_age=args.plateau_any_age,
+        fp_stall_flat_age=args.fp_stall_flat_age,
     )
     print(f"watchdog: {decision['action']}")
     attach_plist_drift(report, args)  # WD-14: reported every cycle, never acted on
     print_report(report)
+    if decision.get("alert"):
+        print(f"alert: {decision['alert']}")
+        print(_throughput_message(decision, now))
 
     if args.dry_run:
         print("dry-run: no actions taken")
@@ -871,13 +1088,7 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
     if decision["restart"]:
         perform_repair(decision["action"], args.label, plist_path)
     if decision["notify"]:
-        if decision["action"] == "notify_recovery":
-            message = "Transcriber health restored — heartbeat is fresh again."
-        else:
-            message = f"Transcriber unhealthy: {report['reason']}"
-            if report.get("fatal_reason"):
-                message += f" ({report['fatal_reason']})"
-            message += read_repoint_note(os.path.expanduser(REPOINT_MARKER_PATH))  # ES-8
+        message = _escalation_message(decision, report, now)
         try:
             notify("Transcriber watchdog", message)
         except Exception as error:  # noqa: BLE001 — ES-6: never abort on notification failure
@@ -1022,6 +1233,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--label", default=DEFAULT_LABEL, help="exact launchd service label to assess")
     parser.add_argument(
         "--max-age", type=float, default=DEFAULT_MAX_AGE, help="maximum heartbeat age in seconds (HC-14)"
+    )
+    parser.add_argument(
+        "--plateau-processing-age",
+        type=float,
+        default=DEFAULT_PLATEAU_PROCESSING_AGE,
+        help=(
+            "seconds state_complete may stay flat under phase=processing before a throughput-plateau"
+            " alert (TP-4, LAG-799)"
+        ),
+    )
+    parser.add_argument(
+        "--plateau-any-age",
+        type=float,
+        default=DEFAULT_PLATEAU_ANY_AGE,
+        help="seconds state_complete may stay flat in any phase before the alert (TP-4, LAG-799)",
+    )
+    parser.add_argument(
+        "--fp-stall-flat-age",
+        type=float,
+        default=DEFAULT_FP_STALL_FLAT_AGE,
+        help="flatness required before a failed_permanent rise counts as the stall (TP-2, LAG-800)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="report only; never restart, write state, or notify (HC-9)"

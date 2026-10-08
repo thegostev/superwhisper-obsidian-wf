@@ -160,6 +160,21 @@ Executing the interpreter covers dyld resolution; the version check covers the f
 
 ---
 
+## TP — Throughput
+
+The 2026-10-08 post-mortem (49 h: a zombie Superwhisper instance pinned `state_complete` at 219 while the daemon stayed `phase=processing`, producing 5,998 consecutive "verdict: healthy" watchdog observations) exposed a blind spot in this spec: every HC/WD signal measures liveness, none measures progress. The heartbeat already carries the progress counters (`state_complete`, `failed_permanent` — see HB-6), so the watchdog diffs them between consecutive healthy ticks. Requirements TP-1 … TP-8 define those rules; LAG-799 is the plateau, LAG-800 the permanent-failure stall.
+
+- **TP-1** On a healthy tick whose heartbeat shows `state_complete` unchanged from the previous healthy tick for longer than the plateau threshold — the processing threshold while `phase` is `processing`, the any-phase threshold otherwise — the watchdog MUST send a notification naming the stall (`throughput-plateau`). The rule is **notification-only**: the daemon is alive by every HC/WD measure, so the health verdict MUST stay healthy, the restart/bootstrap ladder MUST NOT be touched (kicking a live daemon can interrupt a legitimate long transcription), and `consecutive_failures` MUST NOT be incremented. A plateau is a warning to a human, not a fault in the daemon.
+- **TP-2** On a healthy tick whose heartbeat shows `failed_permanent` increased since the previous healthy tick while `state_complete` is flat, the watchdog MUST — once the flat time exceeds the permanent-failure threshold — send a notification distinct from TP-1's (`permanent-failure-stall`) naming the failure mode: the dependency is converting transcription failures into permanent exclusion. Like TP-1 it is notification-only. When both rules fire on the same tick, the `failed_permanent` label MUST win: it names the precise failure mode, of which a bare plateau is the vaguer symptom.
+- **TP-3** A heartbeat whose counters have moved — `state_complete` advanced or decreased, or in either direction — MUST silently re-baseline the tracker instead of alerting (a busy evening is the expected good case). A `failed_permanent` notification MUST only ever fire while completions are flat: a rise alongside advancing completions means the pipeline is working through problems, which is not a stall.
+- **TP-4** The plateau and permanent-failure thresholds MUST be explicit configuration inputs (CLI flags with pinned defaults, like `--max-age` under HC-14): the post-mortem left the plateau window open (4–6 h), and an idle-weekend machine needs to raise the any-phase threshold via config, not an edit. The throughput notification MUST use its own cooldown field, independent of the ES-3 shared cooldown: health-axis traffic (outage pages, recovery notices) and throughput-axis pages MUST neither suppress nor be suppressed by each other, because they are different conversations (one is about a process being down, the other about a process being up yet useless). The processing threshold MUST be shorter than the any-phase threshold; the permanent-failure threshold shorter still, bounded below by the 3600 s per-attempt deadline a healthy completion cannot exceed.
+- **TP-5** An unobservable period MUST NOT count toward the flat clock. Unhealthy ticks (the heartbeat is stale, so its counters may have moved unseen), sleep gaps (WD-4), and pause-sentinel ticks (WD-10) MUST shift the tracker's baseline timestamp forward by the gap instead — after an outage, recovery is not a plateau, and re-baselining on the first healthy tick after a sleep must not page on a stall the operator could not have observed.
+- **TP-6** The heartbeat-diff MUST be pure like the rest of `decide_action` (HC-7): no I/O, no mutation of its inputs; the tracker is returned alongside the side-effect-free state.
+- **TP-7** A throughput decision MUST carry its alert label in the decision dict (`alert` field) so downstream surfaces (LAG-676's ALARM marker) can name the failure mode, and MUST set the tick's action to `notify_throughput` with exit code `0` — a throughput notification is a warning, not a launchd failure, so it MUST NOT set `escalated` (which would send a bogus ES-4 recovery notification on the next healthy tick) and the throughput alert MUST lose to the ES-4 recovery notification when both are due on the same tick.
+- **TP-8** A heartbeat sample that cannot be interpreted for the diff — missing or malformed counters, or a corrupt persisted tracker — MUST degrade to a silent re-baseline for safety: an unmeasurable tick MUST never page, because paging on parser noise is how an alerting system teaches its operator to ignore it.
+
+---
+
 ## Traceability
 
 Every requirement in this document has a row naming the test or review that verifies it.
@@ -193,6 +208,12 @@ Every requirement in this document has a row naming the test or review that veri
 | ES-1, ES-9 | manual verification via the test-notification flag at deployment |
 | ES-3, ES-4 | `decide_action` table — notification-cooldown and recovery cases |
 | ES-5 … ES-8 | code review |
+| TP-1, TP-2, TP-3 | `tests/unit/test_health_check.py` — `TestThroughputPlateau`, `TestPermanentFailureStall` |
+| TP-4 | pinned-default test and config-override cases in `TestThroughputPlateau`; separate-cooldown and hourly re-alert cases |
+| TP-5 | unhealthy-period, sleep-gap, and pause cases in `TestThroughputPlateau` |
+| TP-6 | purity test in `TestThroughputPlateau` (no I/O, no input mutation) |
+| TP-7, TP-8 | `TestThroughputHealCli` (`alert` label, exit code, no bogus recovery, cooldown) and re-baseline cases in `TestThroughputPlateau` |
+| TP-1 (defaults) | threshold constants asserted against LAG-799/LAG-800 defaults |
 
 ## References
 
@@ -203,3 +224,4 @@ Every requirement in this document has a row naming the test or review that veri
 - ADR 0010 — Preflight wrapper and watchdog agent for launchd self-healing
 - Post-mortem 26-07-23 — Superwhisper silent work loss via stability fast-fail (Lesson 3, action item #6)
 - Post-mortem 26-09-07 — Transcriber dead 8h via half-completed Homebrew Python upgrade
+- Post-mortem 26-10-08 — Transcriber silent 49h via zombie Superwhisper instance (recs 1a/1b → TP-*, LAG-799/LAG-800)
