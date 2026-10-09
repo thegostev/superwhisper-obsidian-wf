@@ -189,6 +189,22 @@ The 2026-10-08 post-mortem (49 h zombie Superwhisper instance) showed that every
 
 ---
 
+## CB — Circuit breaker (daemon-side dependency-down detection)
+
+The 26-10-08 post-mortem's other P0: nine sequential attempts (Oct 7 + Oct 8 pre-recovery) every one ending in the identical `TimeoutError("Superwhisper did not return a result within 3600s")`, and nothing escalated anywhere — `MAX_RETRIES` conflates "bad audio" with "dependency down", so on a dead Superwhisper three 1 h burns per file flip otherwise-good files to `failed_permanent`. The watchdog cannot see a streak of per-attempt outcomes (it only reads periodic heartbeat counters, TP-*), so the daemon itself classifies every attempt outcome and trips a flag when timeouts repeat. Scope note: LAG-801 covers classification, the flag, the notification and their persistence; the cheap pricing of dependency-down attempts (LAG-803) and the guarded auto-relaunch (LAG-804) are deliberate follow-ons, as is the watchdog consuming the flag (LAG-815).
+
+- **CB-1** Every attempt outcome MUST be classified into exactly one class: `timeout` (the poll deadline in `wait_for_superwhisper_result` and the abandoned-stub fast-fail both raise `TimeoutError` — the class that signals a down dependency), `permanent` (`PermanentFileError` — the LLM refused the contract; content, not dependency), `transient` (any other failure), or `success` (a completion). The classification MUST be observable as a helper (`classify_outcome`) so the mapping is the same everywhere.
+- **CB-2** The daemon MUST maintain a streak counter over classified outcomes: identical consecutive `timeout` outcomes increment it; ANY other outcome (a completion, a contract refusal, an arbitrary error) resets it to zero — a streak is only a streak while outcomes stay identical, and the abandoned-stub fast-fail case B counts alongside the 3600 s deadline case C so both shapes of "superwhisper produced nothing" drive the breaker.
+- **CB-3** On the K-th identical consecutive timeout outcome (K = `circuit_breaker_threshold`, default 3 — the same K the post-mortem recommends) the daemon MUST set a `dependency_down` flag: persisted in state under `circuit_breaker`, and mirrored to the heartbeat (`dependency_down: true`, CB-6). The flag MUST be sticky: it MUST NOT be cleared by further attempts of any kind, only by an actual completion (a `success` outcome) — a dependency that is down does not recover because the daemon kept trying.
+- **CB-4** On the trip the daemon MUST fire ONE notification ("Superwhisper not producing results — N files in retry queue"), not one per attempt; the notification goes through the same osascript-argv discipline as ES-1/ES-2 (text as argv, never interpolated) and a failed notification MUST NOT abort attempt bookkeeping.
+- **CB-5** A non-timeout outcome MUST NOT count toward a new streak: after a reset the counter restarts from zero, so the breaker needs K fresh identical timeouts to re-trip.
+- **CB-6** The heartbeat writer MUST carry a `dependency_down` boolean field in the schema-v1 payload (default `false`): call sites that know the flag pass it in; the rest emit the last known value, so the flag is visible from the next heartbeat onward. A completion that clears the flag MUST force a heartbeat write so the clear is visible promptly. This field is additive with schema version 1 (readers that ignore it lose nothing); the watchdog consuming it is a separate requirement (LAG-815).
+- **CB-7** `process_audio` MUST record the outcome class in the per-file state record (`outcome` field) alongside `status`, so post-hoc review can tell a dependency-down streak from scattered failures without reconstructing it from timestamps. The daemon's `_heartbeat_counts` MUST pass the flag into every heartbeat and the startup banner MUST surface a carried-over `dependency_down` after a restart.
+- **CB-8** The trip notification MUST be rate-limited by a shared cooldown (`circuit_breaker_notify_cooldown`, default 3600 s) persisted in state (`last_notified_epoch`): a re-trip inside the window MUST NOT page again, so a dead dependency produces roughly one page per hour for as long as it stays down — not one per attempt. The epoch MUST be stamped BEFORE the page so a restart cannot double-fire, and an expired window allows one reminder page. The cooldown is the daemon's own: it does not share the ES-3 watchdog cooldown (different processes, different conversations), mirroring TP-4's independence rule.
+- **CB-9** The whole breaker sub-dict (`streak`, `last_outcome`, `dependency_down`, `flagged_by_outcome`, `flagged_at`, `last_notified_epoch`) MUST persist through `save_state`/`load_state` (atomic as usual), so a daemon restart neither resets the streak mid-incident nor re-pages from a stale cool state.
+
+---
+
 ## Traceability
 
 Every requirement in this document has a row naming the test or review that verifies it.
@@ -233,6 +249,13 @@ Every requirement in this document has a row naming the test or review that veri
 | AF-3 | `tests/unit/test_health_check.py` — `TestAlarmThroughput` (TP-7 labels verbatim, marker outlives the TP-2 cooldown, retires when the plateau breaks) |
 | AF-6 | `tests/unit/test_health_check.py` — `TestAlarmRecovery.test_alarm_write_failure_does_not_break_the_tick` (ES-6) |
 | AF-7 | `tests/unit/test_health_check.py` — `TestAlarmRecovery.test_paused_tick_leaves_the_marker_alone` |
+| CB-1, CB-5 | `tests/unit/test_circuit_breaker.py` — `TestClassifyOutcome`, reset cases in `TestStreakAndFlag` (LAG-801) |
+| CB-2, CB-3 | `tests/unit/test_circuit_breaker.py` — `TestStreakAndFlag` (streak counts, trip-on-K, sticky flag, success-only clear) |
+| CB-4, CB-8 | `tests/unit/test_circuit_breaker.py` — `TestNotification` (fire-once, retry-queue copy, cooldown windows, guarded sender, real osascript argv) |
+| CB-6 | `tests/unit/test_circuit_breaker.py` — `TestHeartbeatFlag`; writer reset in `tests/unit/test_heartbeat.py` |
+| CB-7 | `tests/unit/test_circuit_breaker.py` — `TestProcessAudioOutcomeRecording`, `TestDaemonWiring` |
+| CB-9 | `tests/unit/test_circuit_breaker.py` — `TestStatePersistence` (round-trip, restart-safe streak/flag/cooldown) |
+| CB-3, CB-8 (defaults) | threshold and cooldown constants asserted (`CIRCUIT_BREAKER_THRESHOLD=3`, `CIRCUIT_BREAKER_NOTIFY_COOLDOWN=3600.0`) |
 
 ## References
 

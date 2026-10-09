@@ -38,11 +38,12 @@ from pipeline import (
 
 
 def _heartbeat_counts(state: dict) -> dict:
-    """Heartbeat context values derived from the pipeline state (HB-6)."""
+    """Heartbeat context values derived from the pipeline state (HB-6, CB-7)."""
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
     return {
         "state_complete": statuses.count("complete"),
         "failed_permanent": statuses.count("failed_permanent"),
+        "dependency_down": bool(state.get("circuit_breaker", {}).get("dependency_down", False)),
     }
 
 
@@ -161,6 +162,15 @@ def main():
             print(f"   ♻️  Recovered {recovered} analysis file(s) from completed Superwhisper stubs", flush=True)
         else:
             print("   — no salvageable stubs found", flush=True)
+
+    # CB-7 (LAG-801): surface a carried-over dependency_down at startup — state
+    # persists the flag across restarts, so operators see it before the first scan.
+    if state.get("circuit_breaker", {}).get("dependency_down"):
+        print(
+            "⚡ Circuit breaker: Superwhisper dependency_down carried over from the previous run — "
+            "attempts keep failing without producing results. Check that Superwhisper is running and healthy.",
+            flush=True,
+        )
 
     print("📚 Building transcript index...", flush=True)
     transcript_index = build_transcript_index(FOLDERS)

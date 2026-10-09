@@ -80,7 +80,9 @@ deduplication to prevent re-processing.
 
 - **Interface**: `load_state()` / `save_state(state)`;
   `build_transcript_index(folders)` for deduplication
-- **Data ownership**: `~/.superwhisper_transcriber_state.json`,
+- **Data ownership**: `~/.superwhisper_transcriber_state.json`
+  (per-file records with attempt `outcome` classification, plus the
+  circuit-breaker sub-dict — LAG-801),
   `~/.superwhisper_transcriber_failed.log`
 
 > **Quality coverage checkpoint (L1)**:

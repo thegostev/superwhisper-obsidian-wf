@@ -15,6 +15,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from config import (
+    CIRCUIT_BREAKER_NOTIFY_COOLDOWN,
+    CIRCUIT_BREAKER_THRESHOLD,
     FOLDERS,
     HEARTBEAT_FILE,
     MAX_RETRIES,
@@ -54,6 +56,7 @@ _heartbeat_failures: int = 0
 _heartbeat_started_at: float | None = None
 _heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
 _heartbeat_writer: str = DEFAULT_HEARTBEAT_WRITER
+_heartbeat_dependency_down: bool = False  # CB-6 (LAG-801): last known breaker flag
 
 # Output-contract markers emitted by the Superwhisper Custom Mode prompt.
 # The parser reads the header lines; everything after is the analysis body.
@@ -197,6 +200,7 @@ def write_heartbeat(
     failed_permanent: int | None = None,
     state_complete: int | None = None,
     fatal_reason: str | None = None,
+    dependency_down: bool | None = None,
     force: bool = False,
     min_interval: float = HEARTBEAT_MIN_INTERVAL,
 ) -> bool:
@@ -225,12 +229,18 @@ def write_heartbeat(
     handoff) still emit the last known values, so the heartbeat always carries
     ``failed_permanent`` (HB-6).
 
+    ``dependency_down`` (CB-6, LAG-801) is cached the same way: call sites that
+    know the circuit-breaker flag pass it in; the rest emit the last known
+    value, so a trip is visible from the next heartbeat onward and a later
+    completion clears it.
+
     Args:
         phase: One of "starting" | "scanning" | "processing" | "fatal".
         cycle: Scan-cycle number, when the caller knows it.
         failed_permanent: Count of permanently failed files, when known.
         state_complete: Count of completed files in state, when known.
         fatal_reason: Why the service is unrecoverable; written only when given.
+        dependency_down: Circuit-breaker flag (CB-6), when the caller knows it.
         force: Bypass the throttle.
         min_interval: Throttle window in seconds.
 
@@ -238,6 +248,7 @@ def write_heartbeat(
         True if the heartbeat file was written, False if throttled or failed.
     """
     global _heartbeat_last_write, _heartbeat_failures, _heartbeat_started_at
+    global _heartbeat_dependency_down
     now = time.time()
     if phase == "fatal":
         force = True
@@ -251,6 +262,8 @@ def write_heartbeat(
         _heartbeat_context["failed_permanent"] = failed_permanent
     if state_complete is not None:
         _heartbeat_context["state_complete"] = state_complete
+    if dependency_down is not None:
+        _heartbeat_dependency_down = dependency_down
     payload = {
         "schema": HEARTBEAT_SCHEMA_VERSION,
         "pid": os.getpid(),
@@ -261,6 +274,7 @@ def write_heartbeat(
         "started_at": datetime.fromtimestamp(_heartbeat_started_at, tz=timezone.utc).strftime(HEARTBEAT_TIME_FORMAT),
         "state_complete": _heartbeat_context["state_complete"],
         "failed_permanent": _heartbeat_context["failed_permanent"],
+        "dependency_down": _heartbeat_dependency_down,  # CB-6
     }
     if fatal_reason is not None:
         payload["fatal_reason"] = fatal_reason
@@ -751,6 +765,142 @@ def _check_stub_abandoned(
         )
 
 
+# ── Circuit breaker (LAG-801, spec CB-*) ───────────────────────────────────
+# MAX_RETRIES conflates "bad audio" with "dependency down": on a dead
+# Superwhisper every attempt burns its full SUPERWHISPER_TIMEOUT and three
+# 1 h burns per file flip otherwise-good files to failed_permanent — the
+# 26-10-08 post-mortem saw nine identical timeout outcomes escalate nowhere.
+# The breaker classifies every attempt outcome and, after K identical
+# consecutive timeout outcomes, raises a dependency_down flag: state-persisted
+# (CB-9), heartbeat-visible (CB-6), and announced once per notification
+# cooldown (CB-4/CB-8). Only an actual completion clears the flag; pricing and
+# auto-relaunch on the flag are separate concerns (LAG-803, LAG-804).
+
+CIRCUIT_BREAKER_NOTIFY_TITLE = "Transcriber circuit breaker"
+
+# CB-1 outcome classes. "timeout" is the dependency-down signal: both the poll
+# deadline and the abandoned-stub fast-fail raise TimeoutError, so a streak of
+# them means Superwhisper accepted handoffs but produced nothing.
+OUTCOME_TIMEOUT = "timeout"
+OUTCOME_PERMANENT = "permanent"
+OUTCOME_TRANSIENT = "transient"
+OUTCOME_SUCCESS = "success"
+
+
+def classify_outcome(error: BaseException) -> str:
+    """CB-1: map an attempt's exception to its outcome class.
+
+    TimeoutError → "timeout" (poll deadline or abandoned stub — the class the
+    breaker keys on), PermanentFileError → "permanent" (LLM refused the
+    contract; not a dependency signal), everything else → "transient".
+    """
+    if isinstance(error, TimeoutError):
+        return OUTCOME_TIMEOUT
+    if isinstance(error, PermanentFileError):
+        return OUTCOME_PERMANENT
+    return OUTCOME_TRANSIENT
+
+
+def _compose_breaker_notification(state: dict) -> str:
+    """CB-4: the dependency-down page copy, naming the retry-queue size."""
+    retry_queue = sum(1 for v in state.get("processed", {}).values() if v.get("status") == "failed_retry")
+    return f"Superwhisper not producing results — {retry_queue} files in retry queue"
+
+
+def _notify_dependency_down(state: dict) -> bool:
+    """CB-4: one osascript notification (argv-passed, never interpolated — ES-6
+    discipline). Failure returns False, never raises."""
+    message = _compose_breaker_notification(state)
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/osascript",
+                "-e",
+                "on run argv",
+                "-e",
+                "display notification (item 1 of argv) with title (item 2 of argv)",
+                "-e",
+                "end run",
+                message,
+                CIRCUIT_BREAKER_NOTIFY_TITLE,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"⚠️  circuit breaker: notification failed: {error}", flush=True)
+        return False
+
+
+def record_attempt_result(state: dict, outcome: str, *, now: float | None = None) -> bool:
+    """CB-2/3/4/8: record an attempt outcome; return True exactly when the flag trips.
+
+    A non-timeout outcome resets the streak (CB-5) but does not count toward a
+    new one — only *identical consecutive* timeout outcomes drive the breaker.
+    On a trip: set ``dependency_down`` (sticky until a completion), stamp the
+    notification epoch for the shared cooldown (CB-8, persisted in state so a
+    daemon restart cannot re-page), fire one notification (CB-4), and force a
+    heartbeat so the flag is visible from the next write onward (CB-6). The
+    notification is guarded: a failed page must not break attempt bookkeeping.
+
+    Args:
+        state: The pipeline state dict (``circuit_breaker`` sub-dict maintained here).
+        outcome: One of ``OUTCOME_TIMEOUT`` / ``OUTCOME_PERMANENT`` /
+            ``OUTCOME_TRANSIENT`` / ``OUTCOME_SUCCESS``.
+        now: Bookkeeping clock (epoch seconds); defaults to ``time.time()``. Tests
+            inject a fixed clock.
+
+    Returns:
+        True exactly on the attempt that trips the breaker.
+    """
+    breaker = state.setdefault("circuit_breaker", {})
+    now = time.time() if now is None else now
+
+    if outcome == OUTCOME_SUCCESS:
+        breaker["streak"] = 0
+        breaker["last_outcome"] = OUTCOME_SUCCESS
+        if breaker.get("dependency_down"):
+            breaker["dependency_down"] = False
+            write_heartbeat("processing", dependency_down=False, force=True)
+        return False
+
+    if outcome != OUTCOME_TIMEOUT:
+        breaker["streak"] = 0
+        breaker["last_outcome"] = outcome
+        return False
+
+    if breaker.get("last_outcome") != OUTCOME_TIMEOUT:
+        breaker["streak"] = 0
+    breaker["last_outcome"] = OUTCOME_TIMEOUT
+    breaker["streak"] = breaker.get("streak", 0) + 1
+    if breaker["streak"] < CIRCUIT_BREAKER_THRESHOLD:
+        return False
+    last_notified = breaker.get("last_notified_epoch")
+
+    now_is_new_epoch = last_notified is None or (now - last_notified) >= CIRCUIT_BREAKER_NOTIFY_COOLDOWN
+    if not breaker.get("dependency_down"):
+        # First trip: raise the flag (sticky until a completion clears it).
+        breaker["dependency_down"] = True
+        breaker["flagged_by_outcome"] = OUTCOME_TIMEOUT
+        breaker["flagged_at"] = now
+    elif not now_is_new_epoch:
+        return False  # still down, reminder suppressed inside the cooldown window
+    if now_is_new_epoch:
+        # First page or a cooldown-expired reminder while still down (CB-8):
+        # stamp the shared epoch BEFORE paging, so a restart mid-page cannot
+        # double-fire, then page. The sender itself is failure-guarded.
+        breaker["last_notified_epoch"] = now
+        try:
+            _notify_dependency_down(state)
+        except Exception as error:  # noqa: BLE001 — CB-4: never abort attempt bookkeeping
+            print(f"⚠️  circuit breaker: notification failed: {error}", flush=True)
+        write_heartbeat("processing", dependency_down=True, force=True)
+    return True
+
+
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     """Parse Superwhisper output → (category, filename, analysis).
 
@@ -781,7 +931,12 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
 
 
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
-    """Full pipeline: mode switch → handoff → parse → save; returns (success, category|None)."""
+    """Full pipeline: mode switch → handoff → parse → save; returns (success, category|None).
+
+    Every attempt outcome is classified (CB-1) and recorded through the circuit
+    breaker (LAG-801, spec CB-*): the per-file record carries the outcome class,
+    and a streak of identical timeout outcomes trips ``dependency_down``.
+    """
     attempts = (processed := state.setdefault("processed", {})).get(file_path, {}).get("attempts", 0)
 
     try:
@@ -807,12 +962,15 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "timestamp": timestamp.isoformat(),
             "processed_at": _now_local().isoformat(),
             "attempts": attempts + 1,
+            "outcome": OUTCOME_SUCCESS,  # CB-7: LAG-801 attempt classification
         }
+        record_attempt_result(state, OUTCOME_SUCCESS)
         save_state(state)
         return True, category
     except FatalAPIError:
         raise
     except PermanentFileError as e:
+        outcome = classify_outcome(e)
         print(f"   🛑 Permanent error for {Path(file_path).name}: {e}", flush=True)
         processed[file_path] = {
             "status": "failed_permanent",
@@ -820,8 +978,11 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "processed_at": _now_local().isoformat(),
             "attempts": attempts + 1,
             "expected_duration_ms": expected_duration_ms,
+            "outcome": outcome,  # CB-7: LAG-801 attempt classification
         }
+        record_attempt_result(state, outcome)
     except Exception as e:
+        outcome = classify_outcome(e)
         print(f"   ❌ Failed to process {Path(file_path).name}: {e}", flush=True)
         processed[file_path] = {
             "status": "failed_permanent" if (na := attempts + 1) >= MAX_RETRIES else "failed_retry",
@@ -829,7 +990,9 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "processed_at": _now_local().isoformat(),
             "attempts": na,
             "expected_duration_ms": expected_duration_ms,
+            "outcome": outcome,  # CB-7: LAG-801 attempt classification
         }
+        record_attempt_result(state, outcome)
         print(
             "   "
             + (
