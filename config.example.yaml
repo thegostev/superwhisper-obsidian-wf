@@ -65,4 +65,11 @@ scan_days_back: 7           # how many days of recordings to scan
 delay_between_files: 5      # seconds between files (Superwhisper is local, no API rate limit)
 max_files_per_cycle: 5      # cap per scan cycle (prevents backlog stampede)
 max_retries: 3
+
+# Circuit breaker (LAG-801): after this many identical consecutive timeout
+# attempt outcomes with no completion in between, the daemon sets a
+# dependency_down flag (state + heartbeat) and sends one notification per
+# cooldown window.
+circuit_breaker_threshold: 3            # attempts (K)
+circuit_breaker_notify_cooldown: 3600.0 # seconds between dependency_down pages
 retry_backoff: [10, 30, 60]

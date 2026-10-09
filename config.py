@@ -106,6 +106,13 @@ STATE_FILE: str = _cfg["state_file"]
 # outside the repository so a venv rebuild can never clobber it.
 HEARTBEAT_FILE: str = _cfg["heartbeat_file"]
 
+# Circuit breaker (LAG-801, spec CB-*): after CIRCUIT_BREAKER_THRESHOLD
+# identical consecutive timeout attempt outcomes with no completion in
+# between, the daemon declares the Superwhisper dependency down — a state
+# flag, a heartbeat field, and one notification per cooldown window.
+CIRCUIT_BREAKER_THRESHOLD: int = _cfg.get("circuit_breaker_threshold", 3)
+CIRCUIT_BREAKER_NOTIFY_COOLDOWN: float = _cfg.get("circuit_breaker_notify_cooldown", 3600.0)
+
 # Superwhisper integration
 SUPERWHISPER_MODE_KEY: str = _cfg.get("superwhisper_mode_key", "meeting")
 SUPERWHISPER_TIMEOUT: int = _cfg.get("superwhisper_timeout", 300)

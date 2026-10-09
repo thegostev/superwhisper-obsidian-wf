@@ -34,6 +34,7 @@ def fresh_writer_state():
     pipeline._heartbeat_context = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
     pipeline._heartbeat_started_at = None
     pipeline._heartbeat_writer = pipeline.DEFAULT_HEARTBEAT_WRITER
+    pipeline._heartbeat_dependency_down = False  # CB-6 (LAG-801) breaker flag cache
     yield
 
 
