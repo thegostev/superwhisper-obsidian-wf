@@ -74,6 +74,9 @@ PAUSE_SENTINEL_PATH = "~/.superwhisper_transcriber_watchdog.pause"
 PAUSE_TTL = 4 * 3600.0  # WD-10 revision (LAG-674): an older sentinel is a forgotten one
 REBUILD_MARKER_PATH = "~/.superwhisper_transcriber_rebuild.json"  # PF-14 (written by preflight.sh)
 REPOINT_MARKER_PATH = "~/.superwhisper_transcriber_repoint.json"  # PF-15 (written by preflight.sh)
+# AF-1 (LAG-676): the durable "is anything wrong?" surface — existence answers the
+# question from any terminal via `[ -e ~/.superwhisper_transcriber_ALARM ]`.
+ALARM_MARKER_PATH = "~/.superwhisper_transcriber_ALARM"
 SCAN_CYCLE = 30.0  # daemon scan interval — the WD-4 grace allowance
 RESTARTS_PER_EPISODE = 2  # WD-6: consecutive kickstarts before escalating
 SLOW_RETRY_INTERVAL = 3600.0  # WD-6: at most one restart per hour while unhealthy
@@ -669,9 +672,14 @@ def _healthy_tick(
         state["consecutive_failures"] = 0
         return "notify_recovery", None
     state["consecutive_failures"] = 0
-    if alert and (now - (state.get("last_throughput_notify_at") or 0.0)) >= NOTIFY_COOLDOWN:
-        state["last_throughput_notify_at"] = now
-        return "notify_throughput", alert
+    if alert:
+        if (now - (state.get("last_throughput_notify_at") or 0.0)) >= NOTIFY_COOLDOWN:
+            state["last_throughput_notify_at"] = now
+            return "notify_throughput", alert
+        # TP-2 cools the page, not the label (LAG-676 AF-3): a plateau still
+        # holding during the page cooldown keeps its alert label on the tick
+        # decision so the tick's ALARM-marker sync keeps the surface raised.
+        return "record", alert
     return "record", None
 
 
@@ -792,7 +800,7 @@ def decide_action(
             return finish("notify_recovery", notify=True)
         if kind == "notify_throughput":
             return finish("notify_throughput", notify=True, alert=alert)
-        return finish("record")
+        return finish("record", alert=alert)
 
     # TP-5: every tick that does not observe a fresh healthy heartbeat is an
     # unobservable period for throughput — neither an outage nor a lid-close
@@ -957,6 +965,76 @@ def notify(title: str, message: str) -> bool:
         return False
 
 
+def read_alarm_marker(path: str) -> dict | None:
+    """Best-effort parse of the existing ALARM marker; missing or malformed -> None."""
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def raise_alarm_marker(path: str, reason: str, now: float) -> bool:
+    """Raise or refresh the ALARM marker (AF-1/AF-4, LAG-676).
+
+    The body is JSON — reason, created_at, updated_at — so a script can read the
+    failure mode while a human gets away with `[ -e ]`. A re-escalation updates
+    the reason but preserves created_at, so the marker keeps dating the episode's
+    start, not the last tick. Never raises (ES-6); returns True on a write.
+    """
+    existing = read_alarm_marker(path)
+    created_at = existing.get("created_at") if existing else None
+    if not isinstance(created_at, (int, float)) or isinstance(created_at, bool):
+        created_at = now
+    payload = {"reason": reason, "created_at": created_at, "updated_at": now}
+    try:
+        Path(os.path.expanduser(path)).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError as error:
+        print(f"⚠️ watchdog: alarm marker write failed: {error}", file=sys.stderr)
+        return False
+    print(f"watchdog: ALARM marker raised ({reason}) — {os.path.expanduser(path)}")
+    return True
+
+
+def clear_alarm_marker(path: str) -> bool:
+    """Remove a retired ALARM marker (AF-2, LAG-676). True when this call removed one."""
+    try:
+        Path(os.path.expanduser(path)).unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        print(f"⚠️ watchdog: could not remove alarm marker {path}: {error}", file=sys.stderr)
+        return False
+    print("watchdog: ALARM marker cleared — health restored")
+    return True
+
+
+def sync_alarm_marker(decision: dict, report: dict, now: float) -> None:
+    """Reconcile the ALARM marker with the tick's verdict (LAG-676, spec AF-*).
+
+    Raise on every escalation notification the health ladder produces (AF-1:
+    an unhealthy verdict that notifies) and on every throughput page label
+    (AF-3: a TP alert is an alarm on an otherwise-healthy tick — the 26-10-08
+    zombie never produced an unhealthy verdict, and a plateau persisting
+    through the TP-2 cooldown keeps its label here so the surface never
+    flickers off). Clear on a healthy tick with no alert (AF-2): any healthy
+    tick retires the marker, not only the ES-4 recovery notification — a
+    stranded marker is the untimed pause sentinel again (WD-10, LAG-674).
+    Mid-episode ticks without a notification (kickstart, wait, observational)
+    touch nothing. Runs after the repair but before the notification: the
+    durable surface is raised before the suppressible banner (ES-3). Never
+    raises (ES-6).
+    """
+    alert = decision.get("alert")
+    if alert:
+        raise_alarm_marker(ALARM_MARKER_PATH, alert, now)
+    elif report["verdict"] == "healthy":
+        clear_alarm_marker(ALARM_MARKER_PATH)
+    elif decision.get("notify"):
+        raise_alarm_marker(ALARM_MARKER_PATH, report.get("reason") or "unknown", now)
+
+
 def attach_plist_drift(report: dict, args: argparse.Namespace) -> None:
     """Add the WD-14 drift result to a report, when the installed plist path is known.
 
@@ -1087,6 +1165,9 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
 
     if decision["restart"]:
         perform_repair(decision["action"], args.label, plist_path)
+
+    sync_alarm_marker(decision, report, now)  # AF-*: durable surface before the suppressible notification
+
     if decision["notify"]:
         message = _escalation_message(decision, report, now)
         try:

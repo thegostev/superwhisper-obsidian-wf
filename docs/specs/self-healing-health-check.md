@@ -175,6 +175,20 @@ The 2026-10-08 post-mortem (49 h: a zombie Superwhisper instance pinned `state_c
 
 ---
 
+## AF — Alarm marker
+
+The 2026-10-08 post-mortem (49 h zombie Superwhisper instance) showed that every escalation surface the watchdog had was transient: a notification scrolls away or is suppressed by Notification Center (ES-3), and log lines must already be known to be worth reading to be worth reading. Meanwhile the only machine-local checks a human runs unprompted — `ps`, `launchctl list`, the notification history — reported nothing wrong, because the zombie was alive by every HC/WD measure, and a throughput page (TP-1) is exactly the escalation that leaves no trace on the machine (LAG-799/LAG-800). Requirements AF-1 … AF-7 (LAG-676) add one durable on-machine surface: a persistent marker file at `~/.superwhisper_transcriber_ALARM` whose existence answers "is anything wrong?" from a plain terminal — `[ -e ~/.superwhisper_transcriber_ALARM ]` — and whose contents name the failure mode for scripts.
+
+- **AF-1** The watchdog MUST raise the marker on every tick that escalates with a notification — an unhealthy verdict that notifies (ES-3, the WD-6 ladder) — writing a JSON object carrying `reason` (the health failure reason or a TP-7 alert label), `created_at` and `updated_at` in epoch seconds. The marker MUST be written before the notification is attempted, so notification suppression or delivery failure never leaves an incident without its durable surface.
+- **AF-2** A healthy tick with no alert MUST remove the marker — not only the ES-4 recovery notification: any healthy observation retires the surface, so a stranded marker can never outlive its incident (the WD-10/LAG-674 lesson — a left-behind flag must be self-correcting, not operator-remembered). Ticks with neither a healthy verdict nor a notification — kickstarts, waiting ladder states, WD-4 observational ticks, PF-14 busy observations — MUST leave the marker untouched: mid-incident ticks neither clear nor refresh it.
+- **AF-3** A throughput page (TP-1, TP-2) MUST raise or refresh the marker with the TP-7 alert label as the `reason` — a throughput page is an alarm on an otherwise-healthy tick, and the 26-10-08 incident produced no unhealthy verdict at all in 49 h. The label MUST surface even on ticks whose TP-4 cooldown suppresses the repeat notification: a persisting stall keeps its marker alive, and the surface MUST NOT flicker off between pages.
+- **AF-4** A marker refresh MUST preserve `created_at` while updating `updated_at`, so the marker dates the incident's start rather than its last tick, even when the mid-episode `reason` changes. An unparsable or absent previous marker starts a new episode at `updated_at` = `created_at` = now.
+- **AF-5** `--dry-run` (HC-9) MUST neither write, refresh, nor remove the marker — on unhealthy and healthy dry-runs alike.
+- **AF-6** A marker write or removal failure MUST NOT change the exit code or abort the tick's remaining logic (ES-6): the tick logs the failure and continues.
+- **AF-7** A paused tick (WD-10) MUST not read, write, or remove the marker: maintenance must not silently retire or refresh an alarm.
+
+---
+
 ## Traceability
 
 Every requirement in this document has a row naming the test or review that verifies it.
@@ -214,6 +228,11 @@ Every requirement in this document has a row naming the test or review that veri
 | TP-6 | purity test in `TestThroughputPlateau` (no I/O, no input mutation) |
 | TP-7, TP-8 | `TestThroughputHealCli` (`alert` label, exit code, no bogus recovery, cooldown) and re-baseline cases in `TestThroughputPlateau` |
 | TP-1 (defaults) | threshold constants asserted against LAG-799/LAG-800 defaults |
+| AF-1, AF-4 | `tests/unit/test_health_check.py` — `TestAlarmMarker` (raise, contents, cooldown refresh, created-at continuity) |
+| AF-2, AF-5 | `tests/unit/test_health_check.py` — `TestAlarmRecovery` (healthy-tick clear, recovery clear, `--dry-run` writes and removes nothing) |
+| AF-3 | `tests/unit/test_health_check.py` — `TestAlarmThroughput` (TP-7 labels verbatim, marker outlives the TP-2 cooldown, retires when the plateau breaks) |
+| AF-6 | `tests/unit/test_health_check.py` — `TestAlarmRecovery.test_alarm_write_failure_does_not_break_the_tick` (ES-6) |
+| AF-7 | `tests/unit/test_health_check.py` — `TestAlarmRecovery.test_paused_tick_leaves_the_marker_alone` |
 
 ## References
 

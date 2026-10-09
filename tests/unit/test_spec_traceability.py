@@ -15,10 +15,10 @@ PROJECT_DIR = Path(__file__).parents[2]
 SPEC = PROJECT_DIR / "docs" / "specs" / "self-healing-health-check.md"
 
 #: Requirement groups defined by the spec: heartbeat, health check, watchdog,
-#: preflight, escalation.
-REQUIREMENT_ID = re.compile(r"\b((?:HB|HC|WD|PF|ES)-\d+[a-z]?)\b")
+#: preflight, escalation, alarm marker.
+REQUIREMENT_ID = re.compile(r"\b((?:HB|HC|WD|PF|ES|AF)-\d+[a-z]?)\b")
 #: A spec entry is a list item whose first bold run is the identifier.
-DEFINITION = re.compile(r"^- \*\*((?:HB|HC|WD|PF|ES)-\d+[a-z]?)\*\*", re.MULTILINE)
+DEFINITION = re.compile(r"^- \*\*((?:HB|HC|WD|PF|ES|AF)-\d+[a-z]?)\*\*", re.MULTILINE)
 
 SCANNED_SUFFIXES = frozenset({".md", ".py", ".sh", ".template", ".yaml", ".yml", ".toml"})
 SKIPPED_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "htmlcov", ".mypy_cache", ".pytest_cache"})

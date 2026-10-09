@@ -741,6 +741,7 @@ class TestThroughputHealCli:
 
     def setup(self, monkeypatch, tmp_path):
         state_path = tmp_path / "wd.json"
+        monkeypatch.setattr(health_check, "ALARM_MARKER_PATH", str(tmp_path / "ALARM"))
         monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "pause"))
         monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
         monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
@@ -1249,6 +1250,7 @@ class TestHealCli:
         monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "pause"))
         monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
         monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
+        monkeypatch.setattr(health_check, "ALARM_MARKER_PATH", str(tmp_path / "ALARM"))
         return state_path
 
     def test_heal_kickstarts_on_missing_heartbeat_and_persists_state(self, tmp_path, monkeypatch, capsys):
@@ -1436,6 +1438,198 @@ class TestHealCli:
         health_check.write_wd_state(state_path, wd_state(consecutive_failures=2, last_kickstart_at=NOW - 300.0))
         health_check.main(["--heal", "--heartbeat", str(tmp_path / "nope.json"), "--state", str(state_path)])
         assert any("repointed" in m for _t, m in told)
+
+
+class TestAlarmMarker:
+    """LAG-676: escalation surfaces only in logs and notifications, which are
+    transient. A persistent on-machine marker is the "is anything wrong?"
+    check a human (or any script) can run from a plain terminal:
+    `[ -e ~/.superwhisper_transcriber_ALARM ]`. Written on every unhealthy
+    escalation notification, removed on the first healthy tick."""
+
+    def test_escalation_writes_alarm_marker(self, tmp_path, monkeypatch, capsys):
+        state_path = self.setup_alarm(monkeypatch, tmp_path, failures=2)
+        health_check.main(self.argv_alarm(tmp_path, state_path))
+        marker = Path(health_check.ALARM_MARKER_PATH).expanduser()
+        assert marker.is_file()
+
+    def setup_alarm(self, monkeypatch, tmp_path, *, failures, existing=None):
+        """A tick that escalates (kickstarts exhausted) with notify stubbed."""
+        state_path = tmp_path / "wd.json"
+        monkeypatch.setattr(health_check, "ALARM_MARKER_PATH", str(tmp_path / "ALARM"))
+        monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "pause"))
+        monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
+        monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        monkeypatch.setattr(health_check, "kickstart", lambda label: True)
+        monkeypatch.setattr(health_check, "notify", lambda t, m: True)
+        health_check.write_wd_state(
+            state_path,
+            wd_state(consecutive_failures=failures, last_kickstart_at=NOW - 300.0),
+        )
+        if existing is not None:
+            marker = Path(health_check.ALARM_MARKER_PATH).expanduser()
+            marker.write_text(existing, encoding="utf-8")
+        return state_path
+
+    def argv_alarm(self, tmp_path, state_path, *extra):
+        return ["--heal", "--heartbeat", str(tmp_path / "nope.json"), "--state", str(state_path), *extra]
+
+    def test_marker_contents_have_timestamp_and_reason(self, tmp_path, monkeypatch, capsys):
+        state_path = self.setup_alarm(monkeypatch, tmp_path, failures=2)
+        health_check.main(self.argv_alarm(tmp_path, state_path))
+        marker = Path(health_check.ALARM_MARKER_PATH).expanduser()
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        assert data["reason"] == "heartbeat_missing"
+        assert isinstance(data["created_at"], float) and data["created_at"] > 0
+
+    def test_escalation_during_notification_cooldown_rewrites_marker(self, tmp_path, monkeypatch, capsys):
+        """ES-3 suppresses the repeated notification, not the marker: the marker
+        must reflect an ongoing alarm even while banners are rate-limited."""
+        state_path = self.setup_alarm(
+            monkeypatch, tmp_path, failures=3, existing=json.dumps({"reason": "old", "created_at": 1.0})
+        )
+        health_check.main(self.argv_alarm(tmp_path, state_path))
+        marker = Path(health_check.ALARM_MARKER_PATH).expanduser()
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        assert data["reason"] == "heartbeat_missing"  # refreshed, not stale
+
+
+class TestAlarmRecovery:
+    """LAG-676 recovery half: the marker must not outlive the incident."""
+
+    def setup_recovery(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "wd.json"
+        monkeypatch.setattr(health_check, "ALARM_MARKER_PATH", str(tmp_path / "ALARM"))
+        monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "pause"))
+        monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
+        monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        monkeypatch.setattr(health_check, "notify", lambda t, m: True)
+        marker = Path(health_check.ALARM_MARKER_PATH).expanduser()
+        marker.write_text("{}", encoding="utf-8")
+        health_check.write_wd_state(state_path, wd_state(escalated=True, consecutive_failures=2))
+        return state_path, marker
+
+    def test_recovery_notification_clears_marker(self, tmp_path, monkeypatch, capsys):
+        state_path, marker = self.setup_recovery(monkeypatch, tmp_path)
+        hb = tmp_path / "hb.json"
+        hb.write_text(json.dumps(make_heartbeat()), encoding="utf-8")
+        rc = health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        assert rc == 0
+        assert not marker.exists()
+
+    def test_healthy_tick_without_pending_recovery_also_clears_marker(self, tmp_path, monkeypatch, capsys):
+        state_path, marker = self.setup_recovery(monkeypatch, tmp_path)
+        health_check.write_wd_state(state_path, wd_state())  # no escalation in flight
+        hb = tmp_path / "hb.json"
+        hb.write_text(json.dumps(make_heartbeat()), encoding="utf-8")
+        rc = health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        assert rc == 0
+        assert not marker.exists()  # a leftover marker never outlives a healthy tick
+
+    def test_dry_run_writes_and_removes_nothing(self, tmp_path, monkeypatch, capsys):
+        state_path = tmp_path / "wd.json"
+        marker = tmp_path / "ALARM"
+        monkeypatch.setattr(health_check, "ALARM_MARKER_PATH", str(marker))
+        monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "pause"))
+        monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
+        monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
+        monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
+        monkeypatch.setattr(health_check, "kickstart", lambda label: True)
+        monkeypatch.setattr(health_check, "notify", lambda t, m: True)
+        health_check.write_wd_state(state_path, wd_state(consecutive_failures=2, last_kickstart_at=NOW - 300.0))
+        rc = health_check.main(
+            ["--heal", "--heartbeat", str(tmp_path / "nope.json"), "--state", str(state_path), "--dry-run"]
+        )
+        assert rc == 1
+        assert not marker.exists()  # escalation would write it; dry-run must not
+
+        # a pre-existing marker survives dry-run too
+        marker.write_text("{}", encoding="utf-8")
+        health_check.write_wd_state(state_path, wd_state())
+        hb = tmp_path / "hb.json"
+        hb.write_text(json.dumps(make_heartbeat()), encoding="utf-8")
+        health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path), "--dry-run"])
+        assert marker.exists()  # recovery would remove it; dry-run must not
+
+    def test_alarm_write_failure_does_not_break_the_tick(self, tmp_path, monkeypatch, capsys):
+        state_path = TestAlarmMarker().setup_alarm(monkeypatch, tmp_path, failures=2)
+
+        def refuse_write(path, mode="w", **kwargs):
+            raise PermissionError("read-only volume")
+
+        monkeypatch.setattr(Path, "write_text", refuse_write)
+        rc = health_check.main(TestAlarmMarker().argv_alarm(tmp_path, state_path))
+        assert rc == 1  # ES-6: marker failure is logged, never fatal
+        assert "alarm" in capsys.readouterr().err.lower()
+
+    def test_paused_tick_leaves_the_marker_alone(self, tmp_path, monkeypatch):
+        """AF-7 (WD-10/LAG-674): maintenance must not silently retire or refresh
+        an alarm — the marker stays exactly as it was while healing is paused."""
+        state_path, marker = self.setup_recovery(monkeypatch, tmp_path)
+        Path(health_check.PAUSE_SENTINEL_PATH).write_text("", encoding="utf-8")
+        health_check.main(["--heal", "--heartbeat", str(tmp_path / "nope.json"), "--state", str(state_path)])
+        assert marker.is_file()
+
+
+class TestAlarmThroughput:
+    """AF-3 (LAG-676): a throughput page rides an otherwise-healthy tick — the
+    26-10-08 zombie never produced a single unhealthy verdict in 49h — so the
+    ALARM marker must key off the TP-7 alert label, not the verdict. And a
+    persisting plateau outlives the TP-2 page cooldown: the marker may not
+    flicker away five minutes after it was raised."""
+
+    def state_with_tracker(self, state_path, **overrides):
+        setup = TestThroughputHealCli()
+        health_check.write_wd_state(state_path, wd_state(throughput=setup.tracker_now(**overrides)))
+        return setup
+
+    def test_throughput_page_raises_marker_with_tp7_label(self, tmp_path, monkeypatch):
+        state_path = TestThroughputHealCli().setup(monkeypatch, tmp_path)[0]
+        setup = self.state_with_tracker(state_path)
+        hb = setup.hb_path(tmp_path, phase="processing", state_complete=219)
+        rc = health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        assert rc == 0  # TP: the daemon is healthy — a warning, not a fault
+        marker = Path(health_check.ALARM_MARKER_PATH).expanduser()
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        assert data["reason"] == "throughput-plateau"  # the TP-7 label, verbatim
+
+    def test_persistent_plateau_keeps_marker_alive_through_the_cooldown(self, tmp_path, monkeypatch):
+        """TP-2 cools the repeat page, not the marker: a plateau still holding
+        one hour later must keep its durable surface (the 49h zombie paged
+        once, then vanished from every surface but its own logs)."""
+        state_path = TestThroughputHealCli().setup(monkeypatch, tmp_path)[0]
+        setup = self.state_with_tracker(state_path)
+        hb = setup.hb_path(tmp_path, phase="processing", state_complete=219)
+        health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        first = json.loads(Path(health_check.ALARM_MARKER_PATH).expanduser().read_text(encoding="utf-8"))
+        health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])  # within TP-4 cooldown
+        data = json.loads(Path(health_check.ALARM_MARKER_PATH).expanduser().read_text(encoding="utf-8"))
+        assert data["reason"] == "throughput-plateau"
+        assert data["created_at"] == first["created_at"]  # AF-4: same incident, not a new one
+
+    def test_fp_stall_page_raises_marker_with_its_label(self, tmp_path, monkeypatch):
+        state_path = TestThroughputHealCli().setup(monkeypatch, tmp_path)[0]
+        setup = self.state_with_tracker(state_path, failed_permanent=10, since_at=time.time() - 3 * 3600.0)
+        hb = setup.hb_path(tmp_path, phase="processing", state_complete=219, failed_permanent=11)
+        rc = health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        assert rc == 0
+        marker = Path(health_check.ALARM_MARKER_PATH).expanduser()
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        assert data["reason"] == "permanent-failure-stall"  # TP-7's other label, verbatim
+
+    def test_healthy_tick_after_the_plateau_breaks_clears_marker(self, tmp_path, monkeypatch):
+        state_path = TestThroughputHealCli().setup(monkeypatch, tmp_path)[0]
+        setup = self.state_with_tracker(state_path)
+        hb = setup.hb_path(tmp_path, phase="processing", state_complete=219)
+        health_check.main(["--heal", "--heartbeat", str(hb), "--state", str(state_path)])
+        marker = Path(health_check.ALARM_MARKER_PATH).expanduser()
+        assert marker.is_file()
+        broken = setup.hb_path(tmp_path, phase="processing", state_complete=219 + 7)
+        rc = health_check.main(["--heal", "--heartbeat", str(broken), "--state", str(state_path)])
+        assert rc == 0
+        assert not marker.exists()  # AF-2: the surface retires with the plateau
 
 
 class TestPauseSentinelTtl:
@@ -1792,6 +1986,7 @@ class TestFrozenAliveEscalation:
         monkeypatch.setattr(health_check, "PAUSE_SENTINEL_PATH", str(tmp_path / "pause"))
         monkeypatch.setattr(health_check, "REBUILD_MARKER_PATH", str(tmp_path / "rebuild.json"))
         monkeypatch.setattr(health_check, "REPOINT_MARKER_PATH", str(tmp_path / "repoint.json"))
+        monkeypatch.setattr(health_check, "ALARM_MARKER_PATH", str(tmp_path / "ALARM"))
         monkeypatch.setattr(health_check, "run_launchctl_list", lambda: "8078\t0\tcom.alex.transcriber\n")
         return state_path
 
