@@ -21,6 +21,7 @@ from config import (
     HEARTBEAT_FILE,
     MAX_RETRIES,
     STATE_FILE,
+    SUPERWHISPER_ACCEPT_TIMEOUT,
     SUPERWHISPER_MODE_KEY,
     SUPERWHISPER_POLL_INTERVAL,
     SUPERWHISPER_RECORDINGS_DIR,
@@ -57,6 +58,7 @@ _heartbeat_started_at: float | None = None
 _heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
 _heartbeat_writer: str = DEFAULT_HEARTBEAT_WRITER
 _heartbeat_dependency_down: bool = False  # CB-6 (LAG-801): last known breaker flag
+_heartbeat_last_outcome: str | None = None  # CB-13 (LAG-802): last classified attempt outcome
 
 # Output-contract markers emitted by the Superwhisper Custom Mode prompt.
 # The parser reads the header lines; everything after is the analysis body.
@@ -131,6 +133,15 @@ class PermanentFileError(Exception):
     """Error specific to one file that retrying won't fix (bad format, corrupt audio, etc)."""
 
 
+class SuperwhisperNotAcceptingError(TimeoutError):
+    """No new Superwhisper session dir appeared within the accept window (LAG-802, CB-10/CB-11).
+
+    A ``TimeoutError`` subclass so every existing retry path treats it as
+    transient (failed_retry, re-queued next cycle); ``classify_outcome`` gives it
+    its own outcome class so the failure is nameable in state, log and heartbeat.
+    """
+
+
 def _now_local() -> datetime:
     """Current Europe/Oslo wall-clock as a naive datetime.
 
@@ -201,6 +212,7 @@ def write_heartbeat(
     state_complete: int | None = None,
     fatal_reason: str | None = None,
     dependency_down: bool | None = None,
+    last_outcome: str | None = None,
     force: bool = False,
     min_interval: float = HEARTBEAT_MIN_INTERVAL,
 ) -> bool:
@@ -234,6 +246,11 @@ def write_heartbeat(
     value, so a trip is visible from the next heartbeat onward and a later
     completion clears it.
 
+    ``last_outcome`` (CB-13, LAG-802) is the class of the most recent attempt
+    outcome (``classify_outcome``), ``null`` until the first attempt. Unlike
+    the other cached fields it is updated even when the write is throttled, so
+    a throttled call cannot lose the outcome: the next write carries it.
+
     Args:
         phase: One of "starting" | "scanning" | "processing" | "fatal".
         cycle: Scan-cycle number, when the caller knows it.
@@ -241,6 +258,7 @@ def write_heartbeat(
         state_complete: Count of completed files in state, when known.
         fatal_reason: Why the service is unrecoverable; written only when given.
         dependency_down: Circuit-breaker flag (CB-6), when the caller knows it.
+        last_outcome: Last attempt outcome class (CB-13), when the caller knows it.
         force: Bypass the throttle.
         min_interval: Throttle window in seconds.
 
@@ -248,8 +266,10 @@ def write_heartbeat(
         True if the heartbeat file was written, False if throttled or failed.
     """
     global _heartbeat_last_write, _heartbeat_failures, _heartbeat_started_at
-    global _heartbeat_dependency_down
+    global _heartbeat_dependency_down, _heartbeat_last_outcome
     now = time.time()
+    if last_outcome is not None:
+        _heartbeat_last_outcome = last_outcome  # CB-13: cached before the throttle check
     if phase == "fatal":
         force = True
     if not force and (now - _heartbeat_last_write) < min_interval:
@@ -275,6 +295,7 @@ def write_heartbeat(
         "state_complete": _heartbeat_context["state_complete"],
         "failed_permanent": _heartbeat_context["failed_permanent"],
         "dependency_down": _heartbeat_dependency_down,  # CB-6
+        "last_outcome": _heartbeat_last_outcome,  # CB-13
     }
     if fatal_reason is not None:
         payload["fatal_reason"] = fatal_reason
@@ -444,7 +465,14 @@ def switch_superwhisper_mode() -> None:
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
 
-def handoff_to_superwhisper(file_path: str) -> None:
+def handoff_to_superwhisper(file_path: str) -> float:
+    """Hand the audio file to Superwhisper; return the delivery time (epoch seconds).
+
+    The delivery time is taken after ``open`` returns, i.e. after the mode
+    settle and the R7 idle wait: it is when the accept window opens (CB-10,
+    LAG-802). ``open`` exiting 0 means only that LaunchServices queued the
+    event — whether Superwhisper actually took it is decided by the wait loop.
+    """
     if not Path(file_path).exists():
         raise PermanentFileError(f"Audio file not found: {file_path}")
     # HB-11: forced write at the top of each handoff — the handoff window
@@ -456,6 +484,7 @@ def handoff_to_superwhisper(file_path: str) -> None:
     # create empty recording stubs that never get filled — the documented known issue.
     _wait_for_superwhisper_idle()
     subprocess.run(["open", file_path, "-a", "Superwhisper"], check=True)
+    return time.time()
 
 
 def _read_superwhisper_entry(path: Path) -> str | None:
@@ -565,6 +594,7 @@ def wait_for_superwhisper_result(
     file_path: str,
     since: float,
     expected_duration_ms: int | None = None,
+    handed_off_at: float | None = None,
 ) -> str:
     """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper().
 
@@ -592,6 +622,16 @@ def wait_for_superwhisper_result(
 
     R6: empty-stub stability threshold scales with audio duration — long audio needs
         more polls for the LLM pass to even start. Floor and ceiling bound the budget.
+
+    CB-10 (LAG-802): accept window. If no new session dir (a directory newer
+        than `since`, not consumed) appears within SUPERWHISPER_ACCEPT_TIMEOUT
+        seconds of `handed_off_at` — the delivery time ``handoff_to_superwhisper``
+        returns; defaults to when this wait starts — Superwhisper never took
+        the handoff (zombie app, LaunchServices queueing the open event) and
+        the attempt fails fast with SuperwhisperNotAcceptingError instead of
+        burning SUPERWHISPER_TIMEOUT. Any session dir counts, even one the R3
+        duration filter later skips: the window asks "is Superwhisper alive?",
+        not "is this our result?". A window <= 0 disables the check.
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
@@ -601,6 +641,12 @@ def wait_for_superwhisper_result(
 
     deadline = time.time() + SUPERWHISPER_TIMEOUT
     print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
+
+    # CB-10: the accept window opens at handoff delivery, not at `since` (which
+    # precedes the mode settle and the R7 idle wait).
+    accept_from = time.time() if handed_off_at is None else handed_off_at
+    accept_deadline = accept_from + SUPERWHISPER_ACCEPT_TIMEOUT if SUPERWHISPER_ACCEPT_TIMEOUT > 0 else None
+    session_seen = False
 
     # R6: scale empty-stub stability threshold to audio duration.
     if expected_duration_ms and expected_duration_ms > 0:
@@ -637,6 +683,9 @@ def wait_for_superwhisper_result(
             # R4: skip recordings we've already consumed.
             if _is_consumed(entry):
                 continue
+
+            # CB-10: a new, unconsumed session dir proves Superwhisper took a handoff.
+            session_seen = session_seen or entry.is_dir()
 
             info = _read_recording_meta(entry)
             if info is None:
@@ -700,8 +749,30 @@ def wait_for_superwhisper_result(
 
             _check_stub_abandoned(stub_stability, entry, mtime, stability_polls, file_path)
 
+        _check_accept_window(session_seen, accept_deadline, accept_from, file_path)
+
     raise TimeoutError(
         f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+    )
+
+
+def _check_accept_window(
+    session_seen: bool,
+    accept_deadline: float | None,
+    accept_from: float,
+    file_path: str,
+) -> None:
+    """CB-10/CB-11: raise SuperwhisperNotAcceptingError once the accept window
+    has elapsed with no new session dir. No-op once a session dir was seen or
+    when the window is disabled (``accept_deadline`` is None)."""
+    if session_seen or accept_deadline is None or time.time() < accept_deadline:
+        return
+    waited = int(time.time() - accept_from)
+    raise SuperwhisperNotAcceptingError(
+        f"{OUTCOME_NOT_ACCEPTING}: no Superwhisper session dir appeared within "
+        f"{SUPERWHISPER_ACCEPT_TIMEOUT}s of handoff (waited {waited}s) for {Path(file_path).name}. "
+        f"The open event was queued but never taken — Superwhisper is likely hung (zombie). "
+        f"Will retry on the next scan cycle."
     )
 
 
@@ -782,18 +853,29 @@ CIRCUIT_BREAKER_NOTIFY_TITLE = "Transcriber circuit breaker"
 # deadline and the abandoned-stub fast-fail raise TimeoutError, so a streak of
 # them means Superwhisper accepted handoffs but produced nothing.
 OUTCOME_TIMEOUT = "timeout"
+# CB-11 (LAG-802): no session dir within the accept window — Superwhisper never
+# took the handoff. Its own class so a zombie app is nameable, distinct from
+# "took it but produced nothing" (timeout).
+OUTCOME_NOT_ACCEPTING = "superwhisper-not-accepting"
 OUTCOME_PERMANENT = "permanent"
 OUTCOME_TRANSIENT = "transient"
 OUTCOME_SUCCESS = "success"
+# CB-12: outcome classes that signal a down dependency. Each drives its own
+# identical-outcome streak; switching between them restarts the streak.
+DEPENDENCY_DOWN_OUTCOMES = frozenset({OUTCOME_TIMEOUT, OUTCOME_NOT_ACCEPTING})
 
 
 def classify_outcome(error: BaseException) -> str:
     """CB-1: map an attempt's exception to its outcome class.
 
-    TimeoutError → "timeout" (poll deadline or abandoned stub — the class the
-    breaker keys on), PermanentFileError → "permanent" (LLM refused the
-    contract; not a dependency signal), everything else → "transient".
+    SuperwhisperNotAcceptingError → "superwhisper-not-accepting" (CB-11: no
+    session dir within the accept window; checked first, it is a TimeoutError
+    subclass), TimeoutError → "timeout" (poll deadline or abandoned stub),
+    PermanentFileError → "permanent" (LLM refused the contract; not a
+    dependency signal), everything else → "transient".
     """
+    if isinstance(error, SuperwhisperNotAcceptingError):
+        return OUTCOME_NOT_ACCEPTING
     if isinstance(error, TimeoutError):
         return OUTCOME_TIMEOUT
     if isinstance(error, PermanentFileError):
@@ -838,8 +920,12 @@ def _notify_dependency_down(state: dict) -> bool:
 def record_attempt_result(state: dict, outcome: str, *, now: float | None = None) -> bool:
     """CB-2/3/4/8: record an attempt outcome; return True exactly when the flag trips.
 
-    A non-timeout outcome resets the streak (CB-5) but does not count toward a
-    new one — only *identical consecutive* timeout outcomes drive the breaker.
+    A non-dependency outcome resets the streak (CB-5) but does not count toward
+    a new one — only *identical consecutive* dependency-down outcomes drive the
+    breaker: K ``timeout`` in a row, or K ``superwhisper-not-accepting`` in a
+    row (CB-12). Switching from one to the other restarts the streak at 1, so
+    ``flagged_by_outcome`` always names a single, consistent failure shape.
+    Every outcome is also mirrored to the heartbeat's ``last_outcome`` (CB-13).
     On a trip: set ``dependency_down`` (sticky until a completion), stamp the
     notification epoch for the shared cooldown (CB-8, persisted in state so a
     daemon restart cannot re-page), fire one notification (CB-4), and force a
@@ -848,8 +934,8 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
 
     Args:
         state: The pipeline state dict (``circuit_breaker`` sub-dict maintained here).
-        outcome: One of ``OUTCOME_TIMEOUT`` / ``OUTCOME_PERMANENT`` /
-            ``OUTCOME_TRANSIENT`` / ``OUTCOME_SUCCESS``.
+        outcome: One of ``OUTCOME_TIMEOUT`` / ``OUTCOME_NOT_ACCEPTING`` /
+            ``OUTCOME_PERMANENT`` / ``OUTCOME_TRANSIENT`` / ``OUTCOME_SUCCESS``.
         now: Bookkeeping clock (epoch seconds); defaults to ``time.time()``. Tests
             inject a fixed clock.
 
@@ -858,6 +944,7 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
     """
     breaker = state.setdefault("circuit_breaker", {})
     now = time.time() if now is None else now
+    write_heartbeat("processing", last_outcome=outcome)  # CB-13 (throttled; outcome cached regardless)
 
     if outcome == OUTCOME_SUCCESS:
         breaker["streak"] = 0
@@ -867,14 +954,14 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
             write_heartbeat("processing", dependency_down=False, force=True)
         return False
 
-    if outcome != OUTCOME_TIMEOUT:
+    if outcome not in DEPENDENCY_DOWN_OUTCOMES:
         breaker["streak"] = 0
         breaker["last_outcome"] = outcome
         return False
 
-    if breaker.get("last_outcome") != OUTCOME_TIMEOUT:
-        breaker["streak"] = 0
-    breaker["last_outcome"] = OUTCOME_TIMEOUT
+    if breaker.get("last_outcome") != outcome:
+        breaker["streak"] = 0  # CB-12: a different dependency-down class starts a new streak
+    breaker["last_outcome"] = outcome
     breaker["streak"] = breaker.get("streak", 0) + 1
     if breaker["streak"] < CIRCUIT_BREAKER_THRESHOLD:
         return False
@@ -884,7 +971,7 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
     if not breaker.get("dependency_down"):
         # First trip: raise the flag (sticky until a completion clears it).
         breaker["dependency_down"] = True
-        breaker["flagged_by_outcome"] = OUTCOME_TIMEOUT
+        breaker["flagged_by_outcome"] = outcome
         breaker["flagged_at"] = now
     elif not now_is_new_epoch:
         return False  # still down, reminder suppressed inside the cooldown window
@@ -947,9 +1034,14 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
 
         since = time.time()
         switch_superwhisper_mode()
-        handoff_to_superwhisper(file_path)
+        handed_off_at = handoff_to_superwhisper(file_path)  # CB-10: accept window opens here
         category, ai_filename, analysis = parse_superwhisper_output(
-            wait_for_superwhisper_result(file_path, since=since, expected_duration_ms=expected_duration_ms)
+            wait_for_superwhisper_result(
+                file_path,
+                since=since,
+                expected_duration_ms=expected_duration_ms,
+                handed_off_at=handed_off_at,
+            )
         )
 
         fname = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
@@ -983,7 +1075,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         record_attempt_result(state, outcome)
     except Exception as e:
         outcome = classify_outcome(e)
-        print(f"   ❌ Failed to process {Path(file_path).name}: {e}", flush=True)
+        print(f"   ❌ Failed to process {Path(file_path).name} [{outcome}]: {e}", flush=True)
         processed[file_path] = {
             "status": "failed_permanent" if (na := attempts + 1) >= MAX_RETRIES else "failed_retry",
             "error": str(e),

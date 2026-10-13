@@ -7,6 +7,9 @@
 # not the filename). The default Custom Mode has key "custom" (its "name" is "Meeting").
 superwhisper_mode_key: "custom"
 superwhisper_timeout: 3600           # seconds to wait for result before giving up
+superwhisper_accept_timeout: 600     # LAG-802: fail fast as superwhisper-not-accepting if no
+                                     # recordings/<epoch> session dir appears this many seconds
+                                     # after handoff (0 disables)
 superwhisper_recordings_dir: "~/Documents/superwhisper/recordings"
 superwhisper_poll_interval: 3        # seconds between polls while waiting
 
