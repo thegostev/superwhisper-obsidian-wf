@@ -254,6 +254,10 @@ def write_heartbeat(
     global _heartbeat_last_write, _heartbeat_failures, _heartbeat_started_at
     global _heartbeat_dependency_down, _heartbeat_icloud_downloads_requested
     now = time.time()
+    if icloud_downloads_requested is not None:
+        # IC-5: cached before the throttle check — the preflight count is
+        # reported once per cycle, and a throttled write must not drop it.
+        _heartbeat_icloud_downloads_requested = icloud_downloads_requested
     if phase == "fatal":
         force = True
     if not force and (now - _heartbeat_last_write) < min_interval:
@@ -268,8 +272,6 @@ def write_heartbeat(
         _heartbeat_context["state_complete"] = state_complete
     if dependency_down is not None:
         _heartbeat_dependency_down = dependency_down
-    if icloud_downloads_requested is not None:
-        _heartbeat_icloud_downloads_requested = icloud_downloads_requested
     payload = {
         "schema": HEARTBEAT_SCHEMA_VERSION,
         "pid": os.getpid(),

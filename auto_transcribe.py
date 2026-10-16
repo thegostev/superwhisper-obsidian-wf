@@ -127,8 +127,9 @@ def run_scan_cycle(state, transcript_index, cycle_number):
     # HB-1: at least one heartbeat attempt per scan cycle. The throttle (15 s)
     # may suppress the file write; the 30 s scan interval keeps the file fresh.
     write_heartbeat("scanning", cycle=cycle_number, **_heartbeat_counts(state))
-    # IC-5: the request count rides on the next heartbeat (cached by the writer,
-    # so a throttled write here still surfaces it on the following one).
+    # IC-5: the request count rides on the next heartbeat — the writer caches it
+    # before its throttle check, so a throttled write here still surfaces it on
+    # the following one.
     write_heartbeat("scanning", icloud_downloads_requested=run_icloud_preflight())
     new_files = discover_audio_files(WATCH_FOLDER, state, transcript_index)
 

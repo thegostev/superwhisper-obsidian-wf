@@ -278,6 +278,14 @@ class TestSummaryAndHeartbeat:
         pipeline.write_heartbeat("scanning", force=True)
         assert json.loads(heartbeat_path.read_text())["icloud_downloads_requested"] == 0
 
+    def test_throttled_write_still_caches_the_count(self, heartbeat_path):
+        """run_scan_cycle reports the count right after the cycle heartbeat, inside the throttle window."""
+        assert pipeline.write_heartbeat("scanning", force=True)
+        assert not pipeline.write_heartbeat("scanning", icloud_downloads_requested=5)  # throttled
+        assert json.loads(heartbeat_path.read_text())["icloud_downloads_requested"] == 0
+        pipeline.write_heartbeat("processing", force=True)
+        assert json.loads(heartbeat_path.read_text())["icloud_downloads_requested"] == 5
+
     def test_heartbeat_carries_the_count_and_caches_it(self, heartbeat_path):
         pipeline.write_heartbeat("scanning", icloud_downloads_requested=4, force=True)
         pipeline.write_heartbeat("processing", force=True)  # caller that does not know the count
