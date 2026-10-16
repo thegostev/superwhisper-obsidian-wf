@@ -72,4 +72,13 @@ max_retries: 3
 # cooldown window.
 circuit_breaker_threshold: 3            # attempts (K)
 circuit_breaker_notify_cooldown: 3600.0 # seconds between dependency_down pages
+
+# iCloud placeholder preflight (LAG-813): before each scan, run `brctl download`
+# on `.<name>.m4a.icloud` stubs in the scan window so recordings still sitting
+# in iCloud get downloaded instead of staying invisible to the daemon.
+icloud_preflight_enabled: true
+icloud_preflight_dry_run: false        # log what would be requested, run nothing
+icloud_download_timeout: 10.0          # seconds per brctl call
+icloud_download_cooldown: 300.0        # seconds before re-requesting the same stub
+icloud_max_downloads_per_cycle: 10     # brctl calls per scan cycle; rest deferred
 retry_backoff: [10, 30, 60]

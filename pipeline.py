@@ -57,6 +57,7 @@ _heartbeat_started_at: float | None = None
 _heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
 _heartbeat_writer: str = DEFAULT_HEARTBEAT_WRITER
 _heartbeat_dependency_down: bool = False  # CB-6 (LAG-801): last known breaker flag
+_heartbeat_icloud_downloads_requested: int = 0  # IC-5 (LAG-813): latest preflight pass
 
 # Output-contract markers emitted by the Superwhisper Custom Mode prompt.
 # The parser reads the header lines; everything after is the analysis body.
@@ -201,6 +202,7 @@ def write_heartbeat(
     state_complete: int | None = None,
     fatal_reason: str | None = None,
     dependency_down: bool | None = None,
+    icloud_downloads_requested: int | None = None,
     force: bool = False,
     min_interval: float = HEARTBEAT_MIN_INTERVAL,
 ) -> bool:
@@ -241,6 +243,8 @@ def write_heartbeat(
         state_complete: Count of completed files in state, when known.
         fatal_reason: Why the service is unrecoverable; written only when given.
         dependency_down: Circuit-breaker flag (CB-6), when the caller knows it.
+        icloud_downloads_requested: ``brctl download`` requests issued by the
+            latest iCloud preflight pass (IC-5), when the caller knows it.
         force: Bypass the throttle.
         min_interval: Throttle window in seconds.
 
@@ -248,8 +252,12 @@ def write_heartbeat(
         True if the heartbeat file was written, False if throttled or failed.
     """
     global _heartbeat_last_write, _heartbeat_failures, _heartbeat_started_at
-    global _heartbeat_dependency_down
+    global _heartbeat_dependency_down, _heartbeat_icloud_downloads_requested
     now = time.time()
+    if icloud_downloads_requested is not None:
+        # IC-5: cached before the throttle check — the preflight count is
+        # reported once per cycle, and a throttled write must not drop it.
+        _heartbeat_icloud_downloads_requested = icloud_downloads_requested
     if phase == "fatal":
         force = True
     if not force and (now - _heartbeat_last_write) < min_interval:
@@ -275,6 +283,7 @@ def write_heartbeat(
         "state_complete": _heartbeat_context["state_complete"],
         "failed_permanent": _heartbeat_context["failed_permanent"],
         "dependency_down": _heartbeat_dependency_down,  # CB-6
+        "icloud_downloads_requested": _heartbeat_icloud_downloads_requested,  # IC-5
     }
     if fatal_reason is not None:
         payload["fatal_reason"] = fatal_reason
