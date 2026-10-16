@@ -11,6 +11,11 @@ from pathlib import Path
 from config import (
     DELAY_BETWEEN_FILES,
     FOLDERS,
+    ICLOUD_DOWNLOAD_COOLDOWN,
+    ICLOUD_DOWNLOAD_TIMEOUT,
+    ICLOUD_MAX_DOWNLOADS_PER_CYCLE,
+    ICLOUD_PREFLIGHT_DRY_RUN,
+    ICLOUD_PREFLIGHT_ENABLED,
     MAX_FILES_PER_CYCLE,
     MAX_RETRIES,
     SCAN_DAYS_BACK,
@@ -19,6 +24,7 @@ from config import (
     SUPERWHISPER_TIMEOUT,
     WATCH_FOLDER,
 )
+from icloud_preflight import run_preflight
 from pipeline import (
     SALVAGE_PASS_EVERY_N_CYCLES,
     TIMESTAMP_FORMAT,
@@ -49,6 +55,33 @@ def _heartbeat_counts(state: dict) -> dict:
 
 # Emit a heartbeat log line every Nth idle cycle (keeps logs quiet but alive).
 IDLE_HEARTBEAT_EVERY_N_CYCLES = 10
+
+# IC-3: stub path -> monotonic time of its last `brctl download` request. Lives
+# for the daemon's lifetime; a restart re-requests once, which is harmless.
+_icloud_last_requested: dict[str, float] = {}
+
+
+def run_icloud_preflight() -> int:
+    """Request iCloud downloads for placeholder stubs in the scan window (LAG-813, IC-*).
+
+    Returns the number of ``brctl download`` requests issued. Never raises (IC-4):
+    a preflight fault must not cost the scan cycle that follows it.
+    """
+    if not ICLOUD_PREFLIGHT_ENABLED:
+        return 0
+    try:
+        result = run_preflight(
+            discover_recent_folders(WATCH_FOLDER, SCAN_DAYS_BACK),
+            dry_run=ICLOUD_PREFLIGHT_DRY_RUN,
+            timeout=ICLOUD_DOWNLOAD_TIMEOUT,
+            cooldown=ICLOUD_DOWNLOAD_COOLDOWN,
+            max_requests=ICLOUD_MAX_DOWNLOADS_PER_CYCLE,
+            last_requested=_icloud_last_requested,
+        )
+    except Exception as e:
+        print(f"   ⚠️  iCloud preflight failed, continuing scan: {e}", flush=True)
+        return 0
+    return result.requested
 
 
 def discover_audio_files(watch_folder, state, transcript_index):
@@ -94,6 +127,9 @@ def run_scan_cycle(state, transcript_index, cycle_number):
     # HB-1: at least one heartbeat attempt per scan cycle. The throttle (15 s)
     # may suppress the file write; the 30 s scan interval keeps the file fresh.
     write_heartbeat("scanning", cycle=cycle_number, **_heartbeat_counts(state))
+    # IC-5: the request count rides on the next heartbeat (cached by the writer,
+    # so a throttled write here still surfaces it on the following one).
+    write_heartbeat("scanning", icloud_downloads_requested=run_icloud_preflight())
     new_files = discover_audio_files(WATCH_FOLDER, state, transcript_index)
 
     if not new_files:
