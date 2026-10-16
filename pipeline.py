@@ -22,9 +22,11 @@ from config import (
     MAX_RETRIES,
     STATE_FILE,
     SUPERWHISPER_ACCEPT_TIMEOUT,
+    SUPERWHISPER_AUTO_RELAUNCH,
     SUPERWHISPER_MODE_KEY,
     SUPERWHISPER_POLL_INTERVAL,
     SUPERWHISPER_RECORDINGS_DIR,
+    SUPERWHISPER_RELAUNCH_COOLDOWN,
     SUPERWHISPER_TIMEOUT,
 )
 
@@ -848,6 +850,8 @@ def _check_stub_abandoned(
 # auto-relaunch on the flag are separate concerns (LAG-803, LAG-804).
 
 CIRCUIT_BREAKER_NOTIFY_TITLE = "Transcriber circuit breaker"
+OSASCRIPT_BIN = "/usr/bin/osascript"  # WD-8: absolute paths for every spawned binary
+OPEN_BIN = "/usr/bin/open"
 
 # CB-1 outcome classes. "timeout" is the dependency-down signal: both the poll
 # deadline and the abandoned-stub fast-fail raise TimeoutError, so a streak of
@@ -889,14 +893,13 @@ def _compose_breaker_notification(state: dict) -> str:
     return f"Superwhisper not producing results — {retry_queue} files in retry queue"
 
 
-def _notify_dependency_down(state: dict) -> bool:
-    """CB-4: one osascript notification (argv-passed, never interpolated — ES-6
-    discipline). Failure returns False, never raises."""
-    message = _compose_breaker_notification(state)
+def _notify(message: str, title: str) -> bool:
+    """One osascript notification, text passed as argv and never interpolated
+    into AppleScript source (ES-2). Failure returns False, never raises (ES-6)."""
     try:
         result = subprocess.run(
             [
-                "/usr/bin/osascript",
+                OSASCRIPT_BIN,
                 "-e",
                 "on run argv",
                 "-e",
@@ -904,7 +907,7 @@ def _notify_dependency_down(state: dict) -> bool:
                 "-e",
                 "end run",
                 message,
-                CIRCUIT_BREAKER_NOTIFY_TITLE,
+                title,
             ],
             capture_output=True,
             text=True,
@@ -913,8 +916,13 @@ def _notify_dependency_down(state: dict) -> bool:
         )
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError) as error:
-        print(f"⚠️  circuit breaker: notification failed: {error}", flush=True)
+        print(f"⚠️  notification failed ({title}): {error}", flush=True)
         return False
+
+
+def _notify_dependency_down(state: dict) -> bool:
+    """CB-4: the dependency-down page. Failure returns False, never raises."""
+    return _notify(_compose_breaker_notification(state), CIRCUIT_BREAKER_NOTIFY_TITLE)
 
 
 def record_attempt_result(state: dict, outcome: str, *, now: float | None = None) -> bool:
@@ -949,6 +957,7 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
     if outcome == OUTCOME_SUCCESS:
         breaker["streak"] = 0
         breaker["last_outcome"] = OUTCOME_SUCCESS
+        breaker["relaunch_used"] = False  # CB-17: only a completion ends the relaunch episode
         if breaker.get("dependency_down"):
             breaker["dependency_down"] = False
             write_heartbeat("processing", dependency_down=False, force=True)
@@ -986,6 +995,183 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
             print(f"⚠️  circuit breaker: notification failed: {error}", flush=True)
         write_heartbeat("processing", dependency_down=True, force=True)
     return True
+
+
+# ── Guarded auto-relaunch (LAG-804, spec CB-14..CB-20) ─────────────────────
+# Circuit-breaker action 3: the known cure for a zombie Superwhisper (quit the
+# app, open it again) ran by hand on Sep 13 and Oct 8. The daemon now runs it
+# itself - once per dependency-down episode, only while the idle gate is clear,
+# never inside the cooldown. Every guard fails closed: a refusal leaves the
+# CB-4 page as the escalation. No daemon kickstart: the remedy runs between
+# attempts, so no wait is in flight, and `kickstart -k` on our own label would
+# kill the remedy mid-step (see the spec's LAG-804 deviation note).
+
+SUPERWHISPER_APP_NAME = "Superwhisper"
+RELAUNCH_NOTIFY_TITLE = "Transcriber auto-relaunch"
+# CB-14: only "never took the handoff" has a confirmed relaunch cure.
+RELAUNCH_OUTCOMES = frozenset({OUTCOME_NOT_ACCEPTING})
+RELAUNCH_QUIT_TIMEOUT = 30  # seconds for the osascript quit call (WD-7)
+RELAUNCH_CHECK_TIMEOUT = 10  # seconds for one "is running" probe
+RELAUNCH_OPEN_TIMEOUT = 30  # seconds for `open -a`
+RELAUNCH_QUIT_GRACE = 30  # seconds the app gets to exit before quit_failed
+RELAUNCH_POLL_INTERVAL = 1.0
+RELAUNCH_WARMUP_SECONDS = 20  # let the relaunched app settle before the next handoff
+
+# Guard results: refusals (nothing ran) and remedy results (the remedy ran).
+RELAUNCH_NOT_ELIGIBLE = "not_eligible"
+RELAUNCH_DISABLED = "disabled"
+RELAUNCH_ALREADY_USED = "already_used"
+RELAUNCH_COOLDOWN = "cooldown"
+RELAUNCH_BUSY = "busy"
+RELAUNCH_IN_PROGRESS = "in_progress"  # persisted before the remedy; left behind only by a crash
+RELAUNCH_RELAUNCHED = "relaunched"
+RELAUNCH_QUIT_FAILED = "quit_failed"
+RELAUNCH_FAILED = "relaunch_failed"
+
+
+def _superwhisper_is_running() -> bool:
+    """True unless osascript positively reports Superwhisper is not running.
+
+    Fails closed (CB-18): a probe that errors or times out reads as "still
+    running", so the remedy never opens the app on top of a live instance.
+    """
+    try:
+        result = subprocess.run(
+            [OSASCRIPT_BIN, "-e", f'application "{SUPERWHISPER_APP_NAME}" is running'],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=RELAUNCH_CHECK_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"   ⚠️  auto-relaunch: running check failed: {error}", flush=True)
+        return True
+    return result.returncode != 0 or result.stdout.strip() != "false"
+
+
+def _relaunch_superwhisper() -> str:
+    """CB-18: quit Superwhisper, wait for it to exit, open it again, warm up.
+
+    Returns ``relaunched``, ``quit_failed`` (still running after the grace
+    period - never force-killed, never reopened) or ``relaunch_failed``
+    (``open`` failed). Never raises.
+    """
+    write_heartbeat("processing", force=True)  # HB-11: the remedy blocks for up to ~2 min
+    try:
+        subprocess.run(
+            [OSASCRIPT_BIN, "-e", f'tell application "{SUPERWHISPER_APP_NAME}" to quit'],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=RELAUNCH_QUIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        # A hung quit can still have worked: the running check below decides.
+        print(f"   ⚠️  auto-relaunch: quit call failed: {error}", flush=True)
+
+    deadline = time.time() + RELAUNCH_QUIT_GRACE
+    while _superwhisper_is_running():
+        if time.time() >= deadline:
+            write_heartbeat("processing", force=True)
+            return RELAUNCH_QUIT_FAILED
+        write_heartbeat("processing")
+        time.sleep(RELAUNCH_POLL_INTERVAL)
+
+    try:
+        opened = subprocess.run(
+            [OPEN_BIN, "-a", SUPERWHISPER_APP_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=RELAUNCH_OPEN_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"   ⚠️  auto-relaunch: open failed: {error}", flush=True)
+        write_heartbeat("processing", force=True)
+        return RELAUNCH_FAILED
+    if opened.returncode != 0:
+        print(f"   ⚠️  auto-relaunch: open exited {opened.returncode}: {opened.stderr.strip()}", flush=True)
+        write_heartbeat("processing", force=True)
+        return RELAUNCH_FAILED
+
+    time.sleep(RELAUNCH_WARMUP_SECONDS)
+    write_heartbeat("processing", force=True)
+    return RELAUNCH_RELAUNCHED
+
+
+def _relaunch_refusal(breaker: dict, now: float) -> str | None:
+    """CB-15/16/17/20: the first guard that refuses, or None when all are green.
+
+    Cheap guards first; the idle gate (a filesystem read) runs last and is a
+    single read - a busy gate blocks, it never waits and proceeds (CB-15).
+    """
+    if not SUPERWHISPER_AUTO_RELAUNCH:
+        return RELAUNCH_DISABLED
+    if breaker.get("relaunch_used"):
+        return RELAUNCH_ALREADY_USED
+    last = breaker.get("last_relaunch_epoch")
+    if last is not None and (now - last) < SUPERWHISPER_RELAUNCH_COOLDOWN:
+        return RELAUNCH_COOLDOWN
+    if not _is_superwhisper_idle():
+        return RELAUNCH_BUSY
+    return None
+
+
+def _notify_relaunch(message: str) -> None:
+    """CB-19: a failed notification never stops the remedy or its bookkeeping."""
+    try:
+        _notify(message, RELAUNCH_NOTIFY_TITLE)
+    except Exception as error:  # noqa: BLE001 — ES-6
+        print(f"⚠️  auto-relaunch: notification failed: {error}", flush=True)
+
+
+def maybe_relaunch_superwhisper(state: dict, *, now: float | None = None) -> str:
+    """CB-14..CB-20: run the guarded relaunch if this attempt made it due.
+
+    Call after ``record_attempt_result``. Eligible only while the breaker's
+    current streak is a relaunch outcome at or above K (CB-14). The cap is
+    stamped and saved BEFORE the remedy (CB-17), so a crash cannot fire it
+    twice; only a completion clears it (``record_attempt_result``).
+
+    Args:
+        state: The pipeline state dict (``circuit_breaker`` sub-dict maintained here).
+        now: Bookkeeping clock (epoch seconds); defaults to ``time.time()``.
+
+    Returns:
+        ``not_eligible``, a refusal (``disabled``, ``already_used``,
+        ``cooldown``, ``busy``) or a remedy result (``relaunched``,
+        ``quit_failed``, ``relaunch_failed``).
+    """
+    breaker = state.get("circuit_breaker") or {}
+    if breaker.get("last_outcome") not in RELAUNCH_OUTCOMES or breaker.get("streak", 0) < CIRCUIT_BREAKER_THRESHOLD:
+        return RELAUNCH_NOT_ELIGIBLE
+    now = time.time() if now is None else now
+
+    if refusal := _relaunch_refusal(breaker, now):
+        print(f"   ⚡ auto-relaunch refused ({refusal}): Superwhisper not accepting handoffs", flush=True)
+        return refusal
+
+    breaker["relaunch_used"] = True
+    breaker["last_relaunch_epoch"] = now
+    breaker["last_relaunch_result"] = RELAUNCH_IN_PROGRESS
+    save_state(state)  # CB-17: persisted before the remedy runs
+
+    retry_queue = sum(1 for v in state.get("processed", {}).values() if v.get("status") == "failed_retry")
+    print("   ⚡ auto-relaunch: quitting and reopening Superwhisper", flush=True)
+    _notify_relaunch(f"Superwhisper not accepting handoffs - relaunching it ({retry_queue} files in retry queue)")
+    try:
+        result = _relaunch_superwhisper()
+    except Exception as error:  # noqa: BLE001 — the remedy must never break attempt bookkeeping
+        print(f"   ⚠️  auto-relaunch: remedy crashed: {error}", flush=True)
+        result = RELAUNCH_FAILED
+    breaker["last_relaunch_result"] = result
+    print(f"   ⚡ auto-relaunch result: {result}", flush=True)
+
+    if result == RELAUNCH_RELAUNCHED:
+        _notify_relaunch("Superwhisper relaunched - queued files retry on the next attempt")
+    else:
+        _notify_relaunch(f"Superwhisper relaunch failed ({result}) - quit and reopen it by hand")
+    return result
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
@@ -1085,6 +1271,10 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
         }
         record_attempt_result(state, outcome)
+        try:
+            maybe_relaunch_superwhisper(state)  # CB-14..CB-20 (LAG-804)
+        except Exception as relaunch_error:  # noqa: BLE001 — never break attempt bookkeeping
+            print(f"   ⚠️  auto-relaunch guard failed: {relaunch_error}", flush=True)
         print(
             "   "
             + (
