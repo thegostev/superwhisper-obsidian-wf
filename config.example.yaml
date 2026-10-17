@@ -75,4 +75,6 @@ max_retries: 3
 # cooldown window.
 circuit_breaker_threshold: 3            # attempts (K)
 circuit_breaker_notify_cooldown: 3600.0 # seconds between dependency_down pages
+dependency_down_attempt_timeout: 600    # LAG-803: per-attempt wait cap (s) while dependency_down
+                                        # is set, instead of superwhisper_timeout (0 disables)
 retry_backoff: [10, 30, 60]
