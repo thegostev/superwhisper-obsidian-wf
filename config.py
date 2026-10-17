@@ -122,6 +122,11 @@ SUPERWHISPER_TIMEOUT: int = _cfg.get("superwhisper_timeout", 300)
 # attempt fails as `superwhisper-not-accepting` instead of burning the full
 # SUPERWHISPER_TIMEOUT. 0 (or less) disables the fast-fail.
 SUPERWHISPER_ACCEPT_TIMEOUT: float = _cfg.get("superwhisper_accept_timeout", 600)
+# Dependency-down pricing (LAG-803, spec CB-14): while the circuit breaker's
+# dependency_down flag is up, each attempt's wait is capped at this budget
+# instead of SUPERWHISPER_TIMEOUT - the LAG-802 fast-fail budget, not a 1 h
+# burn per attempt against a dead Superwhisper. 0 (or less) disables pricing.
+DEPENDENCY_DOWN_ATTEMPT_TIMEOUT: float = _cfg.get("dependency_down_attempt_timeout", 600)
 SUPERWHISPER_RECORDINGS_DIR: str = _cfg["superwhisper_recordings_dir"]
 SUPERWHISPER_POLL_INTERVAL: int = _cfg.get("superwhisper_poll_interval", 3)
 
