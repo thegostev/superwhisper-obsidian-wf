@@ -198,6 +198,23 @@ JSON-backed persistent state tracking which audio files have been processed.
 
 - **Public interface**: `load_state()`, `save_state(state)`
 - **Internal data model**: `{"processed": {path: {status, category, timestamp, attempts, error}}}`
+- **Failed-attempt recovery material (LAG-805)**: a `failed_retry` /
+  `failed_permanent` record also carries `recovery`, either `null` (no
+  attempt produced a transcript) or:
+
+  ```json
+  {"raw_result": "<transcript, capped at RAW_RESULT_MAX_CHARS>",
+   "raw_result_chars": 61234, "truncated": false,
+   "duration_ms": 606000, "app_version": "2.4.1",
+   "recording_dir": "1788857138", "attempt": 2}
+  ```
+
+  `raw_result` is meta.json `rawResult` from the matched Superwhisper
+  recording dir — kept when the transcription ran but the LLM pass never
+  did (abandoned stub), the LLM refused the contract (Class A), or the poll
+  deadline hit. `duration_ms` and `app_version` are matching keys for
+  triage/redrive. A later attempt with no transcript keeps the earlier one.
+  This is recovery material only: nothing is saved as a note from it.
 - **Dependencies**: `~/.superwhisper_transcriber_state.json`
 
 ### S3.M2: Output Index
