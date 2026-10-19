@@ -36,6 +36,7 @@ def fresh_writer_state():
     pipeline._heartbeat_writer = pipeline.DEFAULT_HEARTBEAT_WRITER
     pipeline._heartbeat_dependency_down = False  # CB-6 (LAG-801) breaker flag cache
     pipeline._heartbeat_last_outcome = None  # CB-13 (LAG-802) last outcome cache
+    pipeline._heartbeat_icloud_placeholders = None  # HB-14 (LAG-814) placeholder count cache
     yield
 
 
