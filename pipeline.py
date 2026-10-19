@@ -59,6 +59,14 @@ _heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_
 _heartbeat_writer: str = DEFAULT_HEARTBEAT_WRITER
 _heartbeat_dependency_down: bool = False  # CB-6 (LAG-801): last known breaker flag
 _heartbeat_last_outcome: str | None = None  # CB-13 (LAG-802): last classified attempt outcome
+# HB-14 (LAG-814): last iCloud placeholder count {"total", "by_date_dir"}; None until first count.
+_heartbeat_icloud_placeholders: dict | None = None
+
+# HB-14: Just Press Record recordings not yet downloaded by iCloud exist only as
+# `.<name>.m4a.icloud` stubs. Matching is on the file NAME only: a substring test
+# on the full path is the known path-scope trap.
+ICLOUD_PLACEHOLDER_SUFFIX = ".icloud"
+AUDIO_EXT = ".m4a"
 
 # Output-contract markers emitted by the Superwhisper Custom Mode prompt.
 # The parser reads the header lines; everything after is the analysis body.
@@ -213,6 +221,7 @@ def write_heartbeat(
     fatal_reason: str | None = None,
     dependency_down: bool | None = None,
     last_outcome: str | None = None,
+    icloud_placeholders: dict | None = None,
     force: bool = False,
     min_interval: float = HEARTBEAT_MIN_INTERVAL,
 ) -> bool:
@@ -251,6 +260,10 @@ def write_heartbeat(
     the other cached fields it is updated even when the write is throttled, so
     a throttled call cannot lose the outcome: the next write carries it.
 
+    ``icloud_placeholders`` (HB-14, LAG-814) is the latest
+    ``count_icloud_placeholders`` result for the scan window, ``null`` until
+    the first count; cached before the throttle check like ``last_outcome``.
+
     Args:
         phase: One of "starting" | "scanning" | "processing" | "fatal".
         cycle: Scan-cycle number, when the caller knows it.
@@ -259,6 +272,7 @@ def write_heartbeat(
         fatal_reason: Why the service is unrecoverable; written only when given.
         dependency_down: Circuit-breaker flag (CB-6), when the caller knows it.
         last_outcome: Last attempt outcome class (CB-13), when the caller knows it.
+        icloud_placeholders: iCloud placeholder count (HB-14), when the caller knows it.
         force: Bypass the throttle.
         min_interval: Throttle window in seconds.
 
@@ -266,10 +280,12 @@ def write_heartbeat(
         True if the heartbeat file was written, False if throttled or failed.
     """
     global _heartbeat_last_write, _heartbeat_failures, _heartbeat_started_at
-    global _heartbeat_dependency_down, _heartbeat_last_outcome
+    global _heartbeat_dependency_down, _heartbeat_last_outcome, _heartbeat_icloud_placeholders
     now = time.time()
     if last_outcome is not None:
         _heartbeat_last_outcome = last_outcome  # CB-13: cached before the throttle check
+    if icloud_placeholders is not None:
+        _heartbeat_icloud_placeholders = icloud_placeholders  # HB-14: cached before the throttle check
     if phase == "fatal":
         force = True
     if not force and (now - _heartbeat_last_write) < min_interval:
@@ -296,6 +312,7 @@ def write_heartbeat(
         "failed_permanent": _heartbeat_context["failed_permanent"],
         "dependency_down": _heartbeat_dependency_down,  # CB-6
         "last_outcome": _heartbeat_last_outcome,  # CB-13
+        "icloud_placeholders": _heartbeat_icloud_placeholders,  # HB-14
     }
     if fatal_reason is not None:
         payload["fatal_reason"] = fatal_reason
@@ -453,6 +470,46 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
         return []
 
     return [path for _, path in sorted(dated)]
+
+
+def is_icloud_audio_placeholder(path: Path) -> bool:
+    """True for a ``.<name>.m4a.icloud`` stub (HB-14). Decided by the file name only."""
+    name = path.name
+    if not (name.startswith(".") and name.endswith(ICLOUD_PLACEHOLDER_SUFFIX)):
+        return False
+    real = name[1 : -len(ICLOUD_PLACEHOLDER_SUFFIX)]
+    return bool(real) and not real.startswith(".") and Path(real).suffix.lower() == AUDIO_EXT
+
+
+def count_icloud_placeholders(folders) -> dict:
+    """Count iCloud audio placeholder stubs under ``folders`` (HB-14, LAG-814).
+
+    ``folders`` are the date dirs the daemon scans (``discover_recent_folders``),
+    so stubs Optimize Mac Storage left on old recordings are not reported as
+    pending. Stubs in nested dirs roll up to their date dir. Keys are the date
+    dir names as JPR writes them (its fixed UTC+1 naming, see JPR_FIXED_CET) —
+    reported verbatim, not converted. Never raises: an unreadable folder is
+    logged and skipped.
+
+    Returns:
+        ``{"total": int, "by_date_dir": {dir_name: count}}``; only dirs with at
+        least one placeholder appear in ``by_date_dir``.
+    """
+    by_dir: dict[str, int] = {}
+    for folder in folders:
+        root = Path(folder)
+        try:
+            n = sum(
+                1
+                for candidate in root.rglob(f".*{ICLOUD_PLACEHOLDER_SUFFIX}")
+                if is_icloud_audio_placeholder(candidate) and candidate.is_file()
+            )
+        except OSError as e:
+            print(f"   ⚠️  iCloud placeholder count: cannot scan {root}: {e}", flush=True)
+            continue
+        if n:
+            by_dir[root.name] = by_dir.get(root.name, 0) + n
+    return {"total": sum(by_dir.values()), "by_date_dir": by_dir}
 
 
 def switch_superwhisper_mode() -> None:

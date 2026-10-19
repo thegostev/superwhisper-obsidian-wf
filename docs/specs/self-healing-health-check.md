@@ -41,6 +41,7 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
 - **HB-10** A failed heartbeat write MUST NOT terminate or interrupt the daemon beyond HB-3's warning. The writer MUST count consecutive write failures, and after a threshold of 4 consecutive failures SHOULD log a `⚠️` warning naming the likely cause (disk full, permission denied): a daemon that cannot write its heartbeat is indistinguishable from a dead one to the reader, and the runbook response is to check disk and permissions before trusting a restart as the fix.
 - **HB-11** The daemon SHOULD write a forced heartbeat (phase `processing`) at the top of each file handoff and inside any inter-file idle-wait loop, so the handoff and idle-wait windows cannot breach the staleness threshold on a healthy busy daemon.
 - **HB-12** The heartbeat MUST carry a `writer` field naming the process that produced it: `"daemon"` for the launchd daemon entry point, `"manual"` for every other caller (on-demand runs, redrives, salvage and other ops scripts, which reach the writer through the shared pipeline functions). The writer identity MUST default to `"manual"`: only the daemon entry point declares `"daemon"`, so a caller that forgets to declare cannot masquerade as the daemon. A manual run refreshes the same file the watchdog reads, so without this field a freshly refreshed heartbeat is indistinguishable from proof of life — it was during the 26-09-16 outage forensics (LAG-675).
+- **HB-14** The heartbeat MUST carry an `icloud_placeholders` field: `{"total": int, "by_date_dir": {name: int}}` counting Just Press Record recordings that iCloud has not yet downloaded — `.<name>.m4a.icloud` stubs — under the date dirs inside the scan window (`scan_days_back`), nested dirs rolled up to their date dir, and only dirs with at least one stub listed in `by_date_dir`. Date-dir names MUST be reported verbatim as JPR wrote them (fixed UTC+1 naming), not converted. A stub MUST be identified by its file name alone, never by a substring of the full path, and only audio stubs count. The daemon MUST refresh the count once per scan cycle; the value MUST be cached before the HB-8 throttle check so a throttled write cannot lose it; it is `null` until the first count, and `0` means counted with nothing stuck. A failed count MUST NOT break the scan cycle: it logs a `⚠️` warning and the heartbeat keeps the last known value. Without this field the heartbeat cannot tell "no meetings recorded" from "meetings recorded but stuck upstream" — on Oct 7 the daemon reported "No new files" for ~20 h while three recordings sat as stubs (LAG-814, root LAG-756). Additive with schema version 1 like CB-6.
 
 ### Heartbeat schema, version 1
 
@@ -55,6 +56,7 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
   "started_at": "2026-09-07T02:31:10Z",
   "state_complete": 316,
   "failed_permanent": 0,
+  "icloud_placeholders": {"total": 2, "by_date_dir": {"2026-10-07": 2}} | null,
   "fatal_reason": "FatalAPIError: superwhisper_mode_key is empty"
 }
 ```
@@ -222,6 +224,7 @@ Every requirement in this document has a row naming the test or review that veri
 |---|---|
 | HB-1 … HB-11 | `tests/unit/test_heartbeat.py` |
 | HB-12 | `tests/unit/test_heartbeat.py` — `TestWriterField` (LAG-675) |
+| HB-14 | `tests/unit/test_icloud_placeholder_telemetry.py` — `TestPlaceholderPredicate` (name-only match, audio-only), `TestCount` (placeholders vs materialized, nested dirs, scan-window scope, unreadable folder), `TestHeartbeatField` (null/zero/carry/throttle), `TestScanCycleWiring` (LAG-814) |
 | HC-1 … HC-6, HC-13, HC-15 | `tests/unit/test_health_check.py` — `assess_health`, `parse_launchctl_list` |
 | HC-7 | structural: the pure functions take no path or handle arguments |
 | HC-2, HC-3 | structural: `assess_health` has no log-path or state-path parameter |
