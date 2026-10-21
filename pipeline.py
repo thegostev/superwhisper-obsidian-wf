@@ -134,6 +134,13 @@ SALVAGE_PASS_EVERY_N_CYCLES = 10
 
 AFINFO_TIMEOUT_SECONDS = 10  # macOS afinfo lookup for audio duration
 
+# LAG-805: a failed attempt's transcript (meta.json ``rawResult``) is kept in
+# the state record's ``recovery`` key as triage/redrive material — never saved
+# as a note. Capped so one long meeting cannot bloat the state file: ~100k
+# chars covers a 2 h meeting; longer transcripts keep their head and are
+# flagged ``truncated`` (the full text stays in the Superwhisper recording dir).
+RAW_RESULT_MAX_CHARS = 100_000
+
 
 class FatalAPIError(Exception):
     """Error that should stop the entire service (unrecoverable, e.g. misconfiguration)."""
@@ -562,6 +569,8 @@ def _read_recording_meta(path: Path) -> dict[str, str | int | None] | None:
       - processing_time: int | None (Superwhisper's processingTime field; 0 = stub)
       - llm_processing_time: int | None (languageModelProcessingTime; None = LLM pass not started/finished)
       - duration_ms: int | None (audio duration in milliseconds; 0/None = stub or unknown)
+      - raw_result: str | None (the transcript; LAG-805 recovery material)
+      - app_version: str | None (Superwhisper appVersion; LAG-805 matching key)
     """
     try:
         meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
@@ -571,12 +580,41 @@ def _read_recording_meta(path: Path) -> dict[str, str | int | None] | None:
     pt = meta.get("processingTime")
     lpt = meta.get("languageModelProcessingTime")
     duration = meta.get("duration")
+    raw = meta.get("rawResult")
+    app_version = meta.get("appVersion")
     return {
         "llm_result": str(llm) if llm is not None else None,
         "processing_time": int(pt) if isinstance(pt, (int, float)) else None,
         "llm_processing_time": int(lpt) if isinstance(lpt, (int, float)) else None,
         "duration_ms": int(duration) if isinstance(duration, (int, float)) else None,
+        "raw_result": str(raw) if raw is not None else None,
+        "app_version": str(app_version) if app_version is not None else None,
     }
+
+
+def _recovery_material(info: dict[str, str | int | None], entry: Path) -> dict[str, str | int | bool | None] | None:
+    """LAG-805: the recovery payload for a failed attempt, or None without a transcript.
+
+    Carries the (capped) ``rawResult`` plus duration and ``appVersion`` so a later
+    triage/redrive or salvage pass can match it back to its source audio.
+    """
+    raw = info.get("raw_result")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return {
+        "raw_result": raw[:RAW_RESULT_MAX_CHARS],
+        "raw_result_chars": len(raw),
+        "truncated": len(raw) > RAW_RESULT_MAX_CHARS,
+        "duration_ms": info.get("duration_ms"),
+        "app_version": info.get("app_version"),
+        "recording_dir": entry.name,
+    }
+
+
+def _attach_recovery(error: BaseException, recovery: dict | None) -> BaseException:
+    """LAG-805: hang the attempt's recovery material on the error process_audio records."""
+    error.recovery = recovery  # type: ignore[attr-defined]
+    return error
 
 
 def get_audio_duration_ms(audio_path: str) -> int | None:
@@ -718,6 +756,9 @@ def wait_for_superwhisper_result(
     stub_stability: dict[str, tuple[float, int]] = {}
     # R5: write-stability tracker for CATEGORY-bearing llmResults: dir name → (last_mtime, last_size, count).
     write_stability: dict[str, tuple[float, int, int]] = {}
+    # LAG-805: newest transcript seen in a matched dir, attached to a deadline /
+    # accept-window failure so process_audio can persist it as recovery material.
+    last_recovery: dict | None = None
 
     while time.time() < deadline:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
@@ -731,6 +772,7 @@ def wait_for_superwhisper_result(
         except OSError:
             continue
 
+        poll_recovery: dict | None = None
         for entry in entries:
             try:
                 mtime = entry.stat().st_mtime
@@ -761,6 +803,10 @@ def wait_for_superwhisper_result(
             ):
                 continue
 
+            # LAG-805: transcript of this matched dir, if Superwhisper wrote one.
+            entry_recovery = _recovery_material(info, entry)
+            poll_recovery = poll_recovery or entry_recovery  # newest matched dir wins
+
             raw_text = info["llm_result"]
             text = raw_text if isinstance(raw_text, str) else None
             if text and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
@@ -782,10 +828,13 @@ def wait_for_superwhisper_result(
 
             # Fast-fail case 1: LLM produced output but no CATEGORY: header = refusal.
             if text and not (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
-                raise PermanentFileError(
-                    f"Superwhisper produced an llmResult without the {CATEGORY_HEADER} contract header "
-                    f"for {Path(file_path).name}. The Custom Mode LLM likely refused the transcript "
-                    f"(too short, wrong format, or non-meeting audio). First line: {text.splitlines()[0][:120]!r}"
+                raise _attach_recovery(
+                    PermanentFileError(
+                        f"Superwhisper produced an llmResult without the {CATEGORY_HEADER} contract header "
+                        f"for {Path(file_path).name}. The Custom Mode LLM likely refused the transcript "
+                        f"(too short, wrong format, or non-meeting audio). First line: {text.splitlines()[0][:120]!r}"
+                    ),
+                    entry_recovery,
                 )
 
             # Fast-fail case 2: no llmResult but meta.json mtime is stable.
@@ -806,12 +855,16 @@ def wait_for_superwhisper_result(
                 stub_stability.pop(entry.name, None)
                 continue
 
-            _check_stub_abandoned(stub_stability, entry, mtime, stability_polls, file_path)
+            _check_stub_abandoned(stub_stability, entry, mtime, stability_polls, file_path, entry_recovery)
 
-        _check_accept_window(session_seen, accept_deadline, accept_from, file_path)
+        last_recovery = poll_recovery or last_recovery
+        _check_accept_window(session_seen, accept_deadline, accept_from, file_path, last_recovery)
 
-    raise TimeoutError(
-        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+    raise _attach_recovery(
+        TimeoutError(
+            f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+        ),
+        last_recovery,
     )
 
 
@@ -820,18 +873,23 @@ def _check_accept_window(
     accept_deadline: float | None,
     accept_from: float,
     file_path: str,
+    recovery: dict | None = None,
 ) -> None:
     """CB-10/CB-11: raise SuperwhisperNotAcceptingError once the accept window
     has elapsed with no new session dir. No-op once a session dir was seen or
-    when the window is disabled (``accept_deadline`` is None)."""
+    when the window is disabled (``accept_deadline`` is None). ``recovery`` is
+    attached to the error (LAG-805)."""
     if session_seen or accept_deadline is None or time.time() < accept_deadline:
         return
     waited = int(time.time() - accept_from)
-    raise SuperwhisperNotAcceptingError(
-        f"{OUTCOME_NOT_ACCEPTING}: no Superwhisper session dir appeared within "
-        f"{SUPERWHISPER_ACCEPT_TIMEOUT}s of handoff (waited {waited}s) for {Path(file_path).name}. "
-        f"The open event was queued but never taken — Superwhisper is likely hung (zombie). "
-        f"Will retry on the next scan cycle."
+    raise _attach_recovery(
+        SuperwhisperNotAcceptingError(
+            f"{OUTCOME_NOT_ACCEPTING}: no Superwhisper session dir appeared within "
+            f"{SUPERWHISPER_ACCEPT_TIMEOUT}s of handoff (waited {waited}s) for {Path(file_path).name}. "
+            f"The open event was queued but never taken — Superwhisper is likely hung (zombie). "
+            f"Will retry on the next scan cycle."
+        ),
+        recovery,
     )
 
 
@@ -867,12 +925,16 @@ def _check_stub_abandoned(
     mtime: float,
     stability_polls: int,
     file_path: str,
+    recovery: dict | None = None,
 ) -> None:
     """Fast-fail case 2: empty stub whose meta.json mtime is stable across N polls.
 
     Raises TimeoutError if the stub has been stable for `stability_polls` consecutive
     polls (no llmResult, no LLM pass). Otherwise updates the stability tracker and
     returns None — caller should `continue` the poll loop.
+
+    LAG-805: ``recovery`` (the stub's transcript, if transcription ran) is attached
+    to the TimeoutError so process_audio keeps it instead of discarding it.
     """
     stub_prev = stub_stability.get(entry.name)
     if stub_prev is None:
@@ -887,11 +949,14 @@ def _check_stub_abandoned(
     if count >= stability_polls:
         # meta.json hasn't changed across N polls → Superwhisper dropped this stub.
         # Transient: re-opening the audio file on a later cycle should work.
-        raise TimeoutError(
-            f"Superwhisper created an empty recording stub for {Path(file_path).name} "
-            f"(meta.json stable for {count} polls, no llmResult, no LLM pass started). "
-            f"The file-open likely arrived while Superwhisper was busy with a prior handoff. "
-            f"Will retry on the next scan cycle. Recording dir: {entry.name}"
+        raise _attach_recovery(
+            TimeoutError(
+                f"Superwhisper created an empty recording stub for {Path(file_path).name} "
+                f"(meta.json stable for {count} polls, no llmResult, no LLM pass started). "
+                f"The file-open likely arrived while Superwhisper was busy with a prior handoff. "
+                f"Will retry on the next scan cycle. Recording dir: {entry.name}"
+            ),
+            recovery,
         )
 
 
@@ -1260,6 +1325,20 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     return category, filename, analysis
 
 
+def _recovery_for_record(error: BaseException, previous: dict | None, attempt: int) -> dict | None:
+    """LAG-805: the ``recovery`` value a failed state record stores.
+
+    The error's transcript (attached by wait_for_superwhisper_result), stamped
+    with the attempt that produced it. A later attempt that yields no transcript
+    keeps the earlier one — a retry must not erase the only copy of a
+    transcript. None when no attempt has produced one. Never saved as a note.
+    """
+    recovery = getattr(error, "recovery", None)
+    if isinstance(recovery, dict):
+        return {**recovery, "attempt": attempt}
+    return previous if isinstance(previous, dict) else None
+
+
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
     """Full pipeline: mode switch → handoff → parse → save; returns (success, category|None).
 
@@ -1268,6 +1347,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     and a streak of identical timeout outcomes trips ``dependency_down``.
     """
     attempts = (processed := state.setdefault("processed", {})).get(file_path, {}).get("attempts", 0)
+    previous_recovery = processed.get(file_path, {}).get("recovery")
 
     try:
         # R3+R6: compute source audio duration for correlation + scaled poll budget.
@@ -1314,6 +1394,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "attempts": attempts + 1,
             "expected_duration_ms": expected_duration_ms,
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
+            "recovery": _recovery_for_record(e, previous_recovery, attempts + 1),  # LAG-805
         }
         record_attempt_result(state, outcome)
     except Exception as e:
@@ -1326,6 +1407,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "attempts": na,
             "expected_duration_ms": expected_duration_ms,
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
+            "recovery": _recovery_for_record(e, previous_recovery, na),  # LAG-805
         }
         record_attempt_result(state, outcome)
         try:
