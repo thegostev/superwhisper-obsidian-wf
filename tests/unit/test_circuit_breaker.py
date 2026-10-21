@@ -39,10 +39,12 @@ _NOW = 1_000_000.0
 
 @pytest.fixture(autouse=True)
 def fresh_circuit_state():
-    """Reset the circuit breaker's cached heartbeat flag between tests."""
+    """Reset the circuit breaker's cached heartbeat fields between tests."""
     pipeline._heartbeat_dependency_down = False
+    pipeline._heartbeat_last_outcome = None
     yield
     pipeline._heartbeat_dependency_down = False
+    pipeline._heartbeat_last_outcome = None
 
 
 @pytest.fixture
@@ -84,14 +86,20 @@ def _failing_process_audio_run(
     error_type: str = "transient",
 ):
     """Drive process_audio into the given exception branch, save_state patched out."""
+    # Both branches patch switch_superwhisper_mode: unpatched it shells out to
+    # `open superwhisper://…`, which fails on CI runners (no `open` on Linux,
+    # no handler on macOS) and turns every injected error into "transient".
     if error_type == "permanent":
-        exc_patch = patch("pipeline.switch_superwhisper_mode", side_effect=error)
+        mode_patch = patch("pipeline.switch_superwhisper_mode", side_effect=error)
+        wait_patch = patch("pipeline.wait_for_superwhisper_result")
     else:
-        exc_patch = patch("pipeline.wait_for_superwhisper_result", side_effect=error)
+        mode_patch = patch("pipeline.switch_superwhisper_mode")
+        wait_patch = patch("pipeline.wait_for_superwhisper_result", side_effect=error)
     with (
         patch("pipeline.get_audio_duration_ms", return_value=None),
         patch("pipeline.handoff_to_superwhisper"),
-        exc_patch,
+        mode_patch,
+        wait_patch,
         patch("pipeline.save_state"),
     ):
         return process_audio(file_path, _FAKE_TS, state)

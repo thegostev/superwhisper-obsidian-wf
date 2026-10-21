@@ -36,7 +36,15 @@ def test_read_recording_meta_returns_only_consumed_fields(tmp_path):
     )
     info = _read_recording_meta(rec)
     # has_transcript was computed but never read by any caller — drop it.
-    assert set(info) == {"llm_result", "processing_time", "llm_processing_time", "duration_ms"}
+    # raw_result / app_version are consumed by LAG-805 failed-attempt recovery.
+    assert set(info) == {
+        "llm_result",
+        "processing_time",
+        "llm_processing_time",
+        "duration_ms",
+        "raw_result",
+        "app_version",
+    }
     assert info["llm_result"] == "CATEGORY: X\nFILENAME: t\n\nbody"
     assert info["processing_time"] == 5
     assert info["llm_processing_time"] == 12

@@ -116,6 +116,19 @@ CIRCUIT_BREAKER_NOTIFY_COOLDOWN: float = _cfg.get("circuit_breaker_notify_cooldo
 # Superwhisper integration
 SUPERWHISPER_MODE_KEY: str = _cfg.get("superwhisper_mode_key", "meeting")
 SUPERWHISPER_TIMEOUT: int = _cfg.get("superwhisper_timeout", 300)
+# Handoff fast-fail (LAG-802, spec CB-10): `open -a Superwhisper` exiting 0
+# only means LaunchServices queued the event. If no new recordings/<epoch>
+# session dir appears within this many seconds of handoff delivery, the
+# attempt fails as `superwhisper-not-accepting` instead of burning the full
+# SUPERWHISPER_TIMEOUT. 0 (or less) disables the fast-fail.
+SUPERWHISPER_ACCEPT_TIMEOUT: float = _cfg.get("superwhisper_accept_timeout", 600)
+# Guarded auto-relaunch (LAG-804, spec CB-14..CB-20): when a
+# superwhisper-not-accepting streak trips the circuit breaker, the daemon quits
+# and reopens Superwhisper itself - at most once per episode, only while the
+# idle gate is clear, and never within the cooldown of the previous relaunch.
+# false is the kill switch.
+SUPERWHISPER_AUTO_RELAUNCH: bool = bool(_cfg.get("superwhisper_auto_relaunch", True))
+SUPERWHISPER_RELAUNCH_COOLDOWN: float = _cfg.get("superwhisper_relaunch_cooldown", 3600.0)
 SUPERWHISPER_RECORDINGS_DIR: str = _cfg["superwhisper_recordings_dir"]
 SUPERWHISPER_POLL_INTERVAL: int = _cfg.get("superwhisper_poll_interval", 3)
 

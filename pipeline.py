@@ -21,9 +21,12 @@ from config import (
     HEARTBEAT_FILE,
     MAX_RETRIES,
     STATE_FILE,
+    SUPERWHISPER_ACCEPT_TIMEOUT,
+    SUPERWHISPER_AUTO_RELAUNCH,
     SUPERWHISPER_MODE_KEY,
     SUPERWHISPER_POLL_INTERVAL,
     SUPERWHISPER_RECORDINGS_DIR,
+    SUPERWHISPER_RELAUNCH_COOLDOWN,
     SUPERWHISPER_TIMEOUT,
 )
 
@@ -57,7 +60,16 @@ _heartbeat_started_at: float | None = None
 _heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_complete": 0}
 _heartbeat_writer: str = DEFAULT_HEARTBEAT_WRITER
 _heartbeat_dependency_down: bool = False  # CB-6 (LAG-801): last known breaker flag
+_heartbeat_last_outcome: str | None = None  # CB-13 (LAG-802): last classified attempt outcome
+# HB-14 (LAG-814): last iCloud placeholder count {"total", "by_date_dir"}; None until first count.
+_heartbeat_icloud_placeholders: dict | None = None
 _heartbeat_icloud_downloads_requested: int = 0  # IC-5 (LAG-813): latest preflight pass
+
+# HB-14: Just Press Record recordings not yet downloaded by iCloud exist only as
+# `.<name>.m4a.icloud` stubs. Matching is on the file NAME only: a substring test
+# on the full path is the known path-scope trap.
+ICLOUD_PLACEHOLDER_SUFFIX = ".icloud"
+AUDIO_EXT = ".m4a"
 
 # Output-contract markers emitted by the Superwhisper Custom Mode prompt.
 # The parser reads the header lines; everything after is the analysis body.
@@ -123,6 +135,13 @@ SALVAGE_PASS_EVERY_N_CYCLES = 10
 
 AFINFO_TIMEOUT_SECONDS = 10  # macOS afinfo lookup for audio duration
 
+# LAG-805: a failed attempt's transcript (meta.json ``rawResult``) is kept in
+# the state record's ``recovery`` key as triage/redrive material — never saved
+# as a note. Capped so one long meeting cannot bloat the state file: ~100k
+# chars covers a 2 h meeting; longer transcripts keep their head and are
+# flagged ``truncated`` (the full text stays in the Superwhisper recording dir).
+RAW_RESULT_MAX_CHARS = 100_000
+
 
 class FatalAPIError(Exception):
     """Error that should stop the entire service (unrecoverable, e.g. misconfiguration)."""
@@ -130,6 +149,15 @@ class FatalAPIError(Exception):
 
 class PermanentFileError(Exception):
     """Error specific to one file that retrying won't fix (bad format, corrupt audio, etc)."""
+
+
+class SuperwhisperNotAcceptingError(TimeoutError):
+    """No new Superwhisper session dir appeared within the accept window (LAG-802, CB-10/CB-11).
+
+    A ``TimeoutError`` subclass so every existing retry path treats it as
+    transient (failed_retry, re-queued next cycle); ``classify_outcome`` gives it
+    its own outcome class so the failure is nameable in state, log and heartbeat.
+    """
 
 
 def _now_local() -> datetime:
@@ -202,6 +230,8 @@ def write_heartbeat(
     state_complete: int | None = None,
     fatal_reason: str | None = None,
     dependency_down: bool | None = None,
+    last_outcome: str | None = None,
+    icloud_placeholders: dict | None = None,
     icloud_downloads_requested: int | None = None,
     force: bool = False,
     min_interval: float = HEARTBEAT_MIN_INTERVAL,
@@ -236,6 +266,15 @@ def write_heartbeat(
     value, so a trip is visible from the next heartbeat onward and a later
     completion clears it.
 
+    ``last_outcome`` (CB-13, LAG-802) is the class of the most recent attempt
+    outcome (``classify_outcome``), ``null`` until the first attempt. Unlike
+    the other cached fields it is updated even when the write is throttled, so
+    a throttled call cannot lose the outcome: the next write carries it.
+
+    ``icloud_placeholders`` (HB-14, LAG-814) is the latest
+    ``count_icloud_placeholders`` result for the scan window, ``null`` until
+    the first count; cached before the throttle check like ``last_outcome``.
+
     Args:
         phase: One of "starting" | "scanning" | "processing" | "fatal".
         cycle: Scan-cycle number, when the caller knows it.
@@ -243,6 +282,8 @@ def write_heartbeat(
         state_complete: Count of completed files in state, when known.
         fatal_reason: Why the service is unrecoverable; written only when given.
         dependency_down: Circuit-breaker flag (CB-6), when the caller knows it.
+        last_outcome: Last attempt outcome class (CB-13), when the caller knows it.
+        icloud_placeholders: iCloud placeholder count (HB-14), when the caller knows it.
         icloud_downloads_requested: ``brctl download`` requests issued by the
             latest iCloud preflight pass (IC-5), when the caller knows it.
         force: Bypass the throttle.
@@ -252,8 +293,13 @@ def write_heartbeat(
         True if the heartbeat file was written, False if throttled or failed.
     """
     global _heartbeat_last_write, _heartbeat_failures, _heartbeat_started_at
-    global _heartbeat_dependency_down, _heartbeat_icloud_downloads_requested
+    global _heartbeat_dependency_down, _heartbeat_last_outcome, _heartbeat_icloud_placeholders
+    global _heartbeat_icloud_downloads_requested
     now = time.time()
+    if last_outcome is not None:
+        _heartbeat_last_outcome = last_outcome  # CB-13: cached before the throttle check
+    if icloud_placeholders is not None:
+        _heartbeat_icloud_placeholders = icloud_placeholders  # HB-14: cached before the throttle check
     if icloud_downloads_requested is not None:
         # IC-5: cached before the throttle check — the preflight count is
         # reported once per cycle, and a throttled write must not drop it.
@@ -283,6 +329,8 @@ def write_heartbeat(
         "state_complete": _heartbeat_context["state_complete"],
         "failed_permanent": _heartbeat_context["failed_permanent"],
         "dependency_down": _heartbeat_dependency_down,  # CB-6
+        "last_outcome": _heartbeat_last_outcome,  # CB-13
+        "icloud_placeholders": _heartbeat_icloud_placeholders,  # HB-14
         "icloud_downloads_requested": _heartbeat_icloud_downloads_requested,  # IC-5
     }
     if fatal_reason is not None:
@@ -443,6 +491,46 @@ def discover_recent_folders(watch_folder: str, days_back: int = 7) -> list[str]:
     return [path for _, path in sorted(dated)]
 
 
+def is_icloud_audio_placeholder(path: Path) -> bool:
+    """True for a ``.<name>.m4a.icloud`` stub (HB-14). Decided by the file name only."""
+    name = path.name
+    if not (name.startswith(".") and name.endswith(ICLOUD_PLACEHOLDER_SUFFIX)):
+        return False
+    real = name[1 : -len(ICLOUD_PLACEHOLDER_SUFFIX)]
+    return bool(real) and not real.startswith(".") and Path(real).suffix.lower() == AUDIO_EXT
+
+
+def count_icloud_placeholders(folders) -> dict:
+    """Count iCloud audio placeholder stubs under ``folders`` (HB-14, LAG-814).
+
+    ``folders`` are the date dirs the daemon scans (``discover_recent_folders``),
+    so stubs Optimize Mac Storage left on old recordings are not reported as
+    pending. Stubs in nested dirs roll up to their date dir. Keys are the date
+    dir names as JPR writes them (its fixed UTC+1 naming, see JPR_FIXED_CET) —
+    reported verbatim, not converted. Never raises: an unreadable folder is
+    logged and skipped.
+
+    Returns:
+        ``{"total": int, "by_date_dir": {dir_name: count}}``; only dirs with at
+        least one placeholder appear in ``by_date_dir``.
+    """
+    by_dir: dict[str, int] = {}
+    for folder in folders:
+        root = Path(folder)
+        try:
+            n = sum(
+                1
+                for candidate in root.rglob(f".*{ICLOUD_PLACEHOLDER_SUFFIX}")
+                if is_icloud_audio_placeholder(candidate) and candidate.is_file()
+            )
+        except OSError as e:
+            print(f"   ⚠️  iCloud placeholder count: cannot scan {root}: {e}", flush=True)
+            continue
+        if n:
+            by_dir[root.name] = by_dir.get(root.name, 0) + n
+    return {"total": sum(by_dir.values()), "by_date_dir": by_dir}
+
+
 def switch_superwhisper_mode() -> None:
     """Switch Superwhisper to the configured Custom Mode via deep link."""
     if not SUPERWHISPER_MODE_KEY:
@@ -453,7 +541,14 @@ def switch_superwhisper_mode() -> None:
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
 
-def handoff_to_superwhisper(file_path: str) -> None:
+def handoff_to_superwhisper(file_path: str) -> float:
+    """Hand the audio file to Superwhisper; return the delivery time (epoch seconds).
+
+    The delivery time is taken after ``open`` returns, i.e. after the mode
+    settle and the R7 idle wait: it is when the accept window opens (CB-10,
+    LAG-802). ``open`` exiting 0 means only that LaunchServices queued the
+    event — whether Superwhisper actually took it is decided by the wait loop.
+    """
     if not Path(file_path).exists():
         raise PermanentFileError(f"Audio file not found: {file_path}")
     # HB-11: forced write at the top of each handoff — the handoff window
@@ -465,6 +560,7 @@ def handoff_to_superwhisper(file_path: str) -> None:
     # create empty recording stubs that never get filled — the documented known issue.
     _wait_for_superwhisper_idle()
     subprocess.run(["open", file_path, "-a", "Superwhisper"], check=True)
+    return time.time()
 
 
 def _read_superwhisper_entry(path: Path) -> str | None:
@@ -483,6 +579,8 @@ def _read_recording_meta(path: Path) -> dict[str, str | int | None] | None:
       - processing_time: int | None (Superwhisper's processingTime field; 0 = stub)
       - llm_processing_time: int | None (languageModelProcessingTime; None = LLM pass not started/finished)
       - duration_ms: int | None (audio duration in milliseconds; 0/None = stub or unknown)
+      - raw_result: str | None (the transcript; LAG-805 recovery material)
+      - app_version: str | None (Superwhisper appVersion; LAG-805 matching key)
     """
     try:
         meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
@@ -492,12 +590,41 @@ def _read_recording_meta(path: Path) -> dict[str, str | int | None] | None:
     pt = meta.get("processingTime")
     lpt = meta.get("languageModelProcessingTime")
     duration = meta.get("duration")
+    raw = meta.get("rawResult")
+    app_version = meta.get("appVersion")
     return {
         "llm_result": str(llm) if llm is not None else None,
         "processing_time": int(pt) if isinstance(pt, (int, float)) else None,
         "llm_processing_time": int(lpt) if isinstance(lpt, (int, float)) else None,
         "duration_ms": int(duration) if isinstance(duration, (int, float)) else None,
+        "raw_result": str(raw) if raw is not None else None,
+        "app_version": str(app_version) if app_version is not None else None,
     }
+
+
+def _recovery_material(info: dict[str, str | int | None], entry: Path) -> dict[str, str | int | bool | None] | None:
+    """LAG-805: the recovery payload for a failed attempt, or None without a transcript.
+
+    Carries the (capped) ``rawResult`` plus duration and ``appVersion`` so a later
+    triage/redrive or salvage pass can match it back to its source audio.
+    """
+    raw = info.get("raw_result")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return {
+        "raw_result": raw[:RAW_RESULT_MAX_CHARS],
+        "raw_result_chars": len(raw),
+        "truncated": len(raw) > RAW_RESULT_MAX_CHARS,
+        "duration_ms": info.get("duration_ms"),
+        "app_version": info.get("app_version"),
+        "recording_dir": entry.name,
+    }
+
+
+def _attach_recovery(error: BaseException, recovery: dict | None) -> BaseException:
+    """LAG-805: hang the attempt's recovery material on the error process_audio records."""
+    error.recovery = recovery  # type: ignore[attr-defined]
+    return error
 
 
 def get_audio_duration_ms(audio_path: str) -> int | None:
@@ -574,6 +701,7 @@ def wait_for_superwhisper_result(
     file_path: str,
     since: float,
     expected_duration_ms: int | None = None,
+    handed_off_at: float | None = None,
 ) -> str:
     """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper().
 
@@ -601,6 +729,16 @@ def wait_for_superwhisper_result(
 
     R6: empty-stub stability threshold scales with audio duration — long audio needs
         more polls for the LLM pass to even start. Floor and ceiling bound the budget.
+
+    CB-10 (LAG-802): accept window. If no new session dir (a directory newer
+        than `since`, not consumed) appears within SUPERWHISPER_ACCEPT_TIMEOUT
+        seconds of `handed_off_at` — the delivery time ``handoff_to_superwhisper``
+        returns; defaults to when this wait starts — Superwhisper never took
+        the handoff (zombie app, LaunchServices queueing the open event) and
+        the attempt fails fast with SuperwhisperNotAcceptingError instead of
+        burning SUPERWHISPER_TIMEOUT. Any session dir counts, even one the R3
+        duration filter later skips: the window asks "is Superwhisper alive?",
+        not "is this our result?". A window <= 0 disables the check.
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
@@ -610,6 +748,12 @@ def wait_for_superwhisper_result(
 
     deadline = time.time() + SUPERWHISPER_TIMEOUT
     print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
+
+    # CB-10: the accept window opens at handoff delivery, not at `since` (which
+    # precedes the mode settle and the R7 idle wait).
+    accept_from = time.time() if handed_off_at is None else handed_off_at
+    accept_deadline = accept_from + SUPERWHISPER_ACCEPT_TIMEOUT if SUPERWHISPER_ACCEPT_TIMEOUT > 0 else None
+    session_seen = False
 
     # R6: scale empty-stub stability threshold to audio duration.
     if expected_duration_ms and expected_duration_ms > 0:
@@ -622,6 +766,9 @@ def wait_for_superwhisper_result(
     stub_stability: dict[str, tuple[float, int]] = {}
     # R5: write-stability tracker for CATEGORY-bearing llmResults: dir name → (last_mtime, last_size, count).
     write_stability: dict[str, tuple[float, int, int]] = {}
+    # LAG-805: newest transcript seen in a matched dir, attached to a deadline /
+    # accept-window failure so process_audio can persist it as recovery material.
+    last_recovery: dict | None = None
 
     while time.time() < deadline:
         time.sleep(SUPERWHISPER_POLL_INTERVAL)
@@ -635,6 +782,7 @@ def wait_for_superwhisper_result(
         except OSError:
             continue
 
+        poll_recovery: dict | None = None
         for entry in entries:
             try:
                 mtime = entry.stat().st_mtime
@@ -646,6 +794,9 @@ def wait_for_superwhisper_result(
             # R4: skip recordings we've already consumed.
             if _is_consumed(entry):
                 continue
+
+            # CB-10: a new, unconsumed session dir proves Superwhisper took a handoff.
+            session_seen = session_seen or entry.is_dir()
 
             info = _read_recording_meta(entry)
             if info is None:
@@ -661,6 +812,10 @@ def wait_for_superwhisper_result(
                 and abs(duration_ms - expected_duration_ms) > expected_duration_ms * DURATION_MATCH_TOLERANCE
             ):
                 continue
+
+            # LAG-805: transcript of this matched dir, if Superwhisper wrote one.
+            entry_recovery = _recovery_material(info, entry)
+            poll_recovery = poll_recovery or entry_recovery  # newest matched dir wins
 
             raw_text = info["llm_result"]
             text = raw_text if isinstance(raw_text, str) else None
@@ -683,10 +838,13 @@ def wait_for_superwhisper_result(
 
             # Fast-fail case 1: LLM produced output but no CATEGORY: header = refusal.
             if text and not (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
-                raise PermanentFileError(
-                    f"Superwhisper produced an llmResult without the {CATEGORY_HEADER} contract header "
-                    f"for {Path(file_path).name}. The Custom Mode LLM likely refused the transcript "
-                    f"(too short, wrong format, or non-meeting audio). First line: {text.splitlines()[0][:120]!r}"
+                raise _attach_recovery(
+                    PermanentFileError(
+                        f"Superwhisper produced an llmResult without the {CATEGORY_HEADER} contract header "
+                        f"for {Path(file_path).name}. The Custom Mode LLM likely refused the transcript "
+                        f"(too short, wrong format, or non-meeting audio). First line: {text.splitlines()[0][:120]!r}"
+                    ),
+                    entry_recovery,
                 )
 
             # Fast-fail case 2: no llmResult but meta.json mtime is stable.
@@ -707,10 +865,41 @@ def wait_for_superwhisper_result(
                 stub_stability.pop(entry.name, None)
                 continue
 
-            _check_stub_abandoned(stub_stability, entry, mtime, stability_polls, file_path)
+            _check_stub_abandoned(stub_stability, entry, mtime, stability_polls, file_path, entry_recovery)
 
-    raise TimeoutError(
-        f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+        last_recovery = poll_recovery or last_recovery
+        _check_accept_window(session_seen, accept_deadline, accept_from, file_path, last_recovery)
+
+    raise _attach_recovery(
+        TimeoutError(
+            f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+        ),
+        last_recovery,
+    )
+
+
+def _check_accept_window(
+    session_seen: bool,
+    accept_deadline: float | None,
+    accept_from: float,
+    file_path: str,
+    recovery: dict | None = None,
+) -> None:
+    """CB-10/CB-11: raise SuperwhisperNotAcceptingError once the accept window
+    has elapsed with no new session dir. No-op once a session dir was seen or
+    when the window is disabled (``accept_deadline`` is None). ``recovery`` is
+    attached to the error (LAG-805)."""
+    if session_seen or accept_deadline is None or time.time() < accept_deadline:
+        return
+    waited = int(time.time() - accept_from)
+    raise _attach_recovery(
+        SuperwhisperNotAcceptingError(
+            f"{OUTCOME_NOT_ACCEPTING}: no Superwhisper session dir appeared within "
+            f"{SUPERWHISPER_ACCEPT_TIMEOUT}s of handoff (waited {waited}s) for {Path(file_path).name}. "
+            f"The open event was queued but never taken — Superwhisper is likely hung (zombie). "
+            f"Will retry on the next scan cycle."
+        ),
+        recovery,
     )
 
 
@@ -746,12 +935,16 @@ def _check_stub_abandoned(
     mtime: float,
     stability_polls: int,
     file_path: str,
+    recovery: dict | None = None,
 ) -> None:
     """Fast-fail case 2: empty stub whose meta.json mtime is stable across N polls.
 
     Raises TimeoutError if the stub has been stable for `stability_polls` consecutive
     polls (no llmResult, no LLM pass). Otherwise updates the stability tracker and
     returns None — caller should `continue` the poll loop.
+
+    LAG-805: ``recovery`` (the stub's transcript, if transcription ran) is attached
+    to the TimeoutError so process_audio keeps it instead of discarding it.
     """
     stub_prev = stub_stability.get(entry.name)
     if stub_prev is None:
@@ -766,11 +959,14 @@ def _check_stub_abandoned(
     if count >= stability_polls:
         # meta.json hasn't changed across N polls → Superwhisper dropped this stub.
         # Transient: re-opening the audio file on a later cycle should work.
-        raise TimeoutError(
-            f"Superwhisper created an empty recording stub for {Path(file_path).name} "
-            f"(meta.json stable for {count} polls, no llmResult, no LLM pass started). "
-            f"The file-open likely arrived while Superwhisper was busy with a prior handoff. "
-            f"Will retry on the next scan cycle. Recording dir: {entry.name}"
+        raise _attach_recovery(
+            TimeoutError(
+                f"Superwhisper created an empty recording stub for {Path(file_path).name} "
+                f"(meta.json stable for {count} polls, no llmResult, no LLM pass started). "
+                f"The file-open likely arrived while Superwhisper was busy with a prior handoff. "
+                f"Will retry on the next scan cycle. Recording dir: {entry.name}"
+            ),
+            recovery,
         )
 
 
@@ -786,23 +982,36 @@ def _check_stub_abandoned(
 # auto-relaunch on the flag are separate concerns (LAG-803, LAG-804).
 
 CIRCUIT_BREAKER_NOTIFY_TITLE = "Transcriber circuit breaker"
+OSASCRIPT_BIN = "/usr/bin/osascript"  # WD-8: absolute paths for every spawned binary
+OPEN_BIN = "/usr/bin/open"
 
 # CB-1 outcome classes. "timeout" is the dependency-down signal: both the poll
 # deadline and the abandoned-stub fast-fail raise TimeoutError, so a streak of
 # them means Superwhisper accepted handoffs but produced nothing.
 OUTCOME_TIMEOUT = "timeout"
+# CB-11 (LAG-802): no session dir within the accept window — Superwhisper never
+# took the handoff. Its own class so a zombie app is nameable, distinct from
+# "took it but produced nothing" (timeout).
+OUTCOME_NOT_ACCEPTING = "superwhisper-not-accepting"
 OUTCOME_PERMANENT = "permanent"
 OUTCOME_TRANSIENT = "transient"
 OUTCOME_SUCCESS = "success"
+# CB-12: outcome classes that signal a down dependency. Each drives its own
+# identical-outcome streak; switching between them restarts the streak.
+DEPENDENCY_DOWN_OUTCOMES = frozenset({OUTCOME_TIMEOUT, OUTCOME_NOT_ACCEPTING})
 
 
 def classify_outcome(error: BaseException) -> str:
     """CB-1: map an attempt's exception to its outcome class.
 
-    TimeoutError → "timeout" (poll deadline or abandoned stub — the class the
-    breaker keys on), PermanentFileError → "permanent" (LLM refused the
-    contract; not a dependency signal), everything else → "transient".
+    SuperwhisperNotAcceptingError → "superwhisper-not-accepting" (CB-11: no
+    session dir within the accept window; checked first, it is a TimeoutError
+    subclass), TimeoutError → "timeout" (poll deadline or abandoned stub),
+    PermanentFileError → "permanent" (LLM refused the contract; not a
+    dependency signal), everything else → "transient".
     """
+    if isinstance(error, SuperwhisperNotAcceptingError):
+        return OUTCOME_NOT_ACCEPTING
     if isinstance(error, TimeoutError):
         return OUTCOME_TIMEOUT
     if isinstance(error, PermanentFileError):
@@ -816,14 +1025,13 @@ def _compose_breaker_notification(state: dict) -> str:
     return f"Superwhisper not producing results — {retry_queue} files in retry queue"
 
 
-def _notify_dependency_down(state: dict) -> bool:
-    """CB-4: one osascript notification (argv-passed, never interpolated — ES-6
-    discipline). Failure returns False, never raises."""
-    message = _compose_breaker_notification(state)
+def _notify(message: str, title: str) -> bool:
+    """One osascript notification, text passed as argv and never interpolated
+    into AppleScript source (ES-2). Failure returns False, never raises (ES-6)."""
     try:
         result = subprocess.run(
             [
-                "/usr/bin/osascript",
+                OSASCRIPT_BIN,
                 "-e",
                 "on run argv",
                 "-e",
@@ -831,7 +1039,7 @@ def _notify_dependency_down(state: dict) -> bool:
                 "-e",
                 "end run",
                 message,
-                CIRCUIT_BREAKER_NOTIFY_TITLE,
+                title,
             ],
             capture_output=True,
             text=True,
@@ -840,15 +1048,24 @@ def _notify_dependency_down(state: dict) -> bool:
         )
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError) as error:
-        print(f"⚠️  circuit breaker: notification failed: {error}", flush=True)
+        print(f"⚠️  notification failed ({title}): {error}", flush=True)
         return False
+
+
+def _notify_dependency_down(state: dict) -> bool:
+    """CB-4: the dependency-down page. Failure returns False, never raises."""
+    return _notify(_compose_breaker_notification(state), CIRCUIT_BREAKER_NOTIFY_TITLE)
 
 
 def record_attempt_result(state: dict, outcome: str, *, now: float | None = None) -> bool:
     """CB-2/3/4/8: record an attempt outcome; return True exactly when the flag trips.
 
-    A non-timeout outcome resets the streak (CB-5) but does not count toward a
-    new one — only *identical consecutive* timeout outcomes drive the breaker.
+    A non-dependency outcome resets the streak (CB-5) but does not count toward
+    a new one — only *identical consecutive* dependency-down outcomes drive the
+    breaker: K ``timeout`` in a row, or K ``superwhisper-not-accepting`` in a
+    row (CB-12). Switching from one to the other restarts the streak at 1, so
+    ``flagged_by_outcome`` always names a single, consistent failure shape.
+    Every outcome is also mirrored to the heartbeat's ``last_outcome`` (CB-13).
     On a trip: set ``dependency_down`` (sticky until a completion), stamp the
     notification epoch for the shared cooldown (CB-8, persisted in state so a
     daemon restart cannot re-page), fire one notification (CB-4), and force a
@@ -857,8 +1074,8 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
 
     Args:
         state: The pipeline state dict (``circuit_breaker`` sub-dict maintained here).
-        outcome: One of ``OUTCOME_TIMEOUT`` / ``OUTCOME_PERMANENT`` /
-            ``OUTCOME_TRANSIENT`` / ``OUTCOME_SUCCESS``.
+        outcome: One of ``OUTCOME_TIMEOUT`` / ``OUTCOME_NOT_ACCEPTING`` /
+            ``OUTCOME_PERMANENT`` / ``OUTCOME_TRANSIENT`` / ``OUTCOME_SUCCESS``.
         now: Bookkeeping clock (epoch seconds); defaults to ``time.time()``. Tests
             inject a fixed clock.
 
@@ -867,23 +1084,25 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
     """
     breaker = state.setdefault("circuit_breaker", {})
     now = time.time() if now is None else now
+    write_heartbeat("processing", last_outcome=outcome)  # CB-13 (throttled; outcome cached regardless)
 
     if outcome == OUTCOME_SUCCESS:
         breaker["streak"] = 0
         breaker["last_outcome"] = OUTCOME_SUCCESS
+        breaker["relaunch_used"] = False  # CB-17: only a completion ends the relaunch episode
         if breaker.get("dependency_down"):
             breaker["dependency_down"] = False
             write_heartbeat("processing", dependency_down=False, force=True)
         return False
 
-    if outcome != OUTCOME_TIMEOUT:
+    if outcome not in DEPENDENCY_DOWN_OUTCOMES:
         breaker["streak"] = 0
         breaker["last_outcome"] = outcome
         return False
 
-    if breaker.get("last_outcome") != OUTCOME_TIMEOUT:
-        breaker["streak"] = 0
-    breaker["last_outcome"] = OUTCOME_TIMEOUT
+    if breaker.get("last_outcome") != outcome:
+        breaker["streak"] = 0  # CB-12: a different dependency-down class starts a new streak
+    breaker["last_outcome"] = outcome
     breaker["streak"] = breaker.get("streak", 0) + 1
     if breaker["streak"] < CIRCUIT_BREAKER_THRESHOLD:
         return False
@@ -893,7 +1112,7 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
     if not breaker.get("dependency_down"):
         # First trip: raise the flag (sticky until a completion clears it).
         breaker["dependency_down"] = True
-        breaker["flagged_by_outcome"] = OUTCOME_TIMEOUT
+        breaker["flagged_by_outcome"] = outcome
         breaker["flagged_at"] = now
     elif not now_is_new_epoch:
         return False  # still down, reminder suppressed inside the cooldown window
@@ -908,6 +1127,183 @@ def record_attempt_result(state: dict, outcome: str, *, now: float | None = None
             print(f"⚠️  circuit breaker: notification failed: {error}", flush=True)
         write_heartbeat("processing", dependency_down=True, force=True)
     return True
+
+
+# ── Guarded auto-relaunch (LAG-804, spec CB-14..CB-20) ─────────────────────
+# Circuit-breaker action 3: the known cure for a zombie Superwhisper (quit the
+# app, open it again) ran by hand on Sep 13 and Oct 8. The daemon now runs it
+# itself - once per dependency-down episode, only while the idle gate is clear,
+# never inside the cooldown. Every guard fails closed: a refusal leaves the
+# CB-4 page as the escalation. No daemon kickstart: the remedy runs between
+# attempts, so no wait is in flight, and `kickstart -k` on our own label would
+# kill the remedy mid-step (see the spec's LAG-804 deviation note).
+
+SUPERWHISPER_APP_NAME = "Superwhisper"
+RELAUNCH_NOTIFY_TITLE = "Transcriber auto-relaunch"
+# CB-14: only "never took the handoff" has a confirmed relaunch cure.
+RELAUNCH_OUTCOMES = frozenset({OUTCOME_NOT_ACCEPTING})
+RELAUNCH_QUIT_TIMEOUT = 30  # seconds for the osascript quit call (WD-7)
+RELAUNCH_CHECK_TIMEOUT = 10  # seconds for one "is running" probe
+RELAUNCH_OPEN_TIMEOUT = 30  # seconds for `open -a`
+RELAUNCH_QUIT_GRACE = 30  # seconds the app gets to exit before quit_failed
+RELAUNCH_POLL_INTERVAL = 1.0
+RELAUNCH_WARMUP_SECONDS = 20  # let the relaunched app settle before the next handoff
+
+# Guard results: refusals (nothing ran) and remedy results (the remedy ran).
+RELAUNCH_NOT_ELIGIBLE = "not_eligible"
+RELAUNCH_DISABLED = "disabled"
+RELAUNCH_ALREADY_USED = "already_used"
+RELAUNCH_COOLDOWN = "cooldown"
+RELAUNCH_BUSY = "busy"
+RELAUNCH_IN_PROGRESS = "in_progress"  # persisted before the remedy; left behind only by a crash
+RELAUNCH_RELAUNCHED = "relaunched"
+RELAUNCH_QUIT_FAILED = "quit_failed"
+RELAUNCH_FAILED = "relaunch_failed"
+
+
+def _superwhisper_is_running() -> bool:
+    """True unless osascript positively reports Superwhisper is not running.
+
+    Fails closed (CB-18): a probe that errors or times out reads as "still
+    running", so the remedy never opens the app on top of a live instance.
+    """
+    try:
+        result = subprocess.run(
+            [OSASCRIPT_BIN, "-e", f'application "{SUPERWHISPER_APP_NAME}" is running'],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=RELAUNCH_CHECK_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"   ⚠️  auto-relaunch: running check failed: {error}", flush=True)
+        return True
+    return result.returncode != 0 or result.stdout.strip() != "false"
+
+
+def _relaunch_superwhisper() -> str:
+    """CB-18: quit Superwhisper, wait for it to exit, open it again, warm up.
+
+    Returns ``relaunched``, ``quit_failed`` (still running after the grace
+    period - never force-killed, never reopened) or ``relaunch_failed``
+    (``open`` failed). Never raises.
+    """
+    write_heartbeat("processing", force=True)  # HB-11: the remedy blocks for up to ~2 min
+    try:
+        subprocess.run(
+            [OSASCRIPT_BIN, "-e", f'tell application "{SUPERWHISPER_APP_NAME}" to quit'],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=RELAUNCH_QUIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        # A hung quit can still have worked: the running check below decides.
+        print(f"   ⚠️  auto-relaunch: quit call failed: {error}", flush=True)
+
+    deadline = time.time() + RELAUNCH_QUIT_GRACE
+    while _superwhisper_is_running():
+        if time.time() >= deadline:
+            write_heartbeat("processing", force=True)
+            return RELAUNCH_QUIT_FAILED
+        write_heartbeat("processing")
+        time.sleep(RELAUNCH_POLL_INTERVAL)
+
+    try:
+        opened = subprocess.run(
+            [OPEN_BIN, "-a", SUPERWHISPER_APP_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=RELAUNCH_OPEN_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"   ⚠️  auto-relaunch: open failed: {error}", flush=True)
+        write_heartbeat("processing", force=True)
+        return RELAUNCH_FAILED
+    if opened.returncode != 0:
+        print(f"   ⚠️  auto-relaunch: open exited {opened.returncode}: {opened.stderr.strip()}", flush=True)
+        write_heartbeat("processing", force=True)
+        return RELAUNCH_FAILED
+
+    time.sleep(RELAUNCH_WARMUP_SECONDS)
+    write_heartbeat("processing", force=True)
+    return RELAUNCH_RELAUNCHED
+
+
+def _relaunch_refusal(breaker: dict, now: float) -> str | None:
+    """CB-15/16/17/20: the first guard that refuses, or None when all are green.
+
+    Cheap guards first; the idle gate (a filesystem read) runs last and is a
+    single read - a busy gate blocks, it never waits and proceeds (CB-15).
+    """
+    if not SUPERWHISPER_AUTO_RELAUNCH:
+        return RELAUNCH_DISABLED
+    if breaker.get("relaunch_used"):
+        return RELAUNCH_ALREADY_USED
+    last = breaker.get("last_relaunch_epoch")
+    if last is not None and (now - last) < SUPERWHISPER_RELAUNCH_COOLDOWN:
+        return RELAUNCH_COOLDOWN
+    if not _is_superwhisper_idle():
+        return RELAUNCH_BUSY
+    return None
+
+
+def _notify_relaunch(message: str) -> None:
+    """CB-19: a failed notification never stops the remedy or its bookkeeping."""
+    try:
+        _notify(message, RELAUNCH_NOTIFY_TITLE)
+    except Exception as error:  # noqa: BLE001 — ES-6
+        print(f"⚠️  auto-relaunch: notification failed: {error}", flush=True)
+
+
+def maybe_relaunch_superwhisper(state: dict, *, now: float | None = None) -> str:
+    """CB-14..CB-20: run the guarded relaunch if this attempt made it due.
+
+    Call after ``record_attempt_result``. Eligible only while the breaker's
+    current streak is a relaunch outcome at or above K (CB-14). The cap is
+    stamped and saved BEFORE the remedy (CB-17), so a crash cannot fire it
+    twice; only a completion clears it (``record_attempt_result``).
+
+    Args:
+        state: The pipeline state dict (``circuit_breaker`` sub-dict maintained here).
+        now: Bookkeeping clock (epoch seconds); defaults to ``time.time()``.
+
+    Returns:
+        ``not_eligible``, a refusal (``disabled``, ``already_used``,
+        ``cooldown``, ``busy``) or a remedy result (``relaunched``,
+        ``quit_failed``, ``relaunch_failed``).
+    """
+    breaker = state.get("circuit_breaker") or {}
+    if breaker.get("last_outcome") not in RELAUNCH_OUTCOMES or breaker.get("streak", 0) < CIRCUIT_BREAKER_THRESHOLD:
+        return RELAUNCH_NOT_ELIGIBLE
+    now = time.time() if now is None else now
+
+    if refusal := _relaunch_refusal(breaker, now):
+        print(f"   ⚡ auto-relaunch refused ({refusal}): Superwhisper not accepting handoffs", flush=True)
+        return refusal
+
+    breaker["relaunch_used"] = True
+    breaker["last_relaunch_epoch"] = now
+    breaker["last_relaunch_result"] = RELAUNCH_IN_PROGRESS
+    save_state(state)  # CB-17: persisted before the remedy runs
+
+    retry_queue = sum(1 for v in state.get("processed", {}).values() if v.get("status") == "failed_retry")
+    print("   ⚡ auto-relaunch: quitting and reopening Superwhisper", flush=True)
+    _notify_relaunch(f"Superwhisper not accepting handoffs - relaunching it ({retry_queue} files in retry queue)")
+    try:
+        result = _relaunch_superwhisper()
+    except Exception as error:  # noqa: BLE001 — the remedy must never break attempt bookkeeping
+        print(f"   ⚠️  auto-relaunch: remedy crashed: {error}", flush=True)
+        result = RELAUNCH_FAILED
+    breaker["last_relaunch_result"] = result
+    print(f"   ⚡ auto-relaunch result: {result}", flush=True)
+
+    if result == RELAUNCH_RELAUNCHED:
+        _notify_relaunch("Superwhisper relaunched - queued files retry on the next attempt")
+    else:
+        _notify_relaunch(f"Superwhisper relaunch failed ({result}) - quit and reopen it by hand")
+    return result
 
 
 def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
@@ -939,6 +1335,20 @@ def parse_superwhisper_output(raw_output: str) -> tuple[str, str, str]:
     return category, filename, analysis
 
 
+def _recovery_for_record(error: BaseException, previous: dict | None, attempt: int) -> dict | None:
+    """LAG-805: the ``recovery`` value a failed state record stores.
+
+    The error's transcript (attached by wait_for_superwhisper_result), stamped
+    with the attempt that produced it. A later attempt that yields no transcript
+    keeps the earlier one — a retry must not erase the only copy of a
+    transcript. None when no attempt has produced one. Never saved as a note.
+    """
+    recovery = getattr(error, "recovery", None)
+    if isinstance(recovery, dict):
+        return {**recovery, "attempt": attempt}
+    return previous if isinstance(previous, dict) else None
+
+
 def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | None]:
     """Full pipeline: mode switch → handoff → parse → save; returns (success, category|None).
 
@@ -947,6 +1357,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     and a streak of identical timeout outcomes trips ``dependency_down``.
     """
     attempts = (processed := state.setdefault("processed", {})).get(file_path, {}).get("attempts", 0)
+    previous_recovery = processed.get(file_path, {}).get("recovery")
 
     try:
         # R3+R6: compute source audio duration for correlation + scaled poll budget.
@@ -956,9 +1367,14 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
 
         since = time.time()
         switch_superwhisper_mode()
-        handoff_to_superwhisper(file_path)
+        handed_off_at = handoff_to_superwhisper(file_path)  # CB-10: accept window opens here
         category, ai_filename, analysis = parse_superwhisper_output(
-            wait_for_superwhisper_result(file_path, since=since, expected_duration_ms=expected_duration_ms)
+            wait_for_superwhisper_result(
+                file_path,
+                since=since,
+                expected_duration_ms=expected_duration_ms,
+                handed_off_at=handed_off_at,
+            )
         )
 
         fname = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
@@ -988,11 +1404,12 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "attempts": attempts + 1,
             "expected_duration_ms": expected_duration_ms,
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
+            "recovery": _recovery_for_record(e, previous_recovery, attempts + 1),  # LAG-805
         }
         record_attempt_result(state, outcome)
     except Exception as e:
         outcome = classify_outcome(e)
-        print(f"   ❌ Failed to process {Path(file_path).name}: {e}", flush=True)
+        print(f"   ❌ Failed to process {Path(file_path).name} [{outcome}]: {e}", flush=True)
         processed[file_path] = {
             "status": "failed_permanent" if (na := attempts + 1) >= MAX_RETRIES else "failed_retry",
             "error": str(e),
@@ -1000,8 +1417,13 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "attempts": na,
             "expected_duration_ms": expected_duration_ms,
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
+            "recovery": _recovery_for_record(e, previous_recovery, na),  # LAG-805
         }
         record_attempt_result(state, outcome)
+        try:
+            maybe_relaunch_superwhisper(state)  # CB-14..CB-20 (LAG-804)
+        except Exception as relaunch_error:  # noqa: BLE001 — never break attempt bookkeeping
+            print(f"   ⚠️  auto-relaunch guard failed: {relaunch_error}", flush=True)
         print(
             "   "
             + (

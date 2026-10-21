@@ -31,6 +31,7 @@ from pipeline import (
     FatalAPIError,
     _now_local,
     build_transcript_index,
+    count_icloud_placeholders,
     discover_recent_folders,
     get_audio_timestamp,
     is_file_stable,
@@ -51,6 +52,19 @@ def _heartbeat_counts(state: dict) -> dict:
         "failed_permanent": statuses.count("failed_permanent"),
         "dependency_down": bool(state.get("circuit_breaker", {}).get("dependency_down", False)),
     }
+
+
+def _icloud_placeholder_count() -> dict | None:
+    """HB-14 (LAG-814): placeholder count for the scan window; None if counting failed.
+
+    Never raises: telemetry must not cost the scan cycle. None leaves the
+    heartbeat carrying the last known count.
+    """
+    try:
+        return count_icloud_placeholders(discover_recent_folders(WATCH_FOLDER, SCAN_DAYS_BACK))
+    except Exception as e:  # noqa: BLE001 — telemetry must never break the scan cycle
+        print(f"   ⚠️  iCloud placeholder count failed, continuing scan: {e}", flush=True)
+        return None
 
 
 # Emit a heartbeat log line every Nth idle cycle (keeps logs quiet but alive).
@@ -126,7 +140,9 @@ def discover_audio_files(watch_folder, state, transcript_index):
 def run_scan_cycle(state, transcript_index, cycle_number):
     # HB-1: at least one heartbeat attempt per scan cycle. The throttle (15 s)
     # may suppress the file write; the 30 s scan interval keeps the file fresh.
-    write_heartbeat("scanning", cycle=cycle_number, **_heartbeat_counts(state))
+    write_heartbeat(
+        "scanning", cycle=cycle_number, icloud_placeholders=_icloud_placeholder_count(), **_heartbeat_counts(state)
+    )
     # IC-5: the request count rides on the next heartbeat — the writer caches it
     # before its throttle check, so a throttled write here still surfaces it on
     # the following one.
