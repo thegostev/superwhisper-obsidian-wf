@@ -135,10 +135,10 @@ jobs:
 
       - name: Cyclomatic complexity (radon)
         run: |
-          radon cc --min=B --show-complexity --average auto_transcribe.py reclassify_and_fix.py ondemand_transcribe.py pipeline.py config.py
+          radon cc --min=B --show-complexity --average auto_transcribe.py reclassify_and_fix.py ondemand_transcribe.py pipeline.py config.py icloud_preflight.py
 
       - name: Dead code detection (vulture)
-        run: vulture auto_transcribe.py reclassify_and_fix.py ondemand_transcribe.py pipeline.py config.py
+        run: vulture auto_transcribe.py reclassify_and_fix.py ondemand_transcribe.py pipeline.py config.py icloud_preflight.py
 
       - name: Import cycle detection (pydeps)
         run: |

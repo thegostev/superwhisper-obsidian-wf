@@ -22,6 +22,7 @@ This document specifies the behaviour of three cooperating components:
 | Heartbeat writer | `pipeline.py`, `auto_transcribe.py` | the daemon's venv interpreter |
 | Health check and watchdog | `health_check.py` | `/usr/bin/python3` (system, 3.9.6) |
 | Preflight guard | `preflight.sh` | `/bin/zsh`, invoked by launchd |
+| iCloud placeholder preflight | `icloud_preflight.py`, `auto_transcribe.py` | the daemon's venv interpreter |
 
 Out of scope: rotation of the daemon log, reconciliation of vault outputs against state (covered by `verify_integrity.py`), and any repair of the Homebrew installation itself.
 
@@ -230,6 +231,19 @@ Deviation from the issue text, recorded here: the issue also asked for `launchct
 
 ---
 
+## IC — iCloud placeholder preflight (input materialization)
+
+Root cause LAG-756, post-mortem 26-10-08 recommendation 8. Just Press Record recordings reach the Mac through iCloud; until iCloud downloads one, the JPR folder holds only a `.<name>.m4a.icloud` stub. The daemon's scan skips stubs, and nothing asked iCloud to download them, so recordings sat invisible for up to two days (Sep 21–23) and ≈20 h (Oct 7) while every liveness signal stayed green. Scope note: LAG-813 covers the download request only; the placeholder count in the heartbeat (LAG-814) and the watchdog arrival-lag rule (LAG-815) are separate.
+
+- **IC-1** Before each scan cycle the daemon MUST find iCloud audio placeholder stubs — files named `.<name>.m4a.icloud` — at any depth under the date folders it scans. Non-audio stubs MUST be ignored.
+- **IC-2** The search MUST be limited to the scan window (`scan_days_back` date folders), so stubs that macOS storage optimisation left on old recordings are never mass-downloaded.
+- **IC-3** For each stub the daemon MUST run `brctl download <stub>` with a per-call timeout (`icloud_download_timeout`, default 10 s), at most `icloud_max_downloads_per_cycle` calls per cycle (default 10; the rest wait for the next cycle), and MUST NOT re-request the same stub within `icloud_download_cooldown` (default 300 s).
+- **IC-4** The preflight MUST NOT terminate or interrupt the scan cycle: a `brctl` timeout, non-zero exit, missing binary or any other error MUST be logged with a `⚠️` warning and counted, and the cycle MUST continue. A missing or unrunnable `brctl` MUST stop further calls for that pass.
+- **IC-5** When stubs are present the daemon MUST log one summary line with the counts (found, requested, in cooldown, deferred, timed out, failed); with no stubs it MUST stay silent. The heartbeat MUST carry `icloud_downloads_requested` — the number of `brctl download` requests issued by the latest pass (default `0`), cached by the writer like `dependency_down` (CB-6). The field is additive with schema version 1.
+- **IC-6** A dry-run mode (`icloud_preflight_dry_run` in config, `--dry-run` on the CLI) MUST log what would be requested and run no `brctl` command. `icloud_preflight.py` MUST be runnable as a CLI with explicit `--folder` arguments and no config file, exiting 2 when `brctl` cannot be run, so the `brctl` dependency on the user session can be checked from a launchd context.
+
+---
+
 ## Traceability
 
 Every requirement in this document has a row naming the test or review that verifies it.
@@ -292,6 +306,10 @@ Every requirement in this document has a row naming the test or review that veri
 | CB-18 | `tests/unit/test_auto_relaunch.py` — `TestRemedy` (quit then open, `quit_failed` never opens, `relaunch_failed`, absolute paths, timeouts, heartbeats) |
 | CB-19 | `tests/unit/test_auto_relaunch.py` — `TestNotifications` (before and after, argv discipline, failure copy, refusal is silent, sender failure is harmless) |
 | CB-20 | `tests/unit/test_auto_relaunch.py` — `TestConfig`, `TestProcessAudioWiring` (kill switch, config keys, persisted fields, log lines) |
+| IC-1, IC-2 | `tests/unit/test_icloud_preflight.py` — `TestPlaceholderDetection` (nested date dirs, non-audio stubs ignored), `TestDaemonWiring` (scan-window folders) (LAG-813) |
+| IC-3, IC-4 | `tests/unit/test_icloud_preflight.py` — `TestRequestDownloads` (argv, timeout, cooldown, cap, missing binary, non-zero exit) |
+| IC-5 | `tests/unit/test_icloud_preflight.py` — `TestSummaryAndHeartbeat` (silent no-op, summary line, heartbeat field) |
+| IC-6 | `tests/unit/test_icloud_preflight.py` — `TestCli` (dry-run, real subprocess smoke with a stub `brctl`, exit 2); the `brctl` check from the launchd context is manual on the Mac |
 
 ## References
 

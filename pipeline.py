@@ -63,6 +63,7 @@ _heartbeat_dependency_down: bool = False  # CB-6 (LAG-801): last known breaker f
 _heartbeat_last_outcome: str | None = None  # CB-13 (LAG-802): last classified attempt outcome
 # HB-14 (LAG-814): last iCloud placeholder count {"total", "by_date_dir"}; None until first count.
 _heartbeat_icloud_placeholders: dict | None = None
+_heartbeat_icloud_downloads_requested: int = 0  # IC-5 (LAG-813): latest preflight pass
 
 # HB-14: Just Press Record recordings not yet downloaded by iCloud exist only as
 # `.<name>.m4a.icloud` stubs. Matching is on the file NAME only: a substring test
@@ -231,6 +232,7 @@ def write_heartbeat(
     dependency_down: bool | None = None,
     last_outcome: str | None = None,
     icloud_placeholders: dict | None = None,
+    icloud_downloads_requested: int | None = None,
     force: bool = False,
     min_interval: float = HEARTBEAT_MIN_INTERVAL,
 ) -> bool:
@@ -282,6 +284,8 @@ def write_heartbeat(
         dependency_down: Circuit-breaker flag (CB-6), when the caller knows it.
         last_outcome: Last attempt outcome class (CB-13), when the caller knows it.
         icloud_placeholders: iCloud placeholder count (HB-14), when the caller knows it.
+        icloud_downloads_requested: ``brctl download`` requests issued by the
+            latest iCloud preflight pass (IC-5), when the caller knows it.
         force: Bypass the throttle.
         min_interval: Throttle window in seconds.
 
@@ -290,11 +294,16 @@ def write_heartbeat(
     """
     global _heartbeat_last_write, _heartbeat_failures, _heartbeat_started_at
     global _heartbeat_dependency_down, _heartbeat_last_outcome, _heartbeat_icloud_placeholders
+    global _heartbeat_icloud_downloads_requested
     now = time.time()
     if last_outcome is not None:
         _heartbeat_last_outcome = last_outcome  # CB-13: cached before the throttle check
     if icloud_placeholders is not None:
         _heartbeat_icloud_placeholders = icloud_placeholders  # HB-14: cached before the throttle check
+    if icloud_downloads_requested is not None:
+        # IC-5: cached before the throttle check — the preflight count is
+        # reported once per cycle, and a throttled write must not drop it.
+        _heartbeat_icloud_downloads_requested = icloud_downloads_requested
     if phase == "fatal":
         force = True
     if not force and (now - _heartbeat_last_write) < min_interval:
@@ -322,6 +331,7 @@ def write_heartbeat(
         "dependency_down": _heartbeat_dependency_down,  # CB-6
         "last_outcome": _heartbeat_last_outcome,  # CB-13
         "icloud_placeholders": _heartbeat_icloud_placeholders,  # HB-14
+        "icloud_downloads_requested": _heartbeat_icloud_downloads_requested,  # IC-5
     }
     if fatal_reason is not None:
         payload["fatal_reason"] = fatal_reason

@@ -138,3 +138,12 @@ SCAN_DAYS_BACK: int = _cfg.get("scan_days_back", 7)
 DELAY_BETWEEN_FILES: int = _cfg.get("delay_between_files", 30)
 MAX_RETRIES: int = _cfg.get("max_retries", 3)
 MAX_FILES_PER_CYCLE: int = _cfg.get("max_files_per_cycle", 5)
+
+# iCloud placeholder preflight (LAG-813, spec IC-*): before each scan, run
+# `brctl download` on `.<name>.m4a.icloud` stubs inside the scan window so
+# recordings still in iCloud land on disk instead of sitting invisible.
+ICLOUD_PREFLIGHT_ENABLED: bool = _cfg.get("icloud_preflight_enabled", True)
+ICLOUD_PREFLIGHT_DRY_RUN: bool = _cfg.get("icloud_preflight_dry_run", False)
+ICLOUD_DOWNLOAD_TIMEOUT: float = _cfg.get("icloud_download_timeout", 10.0)
+ICLOUD_DOWNLOAD_COOLDOWN: float = _cfg.get("icloud_download_cooldown", 300.0)
+ICLOUD_MAX_DOWNLOADS_PER_CYCLE: int = _cfg.get("icloud_max_downloads_per_cycle", 10)
