@@ -42,6 +42,7 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
 - **HB-10** A failed heartbeat write MUST NOT terminate or interrupt the daemon beyond HB-3's warning. The writer MUST count consecutive write failures, and after a threshold of 4 consecutive failures SHOULD log a `⚠️` warning naming the likely cause (disk full, permission denied): a daemon that cannot write its heartbeat is indistinguishable from a dead one to the reader, and the runbook response is to check disk and permissions before trusting a restart as the fix.
 - **HB-11** The daemon SHOULD write a forced heartbeat (phase `processing`) at the top of each file handoff and inside any inter-file idle-wait loop, so the handoff and idle-wait windows cannot breach the staleness threshold on a healthy busy daemon.
 - **HB-12** The heartbeat MUST carry a `writer` field naming the process that produced it: `"daemon"` for the launchd daemon entry point, `"manual"` for every other caller (on-demand runs, redrives, salvage and other ops scripts, which reach the writer through the shared pipeline functions). The writer identity MUST default to `"manual"`: only the daemon entry point declares `"daemon"`, so a caller that forgets to declare cannot masquerade as the daemon. A manual run refreshes the same file the watchdog reads, so without this field a freshly refreshed heartbeat is indistinguishable from proof of life — it was during the 26-09-16 outage forensics (LAG-675).
+- **HB-13** The heartbeat MUST carry an `in_flight` field naming the attempt `process_audio` is running at write time: an object with `path` (the audio file), `attempt` (the attempt number persisted at attempt start, CB-21), `started_at` (RFC 3339 UTC, HB-9) and `elapsed_s` (whole seconds since the attempt started, computed at write time), or `null` between attempts. The field MUST be set before the Superwhisper handoff and cleared when the attempt ends by any path — completion, failure, fatal error or an exception that propagates — so a fresh heartbeat never names a finished attempt. A stale heartbeat whose `in_flight` is set names the attempt the daemon died in. Additive with schema version 1 like CB-6 and CB-13 (LAG-807).
 - **HB-14** The heartbeat MUST carry an `icloud_placeholders` field: `{"total": int, "by_date_dir": {name: int}}` counting Just Press Record recordings that iCloud has not yet downloaded — `.<name>.m4a.icloud` stubs — under the date dirs inside the scan window (`scan_days_back`), nested dirs rolled up to their date dir, and only dirs with at least one stub listed in `by_date_dir`. Date-dir names MUST be reported verbatim as JPR wrote them (fixed UTC+1 naming), not converted. A stub MUST be identified by its file name alone, never by a substring of the full path, and only audio stubs count. The daemon MUST refresh the count once per scan cycle; the value MUST be cached before the HB-8 throttle check so a throttled write cannot lose it; it is `null` until the first count, and `0` means counted with nothing stuck. A failed count MUST NOT break the scan cycle: it logs a `⚠️` warning and the heartbeat keeps the last known value. Without this field the heartbeat cannot tell "no meetings recorded" from "meetings recorded but stuck upstream" — on Oct 7 the daemon reported "No new files" for ~20 h while three recordings sat as stubs (LAG-814, root LAG-756). Additive with schema version 1 like CB-6.
 
 ### Heartbeat schema, version 1
@@ -57,6 +58,7 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
   "started_at": "2026-09-07T02:31:10Z",
   "state_complete": 316,
   "failed_permanent": 0,
+  "in_flight": {"path": "/…/2026-10-08/09-58-36.m4a", "attempt": 2, "started_at": "2026-09-07T14:29:40Z", "elapsed_s": 82} | null,
   "icloud_placeholders": {"total": 2, "by_date_dir": {"2026-10-07": 2}} | null,
   "fatal_reason": "FatalAPIError: superwhisper_mode_key is empty"
 }
@@ -229,6 +231,14 @@ Deviation from the issue text, recorded here: the issue also asked for `launchct
 - **CB-19** The daemon MUST notify before the remedy runs and after it ends, through the CB-4 osascript argv discipline (ES-2), and a failed notification MUST NOT stop the remedy or its bookkeeping (ES-6). The "after" notification MUST name the result; on `quit_failed` or `relaunch_failed` it MUST tell the human to quit and reopen Superwhisper by hand. These two notifications are not subject to the CB-8 cooldown: CB-17 already bounds them to one pair per episode.
 - **CB-20** `superwhisper_auto_relaunch` (default `true`) MUST be a kill switch: `false` makes the guard refuse every time. The fields `relaunch_used`, `last_relaunch_epoch` and `last_relaunch_result` MUST live in the `circuit_breaker` sub-dict and persist with it (CB-9). Every refusal of an eligible streak and every remedy result MUST be named in the daemon log.
 
+Numbering note: attempt accounting (LAG-807) was prepared alongside the LAG-804 relaunch requirements above, and both drafts claimed CB-14; the relaunch set landed first (26-10-21), so the rebase gives attempt accounting the next free number, CB-21.
+
+### Attempt accounting at attempt start (LAG-807)
+
+Post-mortem 26-10-08, recommendation 5a: attempts were recorded only at outcome time, so an in-flight attempt was invisible to state and heartbeat; the Oct 8 kickstart abandoned an attempt-2 wait that was never recorded. The counter must not lie about a wait that was abandoned.
+
+- **CB-21** `process_audio` MUST count an attempt at its start, not at its outcome: before the mode switch and handoff it MUST write the per-file record with `status: "in_progress"`, `attempts` incremented by one from the recorded value, and `attempt_started_at`, keeping the previous record's other fields for forensics, and MUST persist state (`save_state`) before the Superwhisper wait begins. The outcome bookkeeping (CB-7) MUST reuse that attempt number and MUST NOT increment it again; the outcome record replaces the in-progress record, so `attempt_started_at` is absent once the attempt ends. A crash, SIGKILL or `launchctl kickstart -k` inside the wait therefore leaves a truthful count on disk; `in_progress` is neither `complete` nor `failed_permanent`, so discovery re-queues the file and its next attempt counts from the persisted value (on Oct 8 an abandoned attempt-2 wait was never recorded). A `FatalAPIError` is a service fault, not an attempt on the file: the previous record MUST be restored (or the new one removed) and persisted before the error propagates (LAG-807).
+
 ---
 
 ## IC — iCloud placeholder preflight (input materialization)
@@ -252,6 +262,7 @@ Every requirement in this document has a row naming the test or review that veri
 |---|---|
 | HB-1 … HB-11 | `tests/unit/test_heartbeat.py` |
 | HB-12 | `tests/unit/test_heartbeat.py` — `TestWriterField` (LAG-675) |
+| HB-13 | `tests/unit/test_attempt_accounting.py` — `TestHeartbeatInFlight` (null between attempts, path/attempt/elapsed during the wait, cleared on every exit path) (LAG-807) |
 | HB-14 | `tests/unit/test_icloud_placeholder_telemetry.py` — `TestPlaceholderPredicate` (name-only match, audio-only), `TestCount` (placeholders vs materialized, nested dirs, scan-window scope, unreadable folder), `TestHeartbeatField` (null/zero/carry/throttle), `TestScanCycleWiring` (LAG-814) |
 | HC-1 … HC-6, HC-13, HC-15 | `tests/unit/test_health_check.py` — `assess_health`, `parse_launchctl_list` |
 | HC-7 | structural: the pure functions take no path or handle arguments |
@@ -306,6 +317,7 @@ Every requirement in this document has a row naming the test or review that veri
 | CB-18 | `tests/unit/test_auto_relaunch.py` — `TestRemedy` (quit then open, `quit_failed` never opens, `relaunch_failed`, absolute paths, timeouts, heartbeats) |
 | CB-19 | `tests/unit/test_auto_relaunch.py` — `TestNotifications` (before and after, argv discipline, failure copy, refusal is silent, sender failure is harmless) |
 | CB-20 | `tests/unit/test_auto_relaunch.py` — `TestConfig`, `TestProcessAudioWiring` (kill switch, config keys, persisted fields, log lines) |
+| CB-21 | `tests/unit/test_attempt_accounting.py` — `TestAttemptPersistedAtStart`, `TestCrashInsideWait` (truthful count after a simulated kill, restart counts the abandoned attempt), `TestNoDoubleIncrement`, `TestFatalRollsBack` (LAG-807) |
 | IC-1, IC-2 | `tests/unit/test_icloud_preflight.py` — `TestPlaceholderDetection` (nested date dirs, non-audio stubs ignored), `TestDaemonWiring` (scan-window folders) (LAG-813) |
 | IC-3, IC-4 | `tests/unit/test_icloud_preflight.py` — `TestRequestDownloads` (argv, timeout, cooldown, cap, missing binary, non-zero exit) |
 | IC-5 | `tests/unit/test_icloud_preflight.py` — `TestSummaryAndHeartbeat` (silent no-op, summary line, heartbeat field) |

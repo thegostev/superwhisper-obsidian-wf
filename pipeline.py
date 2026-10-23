@@ -61,6 +61,15 @@ _heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_
 _heartbeat_writer: str = DEFAULT_HEARTBEAT_WRITER
 _heartbeat_dependency_down: bool = False  # CB-6 (LAG-801): last known breaker flag
 _heartbeat_last_outcome: str | None = None  # CB-13 (LAG-802): last classified attempt outcome
+# HB-13 (LAG-807): the attempt process_audio is running right now, or None.
+# Shape: {"path": str, "attempt": int, "started": epoch float}.
+_heartbeat_in_flight: dict | None = None
+
+# CB-21 (LAG-807): per-file status while an attempt is running. Persisted at
+# attempt start, so a crash inside the wait leaves a truthful attempt count.
+# Not "complete"/"failed_permanent", so discovery re-queues an abandoned attempt.
+STATUS_IN_PROGRESS = "in_progress"
+
 # HB-14 (LAG-814): last iCloud placeholder count {"total", "by_date_dir"}; None until first count.
 _heartbeat_icloud_placeholders: dict | None = None
 _heartbeat_icloud_downloads_requested: int = 0  # IC-5 (LAG-813): latest preflight pass
@@ -222,6 +231,19 @@ def set_heartbeat_writer(writer: str) -> None:
     _heartbeat_writer = writer
 
 
+def _in_flight_payload(now: float) -> dict | None:
+    """HB-13: the heartbeat's ``in_flight`` object, or None between attempts."""
+    if _heartbeat_in_flight is None:
+        return None
+    started = _heartbeat_in_flight["started"]
+    return {
+        "path": _heartbeat_in_flight["path"],
+        "attempt": _heartbeat_in_flight["attempt"],
+        "started_at": datetime.fromtimestamp(started, tz=timezone.utc).strftime(HEARTBEAT_TIME_FORMAT),
+        "elapsed_s": max(0, int(now - started)),
+    }
+
+
 def write_heartbeat(
     phase: str,
     *,
@@ -270,6 +292,10 @@ def write_heartbeat(
     outcome (``classify_outcome``), ``null`` until the first attempt. Unlike
     the other cached fields it is updated even when the write is throttled, so
     a throttled call cannot lose the outcome: the next write carries it.
+
+    ``in_flight`` (HB-13, LAG-807) names the attempt ``process_audio`` is
+    running right now (path, attempt number, start time, elapsed seconds at
+    write time), ``null`` between attempts.
 
     ``icloud_placeholders`` (HB-14, LAG-814) is the latest
     ``count_icloud_placeholders`` result for the scan window, ``null`` until
@@ -330,6 +356,7 @@ def write_heartbeat(
         "failed_permanent": _heartbeat_context["failed_permanent"],
         "dependency_down": _heartbeat_dependency_down,  # CB-6
         "last_outcome": _heartbeat_last_outcome,  # CB-13
+        "in_flight": _in_flight_payload(now),  # HB-13
         "icloud_placeholders": _heartbeat_icloud_placeholders,  # HB-14
         "icloud_downloads_requested": _heartbeat_icloud_downloads_requested,  # IC-5
     }
@@ -1355,10 +1382,53 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     Every attempt outcome is classified (CB-1) and recorded through the circuit
     breaker (LAG-801, spec CB-*): the per-file record carries the outcome class,
     and a streak of identical timeout outcomes trips ``dependency_down``.
-    """
-    attempts = (processed := state.setdefault("processed", {})).get(file_path, {}).get("attempts", 0)
-    previous_recovery = processed.get(file_path, {}).get("recovery")
 
+    The attempt is counted at its start (CB-21, LAG-807): the incremented
+    ``attempts`` is persisted with ``status: "in_progress"`` before the
+    Superwhisper wait begins, and the outcome bookkeeping reuses that number,
+    so a crash or kickstart inside the wait cannot lose the attempt and a
+    failure cannot count it twice. The heartbeat names the attempt while it
+    runs (HB-13). A ``FatalAPIError`` is a service fault, not an attempt on
+    this file: the previous record is restored.
+    """
+    global _heartbeat_in_flight
+    processed = state.setdefault("processed", {})
+    previous = processed.get(file_path)
+    previous_recovery = (previous or {}).get("recovery")  # LAG-805: carried for _recovery_for_record
+    attempts = (previous or {}).get("attempts", 0) + 1  # CB-21: this attempt's number
+    started = time.time()
+    processed[file_path] = {
+        **(previous or {}),
+        "status": STATUS_IN_PROGRESS,
+        "attempts": attempts,
+        "attempt_started_at": _now_local().isoformat(),
+    }
+    save_state(state)  # CB-21: on disk before the wait begins
+    _heartbeat_in_flight = {"path": file_path, "attempt": attempts, "started": started}  # HB-13
+
+    try:
+        return _run_attempt(file_path, timestamp, state, attempts, previous_recovery)
+    except FatalAPIError:
+        if previous is None:
+            processed.pop(file_path, None)
+        else:
+            processed[file_path] = previous
+        save_state(state)
+        raise
+    finally:
+        _heartbeat_in_flight = None
+
+
+def _run_attempt(
+    file_path: str, timestamp, state: dict, attempts: int, previous_recovery: dict | None
+) -> tuple[bool, str | None]:
+    """One counted attempt for ``process_audio``; ``attempts`` already includes it (CB-21).
+
+    ``previous_recovery`` is the prior record's ``recovery`` value (LAG-805): a
+    retry that yields no transcript must not erase the earlier one.
+    """
+    processed = state["processed"]
+    expected_duration_ms: int | None = None
     try:
         # R3+R6: compute source audio duration for correlation + scaled poll budget.
         expected_duration_ms = get_audio_duration_ms(file_path)
@@ -1386,7 +1456,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "category": category,
             "timestamp": timestamp.isoformat(),
             "processed_at": _now_local().isoformat(),
-            "attempts": attempts + 1,
+            "attempts": attempts,  # CB-21: counted at start, never re-incremented
             "outcome": OUTCOME_SUCCESS,  # CB-7: LAG-801 attempt classification
         }
         record_attempt_result(state, OUTCOME_SUCCESS)
@@ -1401,23 +1471,23 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
             "status": "failed_permanent",
             "error": str(e),
             "processed_at": _now_local().isoformat(),
-            "attempts": attempts + 1,
+            "attempts": attempts,  # CB-21: counted at start, never re-incremented
             "expected_duration_ms": expected_duration_ms,
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
-            "recovery": _recovery_for_record(e, previous_recovery, attempts + 1),  # LAG-805
+            "recovery": _recovery_for_record(e, previous_recovery, attempts),  # LAG-805
         }
         record_attempt_result(state, outcome)
     except Exception as e:
         outcome = classify_outcome(e)
         print(f"   ❌ Failed to process {Path(file_path).name} [{outcome}]: {e}", flush=True)
         processed[file_path] = {
-            "status": "failed_permanent" if (na := attempts + 1) >= MAX_RETRIES else "failed_retry",
+            "status": "failed_permanent" if attempts >= MAX_RETRIES else "failed_retry",
             "error": str(e),
             "processed_at": _now_local().isoformat(),
-            "attempts": na,
+            "attempts": attempts,
             "expected_duration_ms": expected_duration_ms,
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
-            "recovery": _recovery_for_record(e, previous_recovery, na),  # LAG-805
+            "recovery": _recovery_for_record(e, previous_recovery, attempts),  # LAG-805
         }
         record_attempt_result(state, outcome)
         try:
@@ -1427,9 +1497,9 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
         print(
             "   "
             + (
-                f"🛑 Permanently failed after {na} attempts"
-                if na >= MAX_RETRIES
-                else f"🔄 Will retry on next cycle (attempt {na}/{MAX_RETRIES})"
+                f"🛑 Permanently failed after {attempts} attempts"
+                if attempts >= MAX_RETRIES
+                else f"🔄 Will retry on next cycle (attempt {attempts}/{MAX_RETRIES})"
             ),
             flush=True,
         )
