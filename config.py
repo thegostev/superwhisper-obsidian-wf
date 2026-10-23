@@ -129,6 +129,11 @@ SUPERWHISPER_ACCEPT_TIMEOUT: float = _cfg.get("superwhisper_accept_timeout", 600
 # false is the kill switch.
 SUPERWHISPER_AUTO_RELAUNCH: bool = bool(_cfg.get("superwhisper_auto_relaunch", True))
 SUPERWHISPER_RELAUNCH_COOLDOWN: float = _cfg.get("superwhisper_relaunch_cooldown", 3600.0)
+# Dependency-down pricing (LAG-803, spec CB-22): while the circuit breaker's
+# dependency_down flag is up, each attempt's wait is capped at this budget
+# instead of SUPERWHISPER_TIMEOUT - the LAG-802 fast-fail budget, not a 1 h
+# burn per attempt against a dead Superwhisper. 0 (or less) disables pricing.
+DEPENDENCY_DOWN_ATTEMPT_TIMEOUT: float = _cfg.get("dependency_down_attempt_timeout", 600)
 SUPERWHISPER_RECORDINGS_DIR: str = _cfg["superwhisper_recordings_dir"]
 SUPERWHISPER_POLL_INTERVAL: int = _cfg.get("superwhisper_poll_interval", 3)
 
