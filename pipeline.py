@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from config import (
     CIRCUIT_BREAKER_NOTIFY_COOLDOWN,
     CIRCUIT_BREAKER_THRESHOLD,
+    DEPENDENCY_DOWN_ATTEMPT_TIMEOUT,
     FOLDERS,
     HEARTBEAT_FILE,
     MAX_RETRIES,
@@ -729,6 +730,7 @@ def wait_for_superwhisper_result(
     since: float,
     expected_duration_ms: int | None = None,
     handed_off_at: float | None = None,
+    timeout: float | None = None,
 ) -> str:
     """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper().
 
@@ -766,6 +768,17 @@ def wait_for_superwhisper_result(
         burning SUPERWHISPER_TIMEOUT. Any session dir counts, even one the R3
         duration filter later skips: the window asks "is Superwhisper alive?",
         not "is this our result?". A window <= 0 disables the check.
+
+    CB-22 (LAG-803): ``timeout`` is this attempt's wait budget; None means
+        SUPERWHISPER_TIMEOUT. ``process_audio`` passes the fast-fail budget
+        while the circuit breaker's ``dependency_down`` flag is up.
+
+    CB-24 (LAG-803): proof of life. When the budget is below
+        SUPERWHISPER_TIMEOUT and a recording that passed the R3 duration
+        filter shows its LLM pass in flight, the deadline extends to
+        SUPERWHISPER_TIMEOUT from the start of this wait - Superwhisper is
+        demonstrably working on our file, so a stale flag must not fail a
+        healthy long meeting.
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
@@ -773,8 +786,11 @@ def wait_for_superwhisper_result(
             f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once."
         )
 
-    deadline = time.time() + SUPERWHISPER_TIMEOUT
-    print(f"   ⏳ Waiting for Superwhisper (timeout: {SUPERWHISPER_TIMEOUT}s)...", flush=True)
+    wait_started = time.time()
+    budget = SUPERWHISPER_TIMEOUT if timeout is None else timeout
+    deadline = wait_started + budget
+    full_deadline = wait_started + SUPERWHISPER_TIMEOUT  # CB-24: ceiling for a proof-of-life extension
+    print(f"   ⏳ Waiting for Superwhisper (timeout: {budget}s)...", flush=True)
 
     # CB-10: the accept window opens at handoff delivery, not at `since` (which
     # precedes the mode settle and the R7 idle wait).
@@ -890,6 +906,7 @@ def wait_for_superwhisper_result(
             if info["llm_processing_time"] is not None:
                 # LLM pass is in progress — reset stability counter, do not fast-fail.
                 stub_stability.pop(entry.name, None)
+                deadline = _extend_for_proof_of_life(deadline, full_deadline, entry.name)  # CB-24
                 continue
 
             _check_stub_abandoned(stub_stability, entry, mtime, stability_polls, file_path, entry_recovery)
@@ -899,10 +916,20 @@ def wait_for_superwhisper_result(
 
     raise _attach_recovery(
         TimeoutError(
-            f"Superwhisper did not return a result within {SUPERWHISPER_TIMEOUT}s for: {Path(file_path).name}"
+            f"Superwhisper did not return a result within {round(deadline - wait_started)}s for: {Path(file_path).name}"
         ),
         last_recovery,
     )
+
+
+def _extend_for_proof_of_life(deadline: float, full_deadline: float, recording: str) -> float:
+    """CB-24 (LAG-803): an in-flight LLM pass on our recording lifts a capped
+    deadline to the full SUPERWHISPER_TIMEOUT ceiling. Returns the deadline to
+    use; logs only on the actual extension, so once per attempt."""
+    if deadline >= full_deadline:
+        return deadline
+    print(f"   ⏱️  LLM pass in flight on {recording}: extending wait to {SUPERWHISPER_TIMEOUT}s", flush=True)
+    return full_deadline
 
 
 def _check_accept_window(
@@ -1005,8 +1032,9 @@ def _check_stub_abandoned(
 # The breaker classifies every attempt outcome and, after K identical
 # consecutive timeout outcomes, raises a dependency_down flag: state-persisted
 # (CB-9), heartbeat-visible (CB-6), and announced once per notification
-# cooldown (CB-4/CB-8). Only an actual completion clears the flag; pricing and
-# auto-relaunch on the flag are separate concerns (LAG-803, LAG-804).
+# cooldown (CB-4/CB-8). Only an actual completion clears the flag. While it is
+# up, attempts are priced at the fast-fail budget (LAG-803, CB-22..CB-24,
+# ``attempt_timeout_budget``); auto-relaunch on the flag is LAG-804.
 
 CIRCUIT_BREAKER_NOTIFY_TITLE = "Transcriber circuit breaker"
 OSASCRIPT_BIN = "/usr/bin/osascript"  # WD-8: absolute paths for every spawned binary
@@ -1044,6 +1072,27 @@ def classify_outcome(error: BaseException) -> str:
     if isinstance(error, PermanentFileError):
         return OUTCOME_PERMANENT
     return OUTCOME_TRANSIENT
+
+
+def attempt_timeout_budget(state: dict) -> float:
+    """CB-22 (LAG-803): the wait budget for the next attempt.
+
+    While the circuit breaker's ``dependency_down`` flag is up, an attempt is
+    priced at the fast-fail budget (DEPENDENCY_DOWN_ATTEMPT_TIMEOUT, default
+    600 s) instead of SUPERWHISPER_TIMEOUT - never longer than the full budget.
+    No flag (or pricing disabled with a budget <= 0) leaves the full budget.
+    The flag clears on the first completion (CB-3), so the attempt after a
+    success is priced at the full budget again (CB-23). Pure: reads state only.
+
+    Args:
+        state: The pipeline state dict (reads the ``circuit_breaker`` sub-dict).
+
+    Returns:
+        The per-attempt wait budget in seconds.
+    """
+    if not state.get("circuit_breaker", {}).get("dependency_down") or DEPENDENCY_DOWN_ATTEMPT_TIMEOUT <= 0:
+        return SUPERWHISPER_TIMEOUT
+    return min(SUPERWHISPER_TIMEOUT, DEPENDENCY_DOWN_ATTEMPT_TIMEOUT)
 
 
 def _compose_breaker_notification(state: dict) -> str:
@@ -1390,12 +1439,22 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     failure cannot count it twice. The heartbeat names the attempt while it
     runs (HB-13). A ``FatalAPIError`` is a service fault, not an attempt on
     this file: the previous record is restored.
+
+    While the breaker's ``dependency_down`` flag is up the attempt is priced
+    at the fast-fail budget instead of the full one (CB-22, LAG-803) — see
+    ``attempt_timeout_budget``.
     """
     global _heartbeat_in_flight
     processed = state.setdefault("processed", {})
     previous = processed.get(file_path)
     previous_recovery = (previous or {}).get("recovery")  # LAG-805: carried for _recovery_for_record
     attempts = (previous or {}).get("attempts", 0) + 1  # CB-21: this attempt's number
+    budget = attempt_timeout_budget(state)  # CB-22: fast-fail pricing while dependency_down
+    if budget < SUPERWHISPER_TIMEOUT:
+        print(
+            f"   ⚡ dependency_down: attempt priced at {budget}s fast-fail budget (full: {SUPERWHISPER_TIMEOUT}s)",
+            flush=True,
+        )
     started = time.time()
     processed[file_path] = {
         **(previous or {}),
@@ -1407,7 +1466,7 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
     _heartbeat_in_flight = {"path": file_path, "attempt": attempts, "started": started}  # HB-13
 
     try:
-        return _run_attempt(file_path, timestamp, state, attempts, previous_recovery)
+        return _run_attempt(file_path, timestamp, state, attempts, previous_recovery, budget)
     except FatalAPIError:
         if previous is None:
             processed.pop(file_path, None)
@@ -1420,12 +1479,19 @@ def process_audio(file_path: str, timestamp, state: dict) -> tuple[bool, str | N
 
 
 def _run_attempt(
-    file_path: str, timestamp, state: dict, attempts: int, previous_recovery: dict | None
+    file_path: str,
+    timestamp,
+    state: dict,
+    attempts: int,
+    previous_recovery: dict | None,
+    budget: float,
 ) -> tuple[bool, str | None]:
     """One counted attempt for ``process_audio``; ``attempts`` already includes it (CB-21).
 
     ``previous_recovery`` is the prior record's ``recovery`` value (LAG-805): a
     retry that yields no transcript must not erase the earlier one.
+    ``budget`` is this attempt's wait budget (CB-22, LAG-803), priced by
+    ``attempt_timeout_budget`` before the wait.
     """
     processed = state["processed"]
     expected_duration_ms: int | None = None
@@ -1444,6 +1510,7 @@ def _run_attempt(
                 since=since,
                 expected_duration_ms=expected_duration_ms,
                 handed_off_at=handed_off_at,
+                timeout=budget,
             )
         )
 
@@ -1475,6 +1542,7 @@ def _run_attempt(
             "expected_duration_ms": expected_duration_ms,
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
             "recovery": _recovery_for_record(e, previous_recovery, attempts),  # LAG-805
+            "attempt_budget_s": budget,  # CB-22: LAG-803 wait budget this attempt was priced at
         }
         record_attempt_result(state, outcome)
     except Exception as e:
@@ -1488,6 +1556,7 @@ def _run_attempt(
             "expected_duration_ms": expected_duration_ms,
             "outcome": outcome,  # CB-7: LAG-801 attempt classification
             "recovery": _recovery_for_record(e, previous_recovery, attempts),  # LAG-805
+            "attempt_budget_s": budget,  # CB-22: LAG-803 wait budget this attempt was priced at
         }
         record_attempt_result(state, outcome)
         try:
