@@ -122,6 +122,12 @@ happens inside Superwhisper; this module is the bridge.
 - **Dependencies**: `SUPERWHISPER_MODE_KEY`, `SUPERWHISPER_RECORDINGS_DIR`,
   `SUPERWHISPER_TIMEOUT`, `SUPERWHISPER_POLL_INTERVAL` from config;
   Superwhisper app installed and running
+- **Free-space gate (LAG-909)**: before the mode switch and handoff,
+  `check_disk_space()` requires `disk_min_free_gb` (default 5 GiB) free on the
+  recordings store and every output root (lowest wins). Below it, no handoff
+  happens and the attempt is recorded `failed_retry` with
+  `outcome=insufficient_disk` — never `failed_permanent`, because the remedy is
+  external to the file.
 
 **Output contract** (defined in Custom Mode prompt):
 ```
@@ -181,12 +187,14 @@ Liveness signal, read-only health assessment, and automatic recovery.
   (`--dry-run` read-only, `--heal` watchdog tick, `--notify-test`);
   `preflight.sh` (launchd exec chain guard, venv rebuild)
 - **Internal data model**: heartbeat JSON
-  (`~/.superwhisper_transcriber_heartbeat.json`, schema version 1, mtime =
-  liveness, counters = throughput); watchdog state
+  (`~/.superwhisper_transcriber_heartbeat.json`, schema version 2 — v1 plus
+  disk telemetry (LAG-909/LAG-910): `disk_free_bytes`, `disk_free_gb`,
+  `recordings_bytes`, `disk_volumes`; mtime = liveness, counters = throughput);
+  watchdog state
   `~/.superwhisper_transcriber_watchdog.json` (restart counters, shared
   notification cooldown, throughput tracker for the LAG-799/800 plateau
-  and permanent-failure-stall rules); pause sentinel
-  `~/.superwhisper_transcriber_watchdog.pause`
+  and permanent-failure-stall rules, disk level/hysteresis and page cooldown);
+  pause sentinel `~/.superwhisper_transcriber_watchdog.pause`
 - **Dependencies**: `launchctl`, `osascript` (notification), the venv
   (rebuild only); the watchdog runs under `/usr/bin/python3` and shares
   no code with the daemon — the heartbeat JSON schema is the contract

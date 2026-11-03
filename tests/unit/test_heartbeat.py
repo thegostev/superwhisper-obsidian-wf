@@ -56,7 +56,7 @@ class TestSchemaV1:
     def test_write_creates_valid_json_payload(self, heartbeat_path):
         assert pipeline.write_heartbeat("scanning", force=True) is True
         payload = read_heartbeat(heartbeat_path)
-        assert payload["schema"] == 1
+        assert payload["schema"] == pipeline.HEARTBEAT_SCHEMA_VERSION == 2
         assert payload["phase"] == "scanning"
         assert payload["pid"] == os.getpid()
 
@@ -244,11 +244,12 @@ class TestWriterField:
         with pytest.raises(ValueError, match="writer"):
             pipeline.set_heartbeat_writer("cron")
 
-    def test_schema_version_is_unchanged(self, heartbeat_path):
-        """The writer field is additive: pre-HB-12 readers must keep working,
-        so schema v1 stays v1 (the reader defaults an absent writer to daemon)."""
+    def test_schema_version_is_v2(self, heartbeat_path):
+        """The ``writer`` field is additive within its schema; the disk
+        telemetry fields (LAG-910, DS-6) bumped v1 → v2, and the reader accepts
+        both versions during a deploy window."""
         pipeline.write_heartbeat("scanning", force=True)
-        assert read_heartbeat(heartbeat_path)["schema"] == 1
+        assert read_heartbeat(heartbeat_path)["schema"] == pipeline.HEARTBEAT_SCHEMA_VERSION == 2
 
 
 class TestDaemonEntryPointDeclaresItself:

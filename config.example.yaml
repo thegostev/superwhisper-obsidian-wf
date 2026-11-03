@@ -73,6 +73,12 @@ delay_between_files: 5      # seconds between files (Superwhisper is local, no A
 max_files_per_cycle: 5      # cap per scan cycle (prevents backlog stampede)
 max_retries: 3
 
+# Pre-handoff free-space gate (LAG-909): no Superwhisper handoff while the
+# tightest volume — the recordings store or any output root — has less than
+# this many GiB free. On 2026-10-30 the volume hit 100% and the daemon kept
+# handing off; Superwhisper wrote a truncated output.wav with no meta.json.
+disk_min_free_gb: 5
+
 # Circuit breaker (LAG-801): after this many identical consecutive timeout
 # attempt outcomes with no completion in between, the daemon sets a
 # dependency_down flag (state + heartbeat) and sends one notification per

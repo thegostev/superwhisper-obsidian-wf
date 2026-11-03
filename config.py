@@ -144,6 +144,13 @@ DELAY_BETWEEN_FILES: int = _cfg.get("delay_between_files", 30)
 MAX_RETRIES: int = _cfg.get("max_retries", 3)
 MAX_FILES_PER_CYCLE: int = _cfg.get("max_files_per_cycle", 5)
 
+# Pre-handoff free-space gate (LAG-909, spec DS-1): no Superwhisper handoff
+# below this many GiB free on the recordings store or any output root. On
+# 2026-10-30 the volume hit 100% and the daemon kept handing off; Superwhisper
+# wrote a truncated output.wav with no meta.json, and state/heartbeat writes
+# failed with Errno 28.
+DISK_MIN_FREE_GB: float = float(_cfg.get("disk_min_free_gb", 5))
+
 # iCloud placeholder preflight (LAG-813, spec IC-*): before each scan, run
 # `brctl download` on `.<name>.m4a.icloud` stubs inside the scan window so
 # recordings still in iCloud land on disk instead of sitting invisible.

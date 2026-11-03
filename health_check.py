@@ -47,7 +47,11 @@ from pathlib import Path
 # Duplicated from config.py on purpose: config.py imports PyYAML, which does not
 # exist under /usr/bin/python3 (HC-11). The launchd watchdog plist passes the
 # real paths explicitly at install time; these are the human-facing defaults.
-HEARTBEAT_SCHEMA_VERSION = 1
+HEARTBEAT_SCHEMA_VERSION = 2
+# DS-6 (LAG-910, schema v2): the watchdog must keep assessing heartbeats written
+# by the previous daemon version during a deploy window — a v1 payload simply
+# has no disk fields (treated as unknown, never an error).
+SUPPORTED_HEARTBEAT_SCHEMA_VERSIONS = frozenset({1, HEARTBEAT_SCHEMA_VERSION})
 DEFAULT_MAX_AGE = 300.0
 DEFAULT_HEARTBEAT_PATH = "~/.superwhisper_transcriber_heartbeat.json"
 DEFAULT_LABEL = "com.alex.transcriber"
@@ -109,6 +113,22 @@ FP_STALL_ALERT = "permanent-failure-stall"  # TP-7: "dependency converting failu
 DEFAULT_PLATEAU_PROCESSING_AGE = 5.0 * 3600.0  # TP-4: PM left 4–6 h open; 5 h paged 26-10-08 on Oct 7 ~10:00
 DEFAULT_PLATEAU_ANY_AGE = 12.0 * 3600.0  # TP-4: any phase — an idle weekend raises this via config
 DEFAULT_FP_STALL_FLAT_AGE = 2.0 * 3600.0  # TP-2: healthy completion spacing is bounded by the 3600 s attempt deadline
+
+# Disk-pressure rules (DS-6..DS-9, LAG-910, post-mortem 2026-11-03 P0-2). On
+# 2026-10-30 the volume filled; the watchdog could not persist its own state or
+# ALARM marker (Errno 28), so the alert never reached anyone. These are
+# notification-only rules on an otherwise-healthy tick — a tight disk is not
+# evidence the daemon is dead, and restarting it cannot free space.
+GIB = 1024**3
+DISK_WARN_ALERT = "disk-low"
+DISK_CRITICAL_ALERT = "disk-critical"
+DEFAULT_DISK_WARN_GB = 5.0
+DEFAULT_DISK_CRITICAL_GB = 2.0
+# DS-8: once a level is raised it clears only a full GiB above its threshold
+# (warn clears at 6 GiB, critical steps down at 3 GiB), so a filesystem
+# oscillating between 4.9 and 5.1 GiB does not page on every tick.
+DEFAULT_DISK_HYSTERESIS_GB = 1.0
+DISK_NOTIFY_COOLDOWN = NOTIFY_COOLDOWN  # DS-9: at most one disk page per hour
 
 
 def _to_int(field: str) -> int | None:
@@ -331,7 +351,7 @@ def assess_health(
         reason = "service_not_loaded"
     elif payload is None:
         reason = "heartbeat_missing"
-    elif payload.get("schema") != HEARTBEAT_SCHEMA_VERSION:
+    elif payload.get("schema") not in SUPPORTED_HEARTBEAT_SCHEMA_VERSIONS:
         reason = "heartbeat_schema_unknown"
     elif age is not None and age > max_age:
         reason = "heartbeat_stale"
@@ -355,6 +375,94 @@ def assess_health(
         "heartbeat": payload,
         "launchctl": launchctl_status,
     }
+
+
+def disk_free_gb_from_payload(payload: dict | None) -> float | None:
+    """DS-6: free GiB named by a heartbeat; v1 and malformed values are unknown.
+
+    ``disk_free_gb`` is preferred (the writer's own GiB value); a payload that
+    only carries ``disk_free_bytes`` is converted, so an operator-composed
+    heartbeat works too. Anything else reads as unknown rather than as zero.
+    """
+    if not isinstance(payload, dict):
+        return None
+    free_gb = payload.get("disk_free_gb")
+    if isinstance(free_gb, (int, float)) and not isinstance(free_gb, bool):
+        return float(free_gb)
+    free_bytes = payload.get("disk_free_bytes")
+    if isinstance(free_bytes, (int, float)) and not isinstance(free_bytes, bool):
+        return free_bytes / GIB
+    return None
+
+
+def disk_level(
+    free_gb: float | None,
+    current: str | None = None,
+    *,
+    warn_gb: float = DEFAULT_DISK_WARN_GB,
+    critical_gb: float = DEFAULT_DISK_CRITICAL_GB,
+    hysteresis_gb: float = DEFAULT_DISK_HYSTERESIS_GB,
+) -> str | None:
+    """DS-7/DS-8: "critical" | "warn" | None, with hysteresis on the way down.
+
+    A level clears only a full hysteresis band above its threshold: warn clears
+    at ``warn_gb + hysteresis_gb`` (6 GiB by default) and critical steps down to
+    warn at ``critical_gb + hysteresis_gb`` (3 GiB). Unknown free space — a v1
+    heartbeat — keeps the current level rather than clearing an alarm on
+    missing data (DS-6).
+    """
+    if free_gb is None:
+        return current
+    if current == "critical":
+        if free_gb < critical_gb + hysteresis_gb:
+            return "critical"
+        if free_gb < warn_gb:
+            return "warn"
+        return None
+    if current == "warn":
+        if free_gb < critical_gb:
+            return "critical"
+        if free_gb < warn_gb + hysteresis_gb:
+            return "warn"
+        return None
+    if free_gb < critical_gb:
+        return "critical"
+    if free_gb < warn_gb:
+        return "warn"
+    return None
+
+
+def disk_tick(
+    state: dict,
+    payload: dict | None,
+    now: float,
+    *,
+    warn_gb: float = DEFAULT_DISK_WARN_GB,
+    critical_gb: float = DEFAULT_DISK_CRITICAL_GB,
+    hysteresis_gb: float = DEFAULT_DISK_HYSTERESIS_GB,
+    cooldown: float = DISK_NOTIFY_COOLDOWN,
+) -> tuple[str | None, str | None]:
+    """DS-7..DS-9: one disk sample on an otherwise-healthy tick.
+
+    Returns ``(action, alert)``: ``action`` is ``"notify_disk"`` when a page is
+    due, otherwise None; ``alert`` is the level's label even while the page is
+    cooling down, so the ALARM marker keeps the surface raised (AF-3).
+    Records ``disk_level`` and ``last_disk_notify_at`` on *state*. A rise in
+    level — first warn, or warn → critical — pages immediately, because a
+    volume falling further is news even inside the hourly cooldown (DS-9).
+    """
+    free_gb = disk_free_gb_from_payload(payload)
+    current = state.get("disk_level")
+    level = disk_level(free_gb, current, warn_gb=warn_gb, critical_gb=critical_gb, hysteresis_gb=hysteresis_gb)
+    state["disk_level"] = level
+    if level is None:
+        return None, None
+    alert = DISK_CRITICAL_ALERT if level == "critical" else DISK_WARN_ALERT
+    escalated = level != current and (current is None or level == "critical")
+    if escalated or (now - (state.get("last_disk_notify_at") or 0.0)) >= cooldown:
+        state["last_disk_notify_at"] = now
+        return "notify_disk", alert
+    return None, alert
 
 
 def render_plist_template(text: str, *, repo: str, home: str) -> str:
@@ -509,6 +617,12 @@ def print_report(report: dict, *, dry_run: bool = False) -> None:
             f"failed_permanent={heartbeat.get('failed_permanent')} "
             f"updated_at={heartbeat.get('updated_at')}"
         )
+        if heartbeat.get("disk_free_gb") is not None:
+            print(
+                f"  disk_free_gb={heartbeat.get('disk_free_gb'):.1f} "
+                f"disk_free_bytes={heartbeat.get('disk_free_bytes')} "
+                f"recordings_bytes={heartbeat.get('recordings_bytes')}"
+            )
     launchctl_status = report.get("launchctl")
     if launchctl_status:
         print(
@@ -536,6 +650,8 @@ def default_wd_state() -> dict:
         "last_action_at": None,
         "throughput": None,  # TP-1: heartbeat-diff tracker {state_complete, failed_permanent, phase, since_at}
         "last_throughput_notify_at": None,  # TP-4: throughput cooldown, independent of ES-3
+        "disk_level": None,  # DS-8: current disk level, "warn" | "critical" | None (hysteresis memory)
+        "last_disk_notify_at": None,  # DS-9: disk page cooldown, independent of ES-3/TP-4
     }
 
 
@@ -647,14 +763,21 @@ def _healthy_tick(
     plateau_processing_age: float,
     plateau_any_age: float,
     fp_stall_flat_age: float,
+    disk_warn_gb: float = DEFAULT_DISK_WARN_GB,
+    disk_critical_gb: float = DEFAULT_DISK_CRITICAL_GB,
+    disk_hysteresis_gb: float = DEFAULT_DISK_HYSTERESIS_GB,
 ) -> tuple[str, str | None]:
-    """Healthy-tick bookkeeping (TP-1..TP-5): diff the heartbeat counters, reset
-    the health counters, and return which action the tick takes —
+    """Healthy-tick bookkeeping (TP-1..TP-5, DS-7..DS-9): diff the heartbeat
+    counters, sample disk pressure, reset the health counters, and return which
+    action the tick takes —
 
     ("notify_recovery", None) once an escalated episode ends (ES-4: the recovery
-    notification wins over any throughput alert); ("notify_throughput", label)
-    when a throughput rule pages (TP-4: one page per hour on its own cooldown,
-    independent of ES-3); or ("record", None).
+    notification wins over any throughput or disk alert); ("notify_throughput",
+    label) when a throughput rule pages (TP-4: one page per hour on its own
+    cooldown, independent of ES-3); ("notify_disk", label) when disk pressure
+    pages (DS-9, one page per hour); or ("record", label|None) — the label, when
+    present, is a cooled-down alert that the caller still raises on the durable
+    ALARM surface (AF-3).
     """
     tracked, alert = throughput_diff(
         state.get("throughput"),
@@ -672,6 +795,17 @@ def _healthy_tick(
         state["consecutive_failures"] = 0
         return "notify_recovery", None
     state["consecutive_failures"] = 0
+    # DS-7: sample disk pressure on every healthy tick, before the alert
+    # branches, so the level/hysteresis state advances even on a tick whose
+    # page is cooled down or displaced by a throughput alert.
+    disk_action, disk_alert = disk_tick(
+        state,
+        report.get("heartbeat"),
+        now,
+        warn_gb=disk_warn_gb,
+        critical_gb=disk_critical_gb,
+        hysteresis_gb=disk_hysteresis_gb,
+    )
     if alert:
         if (now - (state.get("last_throughput_notify_at") or 0.0)) >= NOTIFY_COOLDOWN:
             state["last_throughput_notify_at"] = now
@@ -680,7 +814,9 @@ def _healthy_tick(
         # holding during the page cooldown keeps its alert label on the tick
         # decision so the tick's ALARM-marker sync keeps the surface raised.
         return "record", alert
-    return "record", None
+    if disk_action == "notify_disk":
+        return "notify_disk", disk_alert
+    return "record", disk_alert
 
 
 def _failure_ladder(
@@ -741,6 +877,9 @@ def decide_action(
     plateau_processing_age: float = DEFAULT_PLATEAU_PROCESSING_AGE,
     plateau_any_age: float = DEFAULT_PLATEAU_ANY_AGE,
     fp_stall_flat_age: float = DEFAULT_FP_STALL_FLAT_AGE,
+    disk_warn_gb: float = DEFAULT_DISK_WARN_GB,
+    disk_critical_gb: float = DEFAULT_DISK_CRITICAL_GB,
+    disk_hysteresis_gb: float = DEFAULT_DISK_HYSTERESIS_GB,
 ) -> dict:
     """Pure decision ladder (WD-1..WD-12, PF-14, PF-16 reader half, ES-3/ES-4, TP-1..TP-8).
 
@@ -795,11 +934,16 @@ def decide_action(
             plateau_processing_age=plateau_processing_age,
             plateau_any_age=plateau_any_age,
             fp_stall_flat_age=fp_stall_flat_age,
+            disk_warn_gb=disk_warn_gb,
+            disk_critical_gb=disk_critical_gb,
+            disk_hysteresis_gb=disk_hysteresis_gb,
         )
         if kind == "notify_recovery":
             return finish("notify_recovery", notify=True)
         if kind == "notify_throughput":
             return finish("notify_throughput", notify=True, alert=alert)
+        if kind == "notify_disk":
+            return finish("notify_disk", notify=True, alert=alert)
         return finish("record", alert=alert)
 
     # TP-5: every tick that does not observe a fresh healthy heartbeat is an
@@ -1088,11 +1232,38 @@ def _throughput_message(decision: dict, now: float) -> str:
     )
 
 
+def _disk_message(report: dict, decision: dict) -> str:
+    """DS-9: compose the disk-pressure page with the numbers to act on.
+
+    Names the current free space (GiB and raw bytes), the threshold that
+    tripped, and the recordings-store size — the three facts an operator needs
+    to decide whether to archive recordings or clear the volume.
+    """
+    heartbeat = report.get("heartbeat") or {}
+    free_bytes = heartbeat.get("disk_free_bytes")
+    free_gb = heartbeat.get("disk_free_gb")
+    if free_gb is None and isinstance(free_bytes, (int, float)) and not isinstance(free_bytes, bool):
+        free_gb = free_bytes / GIB
+    recordings = heartbeat.get("recordings_bytes")
+    critical = decision.get("alert") == DISK_CRITICAL_ALERT
+    threshold = DEFAULT_DISK_CRITICAL_GB if critical else DEFAULT_DISK_WARN_GB
+    severity = "critical" if critical else "warning"
+    free_text = f"{free_gb:.1f} GiB" if isinstance(free_gb, (int, float)) else "unknown"
+    bytes_text = f"{int(free_bytes):,} bytes" if isinstance(free_bytes, (int, float)) else "unknown bytes"
+    recordings_text = f"{recordings / GIB:.1f} GiB" if isinstance(recordings, (int, float)) else "unknown"
+    return (
+        f"Transcriber disk {severity}: {free_text} free ({bytes_text}) — threshold {threshold:.1f} GiB; "
+        f"recordings store {recordings_text}. Free space on the Data volume or the daemon cannot hand off."
+    )
+
+
 def _escalation_message(decision: dict, report: dict, now: float) -> str:
-    """Compose the notification text (ES-8, TP-7): state the reason, name the
-    failure mode, and record any interpreter repoint."""
+    """Compose the notification text (ES-8, TP-7, DS-9): state the reason, name
+    the failure mode, and record any interpreter repoint."""
     if decision["action"] == "notify_recovery":
         return "Transcriber health restored — heartbeat is fresh again."
+    if decision.get("alert") in (DISK_WARN_ALERT, DISK_CRITICAL_ALERT):
+        return _disk_message(report, decision)
     if decision.get("alert") in (PLATEAU_ALERT, FP_STALL_ALERT):
         # The 26-10-08 page would have said exactly what to try (relaunch the app).
         return _throughput_message(decision, now)
@@ -1144,13 +1315,19 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         plateau_processing_age=args.plateau_processing_age,
         plateau_any_age=args.plateau_any_age,
         fp_stall_flat_age=args.fp_stall_flat_age,
+        disk_warn_gb=args.disk_warn_gb,
+        disk_critical_gb=args.disk_critical_gb,
+        disk_hysteresis_gb=args.disk_hysteresis_gb,
     )
     print(f"watchdog: {decision['action']}")
     attach_plist_drift(report, args)  # WD-14: reported every cycle, never acted on
     print_report(report)
     if decision.get("alert"):
         print(f"alert: {decision['alert']}")
-        print(_throughput_message(decision, now))
+        if decision["alert"] in (DISK_WARN_ALERT, DISK_CRITICAL_ALERT):
+            print(_disk_message(report, decision))
+        else:
+            print(_throughput_message(decision, now))
 
     if args.dry_run:
         print("dry-run: no actions taken")
@@ -1213,7 +1390,7 @@ def wait_for_fresh_heartbeat(
             mtime = None
         if mtime is not None and mtime >= since - MTIME_SLACK:
             payload, _age, reason = read_heartbeat(str(target))
-            if reason is None and payload is not None and payload.get("schema") == HEARTBEAT_SCHEMA_VERSION:
+            if reason is None and payload is not None and payload.get("schema") in SUPPORTED_HEARTBEAT_SCHEMA_VERSIONS:
                 return payload, "fatal" if payload.get("phase") == "fatal" else "fresh"
         if time.time() >= deadline:
             return None, "timeout"
@@ -1335,6 +1512,24 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_FP_STALL_FLAT_AGE,
         help="flatness required before a failed_permanent rise counts as the stall (TP-2, LAG-800)",
+    )
+    parser.add_argument(
+        "--disk-warn-gb",
+        type=float,
+        default=DEFAULT_DISK_WARN_GB,
+        help="free-space warning threshold in GiB (DS-7, LAG-910)",
+    )
+    parser.add_argument(
+        "--disk-critical-gb",
+        type=float,
+        default=DEFAULT_DISK_CRITICAL_GB,
+        help="free-space critical threshold in GiB (DS-7, LAG-910)",
+    )
+    parser.add_argument(
+        "--disk-hysteresis-gb",
+        type=float,
+        default=DEFAULT_DISK_HYSTERESIS_GB,
+        help="GiB a disk level must clear above its threshold before stepping down (DS-8, LAG-910)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="report only; never restart, write state, or notify (HC-9)"
