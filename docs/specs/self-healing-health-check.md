@@ -34,7 +34,7 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
 - **HB-2** The heartbeat write MUST be atomic: a temporary file in the same directory, then `os.replace`.
 - **HB-3** A failed heartbeat write MUST NOT terminate or interrupt the daemon. It MUST emit a `⚠️` warning and continue.
 - **HB-4** The heartbeat file MUST reside outside the repository working tree.
-- **HB-5** The heartbeat MUST carry a `schema` integer. A reader encountering an unrecognised `schema` MUST report `heartbeat_schema_unknown` and MUST NOT treat the service as healthy.
+- **HB-5** The heartbeat MUST carry a `schema` integer. A reader MUST recognise schema versions 1 and 2 (DS-6 added the disk fields in v2) and MUST keep assessing a v1 payload during a deploy window, treating its absent disk fields as unknown. A reader encountering an unrecognised `schema` MUST report `heartbeat_schema_unknown` and MUST NOT treat the service as healthy.
 - **HB-6** The heartbeat MUST include the current `failed_permanent` count.
 - **HB-7** The daemon SHOULD write a forced heartbeat at each of the fixed startup milestones — configuration loaded, state loaded, transcript index built, scan loop entered — before the scan loop begins, so that a slow `build_transcript_index()` over iCloud-backed folders is not mistaken for a dead daemon. There is deliberately no `interpreter start` milestone: the writer runs under the daemon's venv interpreter, which by construction cannot execute until the preflight (PF-2) has validated or rebuilt it. The index build SHOULD also emit throttled heartbeats during the walk (HB-8), so a build longer than the staleness threshold cannot straddle the surrounding milestones.
 - **HB-8** The writer SHOULD throttle itself to at most one write per 15 seconds unless the caller forces the write, so that call sites need not reason about write amplification.
@@ -67,6 +67,25 @@ Out of scope: rotation of the daemon log, reconciliation of vault outputs agains
 `writer` is absent only in heartbeats written before HB-12; readers MUST treat an absent `writer` as `daemon` (the pre-HB-12 behaviour), because every post-HB-12 writer sets the field and defaults to `manual`.
 
 `fatal_reason` is present only when `phase` is `fatal`. `phase` and `cycle` are otherwise diagnostic only, and readers MUST NOT vary their staleness threshold by `phase` — except that `phase: "fatal"` carries normative meaning: it marks the service unrecoverable by restart (PF-16).
+
+### Heartbeat schema, version 2
+
+Version 2 adds the disk telemetry of DS-6 (LAG-910). Every v1 field keeps its meaning; the additions are:
+
+```json
+{
+  "schema": 2,
+  "disk_free_bytes": 5153960755,
+  "disk_free_gb": 4.8,
+  "recordings_bytes": 77309411328,
+  "disk_volumes": {
+    "recordings": {"path": "/…/superwhisper/recordings", "free_bytes": 5153960755, "free_gb": 4.8},
+    "output:WORK": {"path": "/…/VaultA/raw/Meetings", "free_bytes": 5153960755, "free_gb": 4.8}
+  }
+}
+```
+
+`disk_free_bytes`/`disk_free_gb` are the lowest free space across the recordings store and every output root; `disk_volumes` carries the per-role detail. `recordings_bytes` is the total size of the recordings store. Any value the writer could not determine MUST be `null`, never `0`.
 
 ---
 
@@ -259,6 +278,23 @@ Root cause LAG-756, post-mortem 26-10-08 recommendation 8. Just Press Record rec
 - **IC-4** The preflight MUST NOT terminate or interrupt the scan cycle: a `brctl` timeout, non-zero exit, missing binary or any other error MUST be logged with a `⚠️` warning and counted, and the cycle MUST continue. A missing or unrunnable `brctl` MUST stop further calls for that pass.
 - **IC-5** When stubs are present the daemon MUST log one summary line with the counts (found, requested, in cooldown, deferred, timed out, failed); with no stubs it MUST stay silent. The heartbeat MUST carry `icloud_downloads_requested` — the number of `brctl download` requests issued by the latest pass (default `0`), cached by the writer like `dependency_down` (CB-6). The field is additive with schema version 1.
 - **IC-6** A dry-run mode (`icloud_preflight_dry_run` in config, `--dry-run` on the CLI) MUST log what would be requested and run no `brctl` command. `icloud_preflight.py` MUST be runnable as a CLI with explicit `--folder` arguments and no config file, exiting 2 when `brctl` cannot be run, so the `brctl` dependency on the user session can be checked from a launchd context.
+
+---
+
+## DS — Disk safety (LAG-909/LAG-910)
+
+Post-mortem 2026-11-03, recommendation P0-2. On 2026-10-30 the Data volume hit 100%: the daemon kept handing off, Superwhisper wrote a truncated 197,300,224-byte `output.wav` with no `meta.json`, and heartbeat/state writes failed with `Errno 28` (258 occurrences). The daemon now refuses the handoff below a free-space floor, and the watchdog sees disk pressure in the heartbeat instead of discovering it only when it can no longer write its own state.
+
+- **DS-1** The daemon MUST probe free space on the recordings store and on every configured output root. The effective free space is the minimum across those probes ("lowest wins"), so a tight vault volume blocks the handoff even when the recordings volume has room. Each probe MUST resolve to the nearest existing ancestor of its path, because the first date folder of the day and an on-demand output root may not exist yet; a path that cannot be probed MUST read as unknown, never as zero.
+- **DS-2** Before any Superwhisper handoff the daemon MUST compare the effective free space with `disk_min_free_gb` (default 5 GiB) and MUST NOT switch mode or open a file while it is below the floor. The refusal is an `InsufficientDiskError`; no `open -a Superwhisper` call may be made.
+- **DS-3** A disk-gate refusal MUST be recorded as `failed_retry` with `outcome=insufficient_disk`, and MUST NOT become `failed_permanent` regardless of the attempt count. The remedy is external (free the volume); the audio is not bad, and a multi-day full-disk window must not age the file into permanent exclusion.
+- **DS-4** A disk-gate refusal MUST NOT overwrite an earlier attempt's `recovery` transcript; it produces no new transcript of its own.
+- **DS-5** A failed disk probe MUST NOT stop or interrupt the daemon. The cycle continues and the file is retried on the next scan.
+- **DS-6** Heartbeat schema version 2 MUST carry the disk telemetry: `disk_free_bytes` (effective free space, integer), `disk_free_gb` (the same value in GiB), `recordings_bytes` (total size of the recordings store; the walk MAY be cached for up to 60 s) and `disk_volumes` (`role → {path, free_bytes, free_gb}`, covering `recordings` and every `output:<CATEGORY>`). A value the writer could not determine MUST be `null`. Readers MUST accept schema 1 — whose absent disk fields mean unknown — and MUST NOT treat missing fields as an error.
+- **DS-7** The watchdog MUST raise a warning below 5 GiB free and a critical alert below 2 GiB free. Both thresholds MUST be explicit configuration inputs (`--disk-warn-gb`, `--disk-critical-gb`).
+- **DS-8** A raised disk level MUST clear only after free space exceeds its threshold by the hysteresis band (default 1 GiB): a warning clears at `warn + 1` GiB (6 GiB) and a critical alert steps down to warning at `critical + 1` GiB (3 GiB). A filesystem oscillating between 4.9 and 5.1 GiB MUST NOT flap. Unknown free space MUST keep the current level rather than clear an alarm on missing data.
+- **DS-9** Disk alerts MUST be notification-only — they MUST NOT restart or kickstart the daemon, whose liveness is unaffected by a tight disk. They MUST page at most once per hour (`last_disk_notify_at`, independent of the ES-3/TP-4 cooldowns), MUST page immediately when the level rises (first warning, or warning → critical), and the message MUST name the current free space in GiB and bytes, the threshold that tripped, and the recordings-store size. A disk label MUST be carried on the tick decision while the page is cooling down, so the ALARM marker stays raised (AF-3).
+
 ---
 
 ## Traceability
@@ -332,6 +368,11 @@ Every requirement in this document has a row naming the test or review that veri
 | IC-3, IC-4 | `tests/unit/test_icloud_preflight.py` — `TestRequestDownloads` (argv, timeout, cooldown, cap, missing binary, non-zero exit) |
 | IC-5 | `tests/unit/test_icloud_preflight.py` — `TestSummaryAndHeartbeat` (silent no-op, summary line, heartbeat field) |
 | IC-6 | `tests/unit/test_icloud_preflight.py` — `TestCli` (dry-run, real subprocess smoke with a stub `brctl`, exit 2); the `brctl` check from the launchd context is manual on the Mac |
+| DS-1, DS-2, DS-5 | `tests/unit/test_pipeline_disk.py` — `TestDiskProbe` (roles, existing-ancestor probe, unprobeable = unknown), `TestFreeSpaceGate` (4.99/5.00/5.01 GiB boundaries, lowest root wins, message) (LAG-909) |
+| DS-3, DS-4 | `tests/unit/test_pipeline_disk.py` — `TestNoHandoffOnLowDisk` (no mode switch or handoff, `failed_retry` + `insufficient_disk`, never permanent across `MAX_RETRIES + 1` attempts) (LAG-909) |
+| DS-6 | `tests/unit/test_pipeline_disk.py` — `TestHeartbeatDiskTelemetry` (schema 2, `disk_free_bytes`/`disk_free_gb`/`recordings_bytes`/`disk_volumes`); `tests/unit/test_health_disk.py` — `TestSchemaCompatibility` (v1 accepted, unknown schema rejected) |
+| DS-7, DS-8 | `tests/unit/test_health_disk.py` — `TestDiskLevel` (4/6/1.9 GiB, hysteresis both directions, unknown keeps level), `TestDiskTick` (one page, escalation, hourly reminder) |
+| DS-9 | `tests/unit/test_health_disk.py` — `TestDiskNotification` (message names free GiB, threshold, recordings size), `TestHealthyTickWiring` (`notify_disk` from a healthy verdict) |
 
 ## References
 

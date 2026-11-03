@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from config import (
     CIRCUIT_BREAKER_NOTIFY_COOLDOWN,
     CIRCUIT_BREAKER_THRESHOLD,
     DEPENDENCY_DOWN_ATTEMPT_TIMEOUT,
+    DISK_MIN_FREE_GB,
     FOLDERS,
     HEARTBEAT_FILE,
     MAX_RETRIES,
@@ -38,7 +40,7 @@ TIMESTAMP_FORMAT = "%y-%m-%d %H.%M"
 # code executing inside the running daemon, so a dyld-aborting interpreter can
 # never produce one. Staleness of the FILE MTIME (not the embedded timestamps)
 # is what health_check.py judges; updated_at/started_at are diagnostic.
-HEARTBEAT_SCHEMA_VERSION = 1
+HEARTBEAT_SCHEMA_VERSION = 2  # v2 (LAG-910, DS-6): adds disk_free_bytes/recordings_bytes/disk_free_gb/disk_volumes
 HEARTBEAT_MIN_INTERVAL = 15.0  # HB-8: self-throttle so call sites need not reason about write amplification
 HEARTBEAT_WRITE_FAILURE_WARN_THRESHOLD = 4  # HB-10: consecutive failures before the runbook warning
 HEARTBEAT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # HB-9: RFC 3339 UTC with explicit offset
@@ -211,6 +213,140 @@ def save_state(state):
             tmp.unlink(missing_ok=True)
 
 
+# ── Disk safety (LAG-909/LAG-910, spec DS-*) ──────────────────────────────
+GIB = 1024**3
+
+# The recordings-store size walk is the expensive part of a disk snapshot and is
+# diagnostic only; 60 s keeps a 15 s heartbeat throttle from walking the store
+# while staying far inside the watchdog's hourly disk-alert cooldown.
+RECORDINGS_BYTES_TTL = 60.0
+_recordings_bytes_cache: dict | None = None
+
+
+class InsufficientDiskError(Exception):
+    """Free space below ``disk_min_free_gb``: no handoff this attempt (DS-2).
+
+    Carries the snapshot that tripped the gate so the state record can name the
+    free space and the floor without re-probing the filesystem.
+    """
+
+    def __init__(self, message: str, *, snapshot: dict):
+        super().__init__(message)
+        self.snapshot = snapshot
+
+    @property
+    def free_gb(self) -> float | None:
+        return self.snapshot.get("min_free_gb")
+
+
+def _disk_anchor(path: str) -> Path | None:
+    """Nearest existing ancestor of *path* — what ``disk_usage`` can probe (DS-5).
+
+    The gate must work before the first date folder of the day exists, and an
+    output root may be created on demand, so walking up to an existing parent is
+    expected rather than an error.
+    """
+    candidate = Path(path).expanduser()
+    for parent in (candidate, *candidate.parents):
+        try:
+            if parent.exists():
+                return parent
+        except OSError:
+            continue
+    return None
+
+
+def disk_free_bytes(path: str) -> int | None:
+    """Free bytes on the volume holding *path*, or None when unknowable (DS-5)."""
+    anchor = _disk_anchor(path)
+    if anchor is None:
+        return None
+    try:
+        return shutil.disk_usage(anchor).free
+    except OSError:
+        return None
+
+
+def disk_roots() -> dict[str, str]:
+    """Probe roles → paths: the recordings store plus every output root (DS-1)."""
+    roots = {"recordings": SUPERWHISPER_RECORDINGS_DIR}
+    for category, folder in FOLDERS.items():
+        roots[f"output:{category}"] = folder
+    return roots
+
+
+def recordings_store_bytes(path: str | None = None, *, now: float | None = None) -> int | None:
+    """Bytes under the recordings store, cached for ``RECORDINGS_BYTES_TTL`` (DS-6).
+
+    ``None`` means the walk failed; the heartbeat carries it as unknown rather
+    than as a misleading zero.
+    """
+    global _recordings_bytes_cache
+    path = SUPERWHISPER_RECORDINGS_DIR if path is None else path
+    now = time.time() if now is None else now
+    if (
+        _recordings_bytes_cache is not None
+        and _recordings_bytes_cache.get("path") == path
+        and (now - _recordings_bytes_cache.get("at", 0.0)) < RECORDINGS_BYTES_TTL
+    ):
+        return _recordings_bytes_cache.get("bytes")
+    try:
+        total = sum(os.path.getsize(os.path.join(root, name)) for root, _dirs, files in os.walk(path) for name in files)
+    except OSError:
+        total = None
+    _recordings_bytes_cache = {"path": path, "at": now, "bytes": total}
+    return total
+
+
+def disk_snapshot(*, roots: dict[str, str] | None = None, now: float | None = None) -> dict:
+    """Probe every disk root once (DS-1/DS-5/DS-6).
+
+    "Lowest wins": free space is the minimum across the recordings store and
+    all output roots, so a tight vault volume blocks the handoff even when the
+    recordings volume has room. Unprobeable roots are reported as ``None`` and
+    never counted as zero — an unreadable path must not stop the service.
+    """
+    roots = disk_roots() if roots is None else roots
+    volumes: dict[str, dict] = {}
+    free_values: list[int] = []
+    for role, path in roots.items():
+        free = disk_free_bytes(path)
+        volumes[role] = {
+            "path": path,
+            "free_bytes": free,
+            "free_gb": None if free is None else free / GIB,
+        }
+        if free is not None:
+            free_values.append(free)
+    lowest = min(free_values) if free_values else None
+    return {
+        "volumes": volumes,
+        "min_free_bytes": lowest,
+        "min_free_gb": None if lowest is None else lowest / GIB,
+        "recordings_bytes": recordings_store_bytes(now=now),
+    }
+
+
+def check_disk_space(*, min_free_gb: float | None = None) -> dict:
+    """DS-2: refuse the handoff while the tightest root is below the floor.
+
+    Raises:
+        InsufficientDiskError: the lowest free space is below
+            ``disk_min_free_gb``. The caller records ``failed_retry`` with
+            ``outcome=insufficient_disk`` and retries next cycle.
+    """
+    floor_gb = DISK_MIN_FREE_GB if min_free_gb is None else min_free_gb
+    snapshot = disk_snapshot()
+    free_bytes = snapshot["min_free_bytes"]
+    if free_bytes is not None and free_bytes < floor_gb * GIB:
+        raise InsufficientDiskError(
+            f"free space {snapshot['min_free_gb']:.2f} GiB is below disk_min_free_gb={floor_gb:.2f} GiB"
+            " — no Superwhisper handoff this attempt",
+            snapshot=snapshot,
+        )
+    return snapshot
+
+
 def set_heartbeat_writer(writer: str) -> None:
     """Declare which process writes heartbeats from here on (HB-12).
 
@@ -345,6 +481,7 @@ def write_heartbeat(
         _heartbeat_context["state_complete"] = state_complete
     if dependency_down is not None:
         _heartbeat_dependency_down = dependency_down
+    disk = disk_snapshot(now=now)  # DS-6: schema v2 disk telemetry
     payload = {
         "schema": HEARTBEAT_SCHEMA_VERSION,
         "pid": os.getpid(),
@@ -360,6 +497,14 @@ def write_heartbeat(
         "in_flight": _in_flight_payload(now),  # HB-13
         "icloud_placeholders": _heartbeat_icloud_placeholders,  # HB-14
         "icloud_downloads_requested": _heartbeat_icloud_downloads_requested,  # IC-5
+        # DS-6 (LAG-909/LAG-910): disk telemetry, schema v2. ``disk_free_*`` is
+        # the lowest across the recordings store and all output roots;
+        # ``disk_volumes`` carries the per-role detail the operator needs to
+        # know which volume is tight. None means unprobeable — never zero.
+        "disk_free_bytes": disk["min_free_bytes"],
+        "disk_free_gb": disk["min_free_gb"],
+        "recordings_bytes": disk["recordings_bytes"],
+        "disk_volumes": disk["volumes"],
     }
     if fatal_reason is not None:
         payload["fatal_reason"] = fatal_reason
@@ -1051,6 +1196,10 @@ OUTCOME_NOT_ACCEPTING = "superwhisper-not-accepting"
 OUTCOME_PERMANENT = "permanent"
 OUTCOME_TRANSIENT = "transient"
 OUTCOME_SUCCESS = "success"
+# DS-2 (LAG-909): the pre-handoff free-space gate refused the handoff. Not a
+# dependency-down signal — Superwhisper is fine, the disk is not — so it resets
+# the breaker streak like any other non-dependency outcome.
+OUTCOME_INSUFFICIENT_DISK = "insufficient_disk"
 # CB-12: outcome classes that signal a down dependency. Each drives its own
 # identical-outcome streak; switching between them restarts the streak.
 DEPENDENCY_DOWN_OUTCOMES = frozenset({OUTCOME_TIMEOUT, OUTCOME_NOT_ACCEPTING})
@@ -1501,6 +1650,7 @@ def _run_attempt(
         if expected_duration_ms:
             print(f"   📏 Source audio duration: {expected_duration_ms} ms", flush=True)
 
+        check_disk_space()  # DS-2: no Superwhisper handoff below the floor
         since = time.time()
         switch_superwhisper_mode()
         handed_off_at = handoff_to_superwhisper(file_path)  # CB-10: accept window opens here
@@ -1531,6 +1681,28 @@ def _run_attempt(
         return True, category
     except FatalAPIError:
         raise
+    except InsufficientDiskError as e:
+        # DS-3 (LAG-909): environmental, never permanent. Fixing the disk is the
+        # remedy, so a long low-disk window must not age the file into
+        # failed_permanent (the generic branch would, at MAX_RETRIES).
+        outcome = OUTCOME_INSUFFICIENT_DISK
+        print(
+            f"   💾 Disk gate for {Path(file_path).name}: {e} — will retry on next cycle "
+            f"(attempt {attempts}; never escalates to permanent)",
+            flush=True,
+        )
+        processed[file_path] = {
+            "status": "failed_retry",  # DS-3: never failed_permanent
+            "error": str(e),
+            "processed_at": _now_local().isoformat(),
+            "attempts": attempts,  # CB-21: counted at start, never re-incremented
+            "expected_duration_ms": expected_duration_ms,
+            "outcome": outcome,
+            "recovery": previous_recovery,  # DS-4: keep an earlier transcript, never invent one
+            "disk_free_gb": e.free_gb,
+            "attempt_budget_s": budget,  # CB-22: priced at attempt start like every attempt
+        }
+        record_attempt_result(state, outcome)
     except PermanentFileError as e:
         outcome = classify_outcome(e)
         print(f"   🛑 Permanent error for {Path(file_path).name}: {e}", flush=True)
