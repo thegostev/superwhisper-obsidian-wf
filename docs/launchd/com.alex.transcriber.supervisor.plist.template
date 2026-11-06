@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    System-domain absence supervisor template (LAG-906, spec SUP-*).
+
+    The transcriber and its watchdog are per-user LaunchAgents: after a reboot
+    with nobody logged in, neither exists and nothing observes the absence
+    (the 2026-10-30 → 11-03 outage, 3.7 days). This job is a LaunchDaemon, so
+    it starts at boot before any user logs in. It observes only — it never
+    tries to run Superwhisper headless.
+
+    Install as root (the system domain is not writable by the user):
+
+      sudo cp <rendered template> /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+      sudo chown root:wheel /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+      sudo chmod 644 /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+      sudo plutil -lint /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+      sudo launchctl bootstrap system /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+      sudo launchctl print system/com.alex.transcriber.supervisor
+
+    RunAtLoad + StartInterval, and NO KeepAlive: KeepAlive on a run-once script
+    is an instant infinite loop (WD-1/WD-11 discipline). StartInterval 60 keeps
+    the two-check alert latency under 120 s (SUP-3).
+
+    TCC (same grant as WD-13): a system daemon reading a script under
+    ~/Documents is subject to TCC, and at boot no prompt can be shown. Either
+    install a copy of supervisor.py outside the protected tree and point
+    ProgramArguments at it, or grant Full Disk Access to /usr/bin/python3.
+    The supervisor only reads the heartbeat file and ~/.superwhisper_transcriber_supervisor.json,
+    so /usr/local/libexec/superwhisper/ is the recommended install location.
+
+    The status file is ~/.superwhisper_transcriber_supervisor.json (SUP-5).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alex.transcriber.supervisor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__REPO__/supervisor.py</string>
+        <string>--label</string>
+        <string>com.alex.transcriber</string>
+        <string>--heartbeat</string>
+        <string>__HOME__/.superwhisper_transcriber_heartbeat.json</string>
+        <string>--state</string>
+        <string>__HOME__/.superwhisper_transcriber_supervisor.json</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- A LaunchDaemon's HOME defaults to /var/root. The supervisor reads
+             and writes the console user's files, so HOME must be the user's. -->
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/superwhisper-transcriber/supervisor.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/superwhisper-transcriber/supervisor.log</string>
+</dict>
+</plist>

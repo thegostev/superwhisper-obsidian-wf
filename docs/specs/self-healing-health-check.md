@@ -295,6 +295,18 @@ Post-mortem 2026-11-03, recommendation P0-2. On 2026-10-30 the Data volume hit 1
 - **DS-8** A raised disk level MUST clear only after free space exceeds its threshold by the hysteresis band (default 1 GiB): a warning clears at `warn + 1` GiB (6 GiB) and a critical alert steps down to warning at `critical + 1` GiB (3 GiB). A filesystem oscillating between 4.9 and 5.1 GiB MUST NOT flap. Unknown free space MUST keep the current level rather than clear an alarm on missing data.
 - **DS-9** Disk alerts MUST be notification-only — they MUST NOT restart or kickstart the daemon, whose liveness is unaffected by a tight disk. They MUST page at most once per hour (`last_disk_notify_at`, independent of the ES-3/TP-4 cooldowns), MUST page immediately when the level rises (first warning, or warning → critical), and the message MUST name the current free space in GiB and bytes, the threshold that tripped, and the recordings-store size. A disk label MUST be carried on the tick decision while the page is cooling down, so the ALARM marker stays raised (AF-3).
 
+## SUP — System-domain absence supervisor (LAG-906)
+
+Post-mortem 2026-11-03, recommendation P0-1. Both the daemon and the watchdog are per-user LaunchAgents (`RunAtLoad`). After the 2026-10-30 reboot to the login window, neither ran for 3.7 days: there was no scan, no watchdog, and no alert, because nothing in the system observed that the jobs were never loaded. `supervisor.py` is a LaunchDaemon that observes the GUI domain from the system domain; it never attempts to run Superwhisper headless, because Superwhisper needs a GUI session and the daemon needs the user's TCC grants.
+
+- **SUP-1** The supervisor MUST run as a system-domain LaunchDaemon (`/Library/LaunchDaemons`) so it starts at boot before any user logs in. It MUST observe and record only; it MUST NOT launch, bootstrap, or heal the daemon, and it MUST NOT start Superwhisper.
+- **SUP-2** Each tick MUST resolve exactly one state from the console user (`scutil show State:/Users/ConsoleUser`), the job's presence (`launchctl print gui/<uid>/<label>`), and the heartbeat file's mtime: `NO_CONSOLE_USER` (no real logged-in user: login window, `_mbsetupuser`, root, or UID 0), `ABSENT` (a console user exists but the job is not loaded), `LOADED_STALE` (loaded, but the heartbeat is missing or older than `--max-age`, default 600 s), or `HEALTHY` (loaded with a fresh heartbeat). A heartbeat exactly at the threshold is still healthy.
+- **SUP-3** Two consecutive `NO_CONSOLE_USER`/`ABSENT` observations MUST raise exactly one notification. The two states share one counter, so a boot that starts at the login window and later observes a missing job is one episode. With `StartInterval` 60 s the alert MUST fire within 120 s of the first absence.
+- **SUP-4** The alert MUST NOT be repeated while the absence episode continues. A `HEALTHY` or `LOADED_STALE` observation ends the episode and resets the counter and `alerting`; the next absence episode alerts again on its second check. `LOADED_STALE` is not an absence: staleness is the per-user watchdog's responsibility.
+- **SUP-5** Each tick MUST write the status file `~/.superwhisper_transcriber_supervisor.json` atomically (temp file + `os.replace`), schema 1, carrying at least: `state`, `label`, `console_user`, `console_uid`, `job_loaded` (`null` when the job was not probed), `heartbeat_age_seconds`, `consecutive_absence_checks`, `alerting`, `last_alert_at`, and `observed_at` as RFC 3339 UTC timestamps. A missing or corrupt status file MUST read as empty state, never as an error, and a failed status write MUST NOT interrupt the tick.
+- **SUP-6** The committed plist template MUST be a system-domain LaunchDaemon with `RunAtLoad`, `StartInterval` 60, and NO `KeepAlive` (an instant infinite loop on a run-once script), run `/usr/bin/python3` with stdlib only, pass the label, heartbeat, and status paths explicitly, and set `HOME` to the console user's home (a LaunchDaemon's `HOME` otherwise defaults to `/var/root`). Installation requires root, so it is a manual deployment step.
+- **SUP-7** `--dry-run` MUST observe and report without notifying or writing the status file. A failed console-user or `launchctl` probe MUST exit 3 without alerting: an unreadable probe is not evidence of absence.
+
 ---
 
 ## Traceability
@@ -373,6 +385,11 @@ Every requirement in this document has a row naming the test or review that veri
 | DS-6 | `tests/unit/test_pipeline_disk.py` — `TestHeartbeatDiskTelemetry` (schema 2, `disk_free_bytes`/`disk_free_gb`/`recordings_bytes`/`disk_volumes`); `tests/unit/test_health_disk.py` — `TestSchemaCompatibility` (v1 accepted, unknown schema rejected) |
 | DS-7, DS-8 | `tests/unit/test_health_disk.py` — `TestDiskLevel` (4/6/1.9 GiB, hysteresis both directions, unknown keeps level), `TestDiskTick` (one page, escalation, hourly reminder) |
 | DS-9 | `tests/unit/test_health_disk.py` — `TestDiskNotification` (message names free GiB, threshold, recordings size), `TestHealthyTickWiring` (`notify_disk` from a healthy verdict) |
+| SUP-1, SUP-6 | `tests/unit/test_supervisor.py` — `TestSupervisorTemplate` (label, `RunAtLoad`, `StartInterval` 60, no `KeepAlive`, system python, explicit paths, placeholders); installing the LaunchDaemon and the login-window reboot are manual |
+| SUP-2 | `tests/unit/test_supervisor.py` — `TestParseConsoleUser`, `TestClassify`, `TestHeartbeatAge` (four states, threshold boundary, missing/clamped heartbeat) |
+| SUP-3, SUP-4 | `tests/unit/test_supervisor.py` — `TestAbsenceDecision` (two-check threshold, shared counter across absence states, fire-once, recovery reset, new-episode re-alert), `TestRunTick.test_two_absences_write_status_and_alert_once` |
+| SUP-5 | `tests/unit/test_supervisor.py` — `TestStateFile` (missing/corrupt tolerated, atomic round-trip), `TestRunTick` (status fields, healthy clears `alerting`) |
+| SUP-7 | `tests/unit/test_supervisor.py` — `TestRunTick.test_dry_run_neither_notifies_nor_writes`, `test_probe_failure_is_an_internal_error_without_alert` |
 
 ## References
 
