@@ -114,7 +114,7 @@ The machine-specific config keys — watch folder, vault folders, mode key — s
 
 ## Start on login (optional)
 
-The repo ships launchd templates in `docs/launchd/`. Fill in the `__REPO__` and `__HOME__` placeholders, copy both plists to `~/Library/LaunchAgents/`, and load them with `launchctl`.
+The repo ships launchd templates in `docs/launchd/`. Fill in the `__REPO__` and `__HOME__` placeholders, copy the two LaunchAgent plists (daemon and watchdog) to `~/Library/LaunchAgents/`, and load them with `launchctl`.
 
 The templates have two non-obvious requirements:
 
@@ -124,6 +124,34 @@ The templates have two non-obvious requirements:
 The daemon template also sources `$HOME/.secrets/koding-transcriber.env` before starting — the author's personal secrets path. Edit or remove that line for your machine.
 
 > When the launchd service is loaded, `./run_transcriber.sh start` won't start — this prevents two daemons from racing. Manage the service through one mechanism or the other, not both.
+
+## Availability supervisor (LaunchDaemon, recommended)
+
+The login-time agents above cannot help when nobody is logged in. After a reboot to the login window, neither `com.alex.transcriber` nor its watchdog is ever loaded, and no alert fires — the 2026-10-30 → 11-03 outage went unnoticed for 3.7 days for exactly that reason. `supervisor.py` closes the gap as a system-domain LaunchDaemon that starts at boot.
+
+It only observes; it never tries to run Superwhisper headless. Every 60 seconds it records one of four states in `~/.superwhisper_transcriber_supervisor.json`:
+
+| State | Meaning |
+|---|---|
+| `NO_CONSOLE_USER` | Nobody is logged in (login window or setup user) |
+| `ABSENT` | A console user exists but `com.alex.transcriber` is not loaded |
+| `LOADED_STALE` | The job is loaded, but its heartbeat is missing or older than 10 minutes |
+| `HEALTHY` | The job is loaded and its heartbeat is fresh |
+
+Two consecutive `NO_CONSOLE_USER`/`ABSENT` checks raise one notification; it is not repeated until the state recovers. Install with root (see the template header for the TCC caveat about running a script from a protected folder):
+
+```bash
+# Fill in __REPO__ and __HOME__ first.
+sudo cp docs/launchd/com.alex.transcriber.supervisor.plist.template \
+  /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+sudo chown root:wheel /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+sudo chmod 644 /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+sudo plutil -lint /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.alex.transcriber.supervisor.plist
+sudo launchctl print system/com.alex.transcriber.supervisor
+```
+
+For a one-shot observation, run `python3 supervisor.py --dry-run` (report only) or without `--dry-run` to update the status file.
 
 ## License
 
