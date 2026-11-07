@@ -92,17 +92,21 @@ def deploy(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{shim_bin}:/usr/bin:/bin")
     monkeypatch.setenv("PREFLIGHT_NOTIFY", "0")
     monkeypatch.setenv("PREFLIGHT_HEARTBEAT", str(tmp_path / "hb.json"))
+    # The venv-ladder tests are isolated from the host's launchd state (PF-17).
+    monkeypatch.setenv("PREFLIGHT_AVAILABILITY", "0")
     monkeypatch.delenv("PREFLIGHT_CANDIDATES", raising=False)
     monkeypatch.delenv("PREFLIGHT_PIP_CMD", raising=False)
     return root
 
 
-def run_preflight(deploy, *args, candidates=None, pip_cmd=None):
+def run_preflight(deploy, *args, candidates=None, pip_cmd=None, extra_env=None):
     env = dict(os.environ)
     if candidates is not None:
         env["PREFLIGHT_CANDIDATES"] = candidates
     if pip_cmd is not None:
         env["PREFLIGHT_PIP_CMD"] = pip_cmd
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["/bin/bash", str(deploy / "preflight.sh"), *args],
         capture_output=True,
@@ -111,6 +115,47 @@ def run_preflight(deploy, *args, candidates=None, pip_cmd=None):
         timeout=120,
         cwd=str(deploy),
     )
+
+
+def write_scutil(tmp_path, name, uid):
+    """A scutil shim printing the `show State:/Users/ConsoleUser` dictionary."""
+    path = tmp_path / "scutil"
+    path.write_text(
+        f"#!/bin/sh\ncat <<'EOF'\n<dictionary> {{\n  Name : {name}\n  UID : {uid}\n}}\nEOF\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return str(path)
+
+
+def write_launchctl(tmp_path, returncode):
+    """A launchctl shim; records its argv so tests can assert the label."""
+    path = tmp_path / "launchctl"
+    argv_log = tmp_path / "launchctl.argv"
+    path.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{argv_log}"\nexit {returncode}\n',
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return str(path), argv_log
+
+
+def availability_env(tmp_path, name="alex", uid=501, launchctl_rc=0):
+    """Env overrides pinning the PF-17 probes to fixtures."""
+    scutil = write_scutil(tmp_path, name, uid)
+    launchctl, argv_log = write_launchctl(tmp_path, launchctl_rc)
+    return {
+        "PREFLIGHT_SCUTIL": scutil,
+        "PREFLIGHT_LAUNCHCTL": launchctl,
+        "PREFLIGHT_LABEL": "com.alex.transcriber",
+    }, argv_log
+
+
+def availability_gate_env(tmp_path, name="alex", uid=501, launchctl_rc=0):
+    """Fixtures plus the explicit wrapper-gate switch (the deploy fixture sets 0)."""
+    env, _ = availability_env(tmp_path, name, uid, launchctl_rc)
+    env["PREFLIGHT_AVAILABILITY"] = "1"
+    return env
 
 
 def make_venv(deploy, body=VENVPY_OK):
@@ -297,3 +342,94 @@ class TestGuards:
         assert "would rebuild" in result.stderr
         assert not (deploy / "venv").exists()
         assert not (deploy / "venv.new").exists()
+
+
+class TestAvailability:
+    """PF-17: the availability contract as a reusable, deployable check.
+
+    The service only runs inside a logged-in GUI session. A deploy or reboot at
+    the login window used to leave it down with no error anywhere; the explicit
+    verb makes that contract fail loudly with a distinct exit code.
+    """
+
+    def test_healthy_host_exits_zero(self, deploy, tmp_path):
+        env, argv_log = availability_env(tmp_path, "alex", 501, 0)
+        result = run_preflight(deploy, "availability", extra_env=env)
+        assert result.returncode == 0
+        assert "availability: OK" in result.stderr
+        assert "gui/501/com.alex.transcriber" in argv_log.read_text()
+
+    def test_no_console_user_exits_20(self, deploy, tmp_path):
+        env, _ = availability_env(tmp_path, "loginwindow", 0, 0)
+        result = run_preflight(deploy, "availability", extra_env=env)
+        assert result.returncode == 20
+        assert "no console user" in result.stderr
+        assert "GUI session" in result.stderr
+
+    def test_setup_user_exits_20(self, deploy, tmp_path):
+        env, _ = availability_env(tmp_path, "_mbsetupuser", 0, 0)
+        assert run_preflight(deploy, "availability", extra_env=env).returncode == 20
+
+    def test_uid_zero_exits_20(self, deploy, tmp_path):
+        env, _ = availability_env(tmp_path, "root", 0, 0)
+        assert run_preflight(deploy, "availability", extra_env=env).returncode == 20
+
+    def test_job_not_loaded_exits_21_with_bootstrap_hint(self, deploy, tmp_path):
+        env, _ = availability_env(tmp_path, "alex", 501, 113)
+        result = run_preflight(deploy, "availability", extra_env=env)
+        assert result.returncode == 21
+        assert "not loaded" in result.stderr
+        assert "launchctl bootstrap gui/501" in result.stderr
+        assert "com.alex.transcriber.plist" in result.stderr
+
+    def test_label_override_is_probed(self, deploy, tmp_path):
+        env, argv_log = availability_env(tmp_path, "alex", 501, 0)
+        env["PREFLIGHT_LABEL"] = "com.example.test"
+        result = run_preflight(deploy, "availability", extra_env=env)
+        assert result.returncode == 0
+        assert "gui/501/com.example.test" in argv_log.read_text()
+
+
+class TestAvailabilityGate:
+    """PF-17 in wrapper mode: fail fast, but never exit nonzero (PF-9).
+
+    launchd runs KeepAlive{SuccessfulExit:false}: a 20/21 from the wrapper would
+    respawn it forever. The gate therefore escalates and exits 0.
+    """
+
+    def test_healthy_host_still_execs_daemon(self, deploy, tmp_path):
+        make_venv(deploy)
+        result = run_preflight(deploy, extra_env=availability_gate_env(tmp_path))
+        assert result.returncode == 0
+        assert "DAEMON-RAN" in result.stdout
+
+    def test_no_console_user_refuses_before_exec(self, deploy, tmp_path):
+        make_venv(deploy)
+        result = run_preflight(deploy, extra_env=availability_gate_env(tmp_path, "loginwindow", 0))
+        assert result.returncode == 0  # PF-9: never 20 here
+        assert "DAEMON-RAN" not in result.stdout
+        assert "Availability precondition failed" in result.stderr
+        assert "ESCALATION" in result.stderr
+
+    def test_job_not_loaded_refuses_before_exec(self, deploy, tmp_path):
+        make_venv(deploy)
+        result = run_preflight(deploy, extra_env=availability_gate_env(tmp_path, launchctl_rc=113))
+        assert result.returncode == 0
+        assert "DAEMON-RAN" not in result.stdout
+        assert "Availability precondition failed" in result.stderr
+
+    def test_kill_switch_bypasses_the_gate(self, deploy, tmp_path):
+        make_venv(deploy)
+        env = availability_gate_env(tmp_path, "loginwindow", 0, 113)
+        env["PREFLIGHT_AVAILABILITY"] = "0"
+        result = run_preflight(deploy, extra_env=env)
+        assert result.returncode == 0
+        assert "DAEMON-RAN" in result.stdout
+
+    def test_dry_run_reports_but_does_not_enforce(self, deploy, tmp_path):
+        make_venv(deploy)
+        result = run_preflight(deploy, "--dry-run", extra_env=availability_gate_env(tmp_path, "loginwindow", 0))
+        assert result.returncode == 0
+        assert "DAEMON-RAN" not in result.stdout
+        assert "dry-run: availability precondition unmet" in result.stderr
+        assert "dry-run: venv probe passes" in result.stderr

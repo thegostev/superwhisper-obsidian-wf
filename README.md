@@ -109,6 +109,7 @@ The machine-specific config keys — watch folder, vault folders, mode key — s
 | `./run_transcriber.sh logs` | Follow the live log |
 | `./run_transcriber.sh health` | Report liveness; exit code 0 means healthy, 1 means unhealthy |
 | `./run_transcriber.sh maintenance-end` | Finish `launchctl` maintenance: remove the pause sentinel, bootstrap the daemon, wait up to 60 s for a fresh heartbeat. Exit 0 means PASS |
+| `./preflight.sh availability` | Assert the availability contract: exit 0 = console session + daemon job loaded, 20 = no console user, 21 = job not loaded |
 | `./run_transcriber.sh catchup [days]` | Process recordings the service missed — default 7 days, including recordings already marked permanently failed. Back up your vault before running this against a large backlog |
 | `./run_transcriber.sh catchup-preview [days]` | Run catchup without processing files |
 
@@ -122,6 +123,8 @@ The templates have two non-obvious requirements:
 - Before planned maintenance with `launchctl`, touch the pause sentinel `~/.superwhisper_transcriber_watchdog.pause` so the watchdog doesn't mistake maintenance for an outage. The sentinel expires after four hours. When maintenance is done, run `./run_transcriber.sh maintenance-end`: it removes the sentinel, bootstraps the daemon if it isn't loaded, and exits 0 only once a fresh heartbeat appears (add `--dry-run` to preview).
 
 The daemon template also sources `$HOME/.secrets/koding-transcriber.env` before starting — the author's personal secrets path. Edit or remove that line for your machine.
+
+The service only runs inside a logged-in GUI session. If a deploy or reboot leaves the Mac at the login window, the LaunchAgents never load and the service is silently down. `preflight.sh` now checks that contract before starting the daemon and refuses without a partial start; for a deploy-time check run `./preflight.sh availability` — exit 20 means no console user, exit 21 means the job is not loaded (the message names the bootstrap command).
 
 > When the launchd service is loaded, `./run_transcriber.sh start` won't start — this prevents two daemons from racing. Manage the service through one mechanism or the other, not both.
 
