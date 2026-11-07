@@ -13,14 +13,17 @@
 # an atomic lock (PF-10) with a rebuild-in-progress marker the watchdog reads
 # as "busy" (PF-14).
 #
-# Verbs (PF-12): probe <interpreter> | candidate-probe <interpreter> |
-# select | candidates — everything else is wrapper mode. --dry-run (PF-11)
-# prints the decision without acting.
+# Verbs (PF-12, PF-17): probe <interpreter> | candidate-probe <interpreter> |
+# select | candidates | availability — everything else is wrapper mode.
+# --dry-run (PF-11) prints the decision without acting.
 #
 # Test hooks (env): PREFLIGHT_CANDIDATES (colon-separated candidate list),
 # PREFLIGHT_NOTIFY=0 (suppress osascript, print instead), PREFLIGHT_PIP_CMD
-# (override the pip install step), PREFLIGHT_HEARTBEAT (heartbeat path).
-# All persistent state lives under $HOME, outside the repository.
+# (override the pip install step), PREFLIGHT_HEARTBEAT (heartbeat path),
+# PREFLIGHT_SCUTIL / PREFLIGHT_LAUNCHCTL / PREFLIGHT_LABEL (PF-17 probe
+# fixtures), PREFLIGHT_AVAILABILITY=0 (bypass the wrapper gate for isolated
+# venv-ladder tests). All persistent state lives under $HOME, outside the
+# repository.
 
 set -u -o pipefail
 
@@ -34,6 +37,13 @@ REBUILD_MARKER="$HOME_DIR/.superwhisper_transcriber_rebuild.json"
 REPOINT_MARKER="$HOME_DIR/.superwhisper_transcriber_repoint.json"
 REBUILD_COOLDOWN="$HOME_DIR/.superwhisper_transcriber_lastrebuild"
 HEARTBEAT_FILE="${PREFLIGHT_HEARTBEAT:-$HOME_DIR/.superwhisper_transcriber_heartbeat.json}"
+
+# PF-17: the availability contract — the service only runs inside a logged-in
+# GUI session. Absolute paths in production; env hooks shim them in tests.
+SCUTIL_BIN="${PREFLIGHT_SCUTIL:-/usr/sbin/scutil}"
+LAUNCHCTL_BIN="${PREFLIGHT_LAUNCHCTL:-/bin/launchctl}"
+JOB_LABEL="${PREFLIGHT_LABEL:-com.alex.transcriber}"
+AVAILABILITY_CHECK="${PREFLIGHT_AVAILABILITY:-1}"
 
 REBUILD_COOLDOWN_SECS=3600   # PF-8
 REBUILD_BUDGET_SECS=1800     # PF-10/PF-14
@@ -57,6 +67,50 @@ trap release_lock EXIT INT TERM
 now_epoch() { date +%s; }
 
 say() { printf '[preflight %s] %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
+
+console_uid() {
+    # PF-17: the real console user's uid, rejecting the login window, the
+    # setup user, and root — none of them can host a per-user LaunchAgent.
+    "$SCUTIL_BIN" <<< "show State:/Users/ConsoleUser" 2>/dev/null |
+        /usr/bin/python3 -c '
+import re
+import sys
+text = sys.stdin.read()
+name = re.search(r"^\s*Name\s*:\s*(\S+)\s*$", text, re.MULTILINE)
+uid = re.search(r"^\s*UID\s*:\s*(\d+)\s*$", text, re.MULTILINE)
+if name is None or uid is None:
+    sys.exit(1)
+if name.group(1) in {"loginwindow", "_mbsetupuser", "root", "_windowserver"}:
+    sys.exit(1)
+value = int(uid.group(1))
+if value <= 0:
+    sys.exit(1)
+print(value)
+'
+}
+
+job_loaded() {
+    # PF-17: `launchctl print` reports only a job that is actually loaded.
+    "$LAUNCHCTL_BIN" print "gui/$1/$JOB_LABEL" >/dev/null 2>&1
+}
+
+check_availability() {
+    # PF-17: the reusable availability contract. Exit 0 OK, 20 no console
+    # user, 21 job not loaded; usable by verify_service.sh (STB-16).
+    local uid
+    if ! uid="$(console_uid)"; then
+        say "availability: no console user — the transcriber only runs in a logged-in GUI session."
+        say "Log in at the Mac's console (not over SSH), then re-run this check."
+        return 20
+    fi
+    if ! job_loaded "$uid"; then
+        say "availability: $JOB_LABEL is not loaded in gui/$uid."
+        say "Bootstrap it: launchctl bootstrap gui/$uid $HOME_DIR/Library/LaunchAgents/$JOB_LABEL.plist"
+        return 21
+    fi
+    say "availability: OK (console uid=$uid, $JOB_LABEL loaded)"
+    return 0
+}
 
 candidate_probe() {
     # PF-13: version gate only — MUST NOT import config.py (PF-3).
@@ -315,6 +369,26 @@ wrapper() {
     local dry_run=0
     [ "${1:-}" = "--dry-run" ] && dry_run=1
 
+    # PF-17: assert the availability contract before any probe, rebuild, or
+    # exec (fail fast, no partial start). Wrapper mode MUST still exit 0:
+    # KeepAlive{SuccessfulExit:false} would turn a 20/21 into a respawn storm
+    # (PF-9), so an unmet contract escalates and stops the tick instead.
+    if [ "$AVAILABILITY_CHECK" != "0" ]; then
+        if [ "$dry_run" = "1" ]; then
+            if ! check_availability; then
+                say "dry-run: availability precondition unmet — a real run would escalate and exit 0"
+            fi
+        else
+            local availability_rc=0
+            check_availability || availability_rc=$?
+            if [ "$availability_rc" != "0" ]; then
+                escalate "Transcriber preflight" \
+                    "Availability precondition failed (exit $availability_rc): no logged-in GUI session or $JOB_LABEL not loaded. Not starting the daemon."
+                exit 0
+            fi
+        fi
+    fi
+
     # PF-16: a fresh fatal heartbeat means a deterministic post-exec fault —
     # restarting cannot help. Escalate and exit 0.
     if fatal_heartbeat_fresh; then
@@ -378,6 +452,8 @@ case "${1:-}" in
             fi
         done
         exit 0 ;;
+    availability)
+        check_availability ;;
     --dry-run)
         wrapper "$@" ;;
     *)
