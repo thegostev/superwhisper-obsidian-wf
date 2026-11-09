@@ -38,6 +38,7 @@ def fresh_writer_state():
     pipeline._heartbeat_last_outcome = None  # CB-13 (LAG-802) last outcome cache
     pipeline._heartbeat_icloud_placeholders = None  # HB-14 (LAG-814) placeholder count cache
     pipeline._heartbeat_icloud_downloads_requested = 0  # IC-5 (LAG-813) preflight count cache
+    pipeline._heartbeat_last_gap_s = None  # LAG-908 startup-gap cache
     yield
 
 
@@ -266,6 +267,7 @@ class TestDaemonEntryPointDeclaresItself:
             raise _FirstHeartbeatError
 
         monkeypatch.setattr(auto_transcribe, "set_heartbeat_writer", record)
+        monkeypatch.setattr(auto_transcribe, "measure_startup_gap", lambda: None)
         monkeypatch.setattr(auto_transcribe, "write_heartbeat", stop)
         with pytest.raises(_FirstHeartbeatError):
             auto_transcribe.main()
