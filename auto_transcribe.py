@@ -27,6 +27,7 @@ from config import (
 from icloud_preflight import run_preflight
 from pipeline import (
     SALVAGE_PASS_EVERY_N_CYCLES,
+    STARTUP_GAP_THRESHOLD_S,
     TIMESTAMP_FORMAT,
     FatalAPIError,
     _now_local,
@@ -36,8 +37,10 @@ from pipeline import (
     get_audio_timestamp,
     is_file_stable,
     load_state,
+    measure_startup_gap,
     process_audio,
     recover_failed_permanent,
+    report_startup_gap,
     save_state,
     set_heartbeat_writer,
     write_heartbeat,
@@ -98,33 +101,57 @@ def run_icloud_preflight() -> int:
     return result.requested
 
 
-def discover_audio_files(watch_folder, state, transcript_index):
-    """Find unprocessed .m4a files; return (path, timestamp) tuples oldest-first, capped at MAX_FILES_PER_CYCLE."""
-    audio_files, state_dirty = [], False
-
+def _iter_unprocessed_audio(watch_folder, state):
+    """Yield nonterminal audio paths using the daemon's single discovery filter."""
     for folder_path in discover_recent_folders(watch_folder, SCAN_DAYS_BACK):
         for fp in Path(folder_path).glob("*.m4a"):
             if ".icloud" in (file_path := str(fp)) or ".tmp" in file_path or fp.name.startswith("."):
                 continue
-
             if state.get("processed", {}).get(file_path, {}).get("status") in ("complete", "failed_permanent"):
                 continue
+            yield file_path
 
-            timestamp = get_audio_timestamp(file_path)
-            if (existing := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))) and existing.get("output_path"):
-                state.setdefault("processed", {})[file_path] = {
-                    "status": "complete",
-                    "category": existing["category"],
-                    "timestamp": timestamp.isoformat(),
-                    "processed_at": _now_local().isoformat(),
-                    "attempts": 0,
-                    "note": "found in transcript index",
-                }
-                state_dirty = True
-                continue
 
-            if is_file_stable(file_path, wait_seconds=1):
-                audio_files.append((file_path, timestamp))
+def _pending_file_count(state):
+    """Count queued state entries plus not-yet-terminal audio in the scan window."""
+    processed = state.get("processed", {})
+    pending = {
+        path for path, record in processed.items() if record.get("status") not in ("complete", "failed_permanent")
+    }
+    pending.update(_iter_unprocessed_audio(WATCH_FOLDER, state))
+    return len(pending)
+
+
+def _startup_pending_context(state, gap_s):
+    """Return (count, error) only when an old gap needs a pending report."""
+    if gap_s is None or gap_s <= STARTUP_GAP_THRESHOLD_S:
+        return None, None
+    try:
+        return _pending_file_count(state), None
+    except Exception as error:  # noqa: BLE001 — report the failure inside the single gap event
+        return None, str(error)
+
+
+def discover_audio_files(watch_folder, state, transcript_index):
+    """Find unprocessed .m4a files; return (path, timestamp) tuples oldest-first, capped at MAX_FILES_PER_CYCLE."""
+    audio_files, state_dirty = [], False
+
+    for file_path in _iter_unprocessed_audio(watch_folder, state):
+        timestamp = get_audio_timestamp(file_path)
+        if (existing := transcript_index.get(timestamp.strftime(TIMESTAMP_FORMAT))) and existing.get("output_path"):
+            state.setdefault("processed", {})[file_path] = {
+                "status": "complete",
+                "category": existing["category"],
+                "timestamp": timestamp.isoformat(),
+                "processed_at": _now_local().isoformat(),
+                "attempts": 0,
+                "note": "found in transcript index",
+            }
+            state_dirty = True
+            continue
+
+        if is_file_stable(file_path, wait_seconds=1):
+            audio_files.append((file_path, timestamp))
 
     if state_dirty:
         save_state(state)
@@ -194,12 +221,17 @@ def main():
     # would read as an ops run and cost the watchdog a PID probe (HC-17).
     set_heartbeat_writer("daemon")
 
+    # LAG-908: capture the previous heartbeat before milestone 1 replaces it.
+    startup_gap_s = measure_startup_gap()
+
     # HB-7 startup milestone 1/4: configuration loaded (imports/config resolved
     # before main() runs). Forced writes bracket the slow windows of startup so
     # a slow start is not mistaken for a dead daemon.
     write_heartbeat("starting", force=True)
 
     state = load_state()
+    pending_count, pending_error = _startup_pending_context(state, startup_gap_s)
+    report_startup_gap(state, startup_gap_s, pending_count=pending_count, pending_error=pending_error)
     statuses = [v.get("status") for v in state.get("processed", {}).values()]
     # HB-7 startup milestone 2/4: state loaded.
     write_heartbeat("starting", **_heartbeat_counts(state), force=True)

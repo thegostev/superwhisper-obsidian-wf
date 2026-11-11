@@ -44,6 +44,9 @@ HEARTBEAT_SCHEMA_VERSION = 2  # v2 (LAG-910, DS-6): adds disk_free_bytes/recordi
 HEARTBEAT_MIN_INTERVAL = 15.0  # HB-8: self-throttle so call sites need not reason about write amplification
 HEARTBEAT_WRITE_FAILURE_WARN_THRESHOLD = 4  # HB-10: consecutive failures before the runbook warning
 HEARTBEAT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # HB-9: RFC 3339 UTC with explicit offset
+STARTUP_GAP_THRESHOLD_S = 3600.0  # LAG-908: report absences longer than one hour
+STARTUP_GAP_NOTIFY_COOLDOWN_S = 3600.0  # Persistent across daemon restart loops
+STARTUP_GAP_NOTIFY_TITLE = "Transcriber startup gap"
 
 # HB-12 (LAG-675): who wrote this heartbeat. Ops scripts (on-demand runs,
 # redrives, salvage) reach this writer through the shared pipeline functions and
@@ -64,6 +67,7 @@ _heartbeat_context: dict[str, int] = {"cycle": 0, "failed_permanent": 0, "state_
 _heartbeat_writer: str = DEFAULT_HEARTBEAT_WRITER
 _heartbeat_dependency_down: bool = False  # CB-6 (LAG-801): last known breaker flag
 _heartbeat_last_outcome: str | None = None  # CB-13 (LAG-802): last classified attempt outcome
+_heartbeat_last_gap_s: float | None = None  # LAG-908: age of the heartbeat replaced at daemon startup
 # HB-13 (LAG-807): the attempt process_audio is running right now, or None.
 # Shape: {"path": str, "attempt": int, "started": epoch float}.
 _heartbeat_in_flight: dict | None = None
@@ -327,6 +331,20 @@ def disk_snapshot(*, roots: dict[str, str] | None = None, now: float | None = No
     }
 
 
+def _disk_snapshot_or_unknown(*, now: float | None = None) -> tuple[dict, str | None]:
+    """Return disk telemetry or an all-unknown snapshot and the failure text."""
+    try:
+        return disk_snapshot(now=now), None
+    except Exception as error:  # noqa: BLE001 — telemetry must never stop the daemon
+        snapshot: dict = {
+            "volumes": {},
+            "min_free_bytes": None,
+            "min_free_gb": None,
+            "recordings_bytes": None,
+        }
+        return snapshot, str(error)
+
+
 def check_disk_space(*, min_free_gb: float | None = None) -> dict:
     """DS-2: refuse the handoff while the tightest root is below the floor.
 
@@ -379,6 +397,42 @@ def _in_flight_payload(now: float) -> dict | None:
         "started_at": datetime.fromtimestamp(started, tz=timezone.utc).strftime(HEARTBEAT_TIME_FORMAT),
         "elapsed_s": max(0, int(now - started)),
     }
+
+
+def _log_telemetry_event(event: str, now: float, **fields) -> None:
+    """Emit one timestamped, machine-parseable daemon telemetry event."""
+    timestamp = datetime.fromtimestamp(now, tz=timezone.utc).strftime(HEARTBEAT_TIME_FORMAT)
+    print(json.dumps({"event": event, "timestamp": timestamp, **fields}, sort_keys=True), flush=True)
+
+
+def measure_startup_gap(*, now: float | None = None) -> float | None:
+    """Measure and cache the age of the heartbeat being replaced at startup.
+
+    The file mtime is authoritative (HC-1): unlike the embedded ``updated_at``,
+    it is kernel-written and cannot be distorted by timestamp formatting. A
+    missing, unreadable, or non-object heartbeat yields ``None`` and one
+    structured ``gap_s=null`` log line; telemetry must never prevent startup.
+    """
+    global _heartbeat_last_gap_s
+    heartbeat_path = Path(HEARTBEAT_FILE)
+    now = time.time() if now is None else now
+    reason = None
+    try:
+        previous_mtime = heartbeat_path.stat().st_mtime
+        payload = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("heartbeat payload is not an object")
+    except FileNotFoundError:
+        reason = "heartbeat_missing"
+    except (OSError, ValueError):
+        reason = "heartbeat_unreadable"
+
+    if reason is None:
+        _heartbeat_last_gap_s = max(0.0, now - previous_mtime)
+    else:
+        _heartbeat_last_gap_s = None
+        _log_telemetry_event("startup_gap", now, gap_s=None, reason=reason)
+    return _heartbeat_last_gap_s
 
 
 def write_heartbeat(
@@ -438,6 +492,10 @@ def write_heartbeat(
     ``count_icloud_placeholders`` result for the scan window, ``null`` until
     the first count; cached before the throttle check like ``last_outcome``.
 
+    ``last_gap_s`` (LAG-908) is the age of the previous heartbeat captured by
+    ``measure_startup_gap`` before the daemon's first write, ``null`` when that
+    heartbeat was missing or unreadable. It remains cached for this process.
+
     Args:
         phase: One of "starting" | "scanning" | "processing" | "fatal".
         cycle: Scan-cycle number, when the caller knows it.
@@ -481,7 +539,9 @@ def write_heartbeat(
         _heartbeat_context["state_complete"] = state_complete
     if dependency_down is not None:
         _heartbeat_dependency_down = dependency_down
-    disk = disk_snapshot(now=now)  # DS-6: schema v2 disk telemetry
+    disk, disk_error = _disk_snapshot_or_unknown(now=now)  # DS-6: schema v2 disk telemetry
+    if disk_error is not None:
+        _log_telemetry_event("heartbeat_disk_failed", now, error=disk_error)
     payload = {
         "schema": HEARTBEAT_SCHEMA_VERSION,
         "pid": os.getpid(),
@@ -497,6 +557,7 @@ def write_heartbeat(
         "in_flight": _in_flight_payload(now),  # HB-13
         "icloud_placeholders": _heartbeat_icloud_placeholders,  # HB-14
         "icloud_downloads_requested": _heartbeat_icloud_downloads_requested,  # IC-5
+        "last_gap_s": _heartbeat_last_gap_s,  # LAG-908
         # DS-6 (LAG-909/LAG-910): disk telemetry, schema v2. ``disk_free_*`` is
         # the lowest across the recordings store and all output roots;
         # ``disk_volumes`` carries the per-role detail the operator needs to
@@ -1275,6 +1336,66 @@ def _notify(message: str, title: str) -> bool:
     except (OSError, subprocess.SubprocessError) as error:
         print(f"⚠️  notification failed ({title}): {error}", flush=True)
         return False
+
+
+def report_startup_gap(
+    state: dict,
+    gap_s: float | None,
+    *,
+    pending_count: int | None,
+    pending_error: str | None = None,
+    now: float | None = None,
+) -> bool:
+    """Emit one gap event and notify for absences beyond the threshold.
+
+    Returns True only when a notification was delivered. The cooldown epoch is
+    persisted before the notification attempt, matching CB-8: a crash or a
+    launchd restart loop cannot send the same alert repeatedly. Unknown and
+    fresh gaps need no report; ``measure_startup_gap`` already logs unknowns.
+    Pending/disk/notification failures are fields on the single gap event.
+    """
+    if gap_s is None or gap_s <= STARTUP_GAP_THRESHOLD_S:
+        return False
+
+    now = time.time() if now is None else now
+    disk, disk_error = _disk_snapshot_or_unknown(now=now)
+    notification_error = None
+    gap_state = state.setdefault("startup_gap", {})
+    last_notified = gap_state.get("last_notified_epoch")
+    cooldown = (
+        isinstance(last_notified, (int, float))
+        and not isinstance(last_notified, bool)
+        and now - last_notified < STARTUP_GAP_NOTIFY_COOLDOWN_S
+    )
+    notified = False
+    if not cooldown:
+        gap_state["last_notified_epoch"] = now
+        save_state(state)
+        pending_text = "unknown" if pending_count is None else f"{pending_count} pending file(s)"
+        free_text = "unknown" if disk["min_free_gb"] is None else f"{disk['min_free_gb']:.1f} GiB"
+        duration = str(timedelta(seconds=int(gap_s)))
+        try:
+            notified = _notify(
+                f"Daemon resumed after {duration} — {pending_text}; disk free {free_text}",
+                STARTUP_GAP_NOTIFY_TITLE,
+            )
+            if not notified:
+                notification_error = "notifier returned false"
+        except Exception as error:  # noqa: BLE001 — startup telemetry must never stop the daemon
+            notification_error = str(error)
+
+    _log_telemetry_event(
+        "startup_gap",
+        now,
+        gap_s=gap_s,
+        pending_count=pending_count,
+        disk_free_bytes=disk["min_free_bytes"],
+        disk_free_gb=disk["min_free_gb"],
+        pending_error=pending_error,
+        disk_error=disk_error,
+        notification_error=notification_error,
+    )
+    return notified
 
 
 def _notify_dependency_down(state: dict) -> bool:
