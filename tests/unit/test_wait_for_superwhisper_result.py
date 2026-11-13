@@ -79,6 +79,9 @@ def test_returns_result_when_category_present(recordings_dir):
     with patch("time.sleep"):
         result = wait_for_superwhisper_result("foo.m4a", since=since)
     assert CATEGORY_HEADER in result
+    # LAG-911: the result is still a str, and names the dir it came from.
+    assert result == f"{CATEGORY_HEADER} PERSONAL\nFILENAME: x\n\nbody"
+    assert result.recording_dir == "111"
 
 
 # --- wait_for_superwhisper_result: fast-fail on LLM refusal -----------------

@@ -105,6 +105,12 @@ fix_all() {
     "$SCRIPT_DIR/venv/bin/python3" "$SCRIPT_DIR/reclassify_and_fix.py" --generate-missing-analysis --reclassify "$@"
 }
 
+cleanup_recordings() {
+    # Dry run unless --apply is passed (LAG-911).
+    cd "$SCRIPT_DIR"
+    "$SCRIPT_DIR/venv/bin/python3" "$SCRIPT_DIR/cleanup.py" "$@"
+}
+
 verify() {
     cd "$SCRIPT_DIR"
     local venv="$SCRIPT_DIR/venv/bin"
@@ -165,11 +171,12 @@ case "${1:-start}" in
     fix-analysis) fix_analysis "${@:2}" ;;
     fix-categories) fix_categories "${@:2}" ;;
     fix-all) fix_all "${@:2}" ;;
+    cleanup-recordings) cleanup_recordings "${@:2}" ;;
     verify) verify ;;
     health) health_verb "${@:2}" ;;
     maintenance-end) maintenance_end "${@:2}" ;;
     *)
-        echo "Usage: $0 {start|stop|status|logs|restart|health|maintenance-end|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all|verify}"
+        echo "Usage: $0 {start|stop|status|logs|restart|health|maintenance-end|catchup|catchup-preview|recover-failed|reprocess|fix-analysis|fix-categories|fix-all|cleanup-recordings|verify}"
         echo "Service Management:"
         echo "  start          - Launch auto-transcriber in background (default)"
         echo "  stop           - Stop the running transcriber"
@@ -192,6 +199,7 @@ case "${1:-start}" in
         echo "  fix-analysis           - Generate missing analysis files"
         echo "  fix-categories         - Reclassify and move files to correct folders"
         echo "  fix-all                - Do both (generate analysis + reclassify)"
+        echo "  cleanup-recordings     - Delete expired consumed/orphan session dirs (dry run unless --apply)"
         echo "  Add --dry-run to preview changes"
         echo ""
         echo "Development:"

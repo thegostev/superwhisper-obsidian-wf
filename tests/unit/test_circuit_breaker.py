@@ -71,7 +71,7 @@ def _successful_process_audio_run(state, file_path: str = _FAKE_PATH):
         patch("pipeline.handoff_to_superwhisper"),
         patch(
             "pipeline.wait_for_superwhisper_result",
-            return_value="CATEGORY: WORK\nFILENAME: Test Meeting\n\nBody",
+            return_value=pipeline.SuperwhisperResult("CATEGORY: WORK\nFILENAME: Test Meeting\n\nBody", "123"),
         ),
         patch("pipeline.save_output", return_value="/tmp/test-work/x.md"),
         patch("pipeline.save_state"),
@@ -309,6 +309,7 @@ class TestProcessAudioOutcomeRecording:
         record = state["processed"][_FAKE_PATH]
         assert record["status"] == "complete"
         assert record["outcome"] == "success"
+        assert record["recording_dir"] == "123"  # LAG-911: retention provenance
 
     def test_generic_error_records_transient_outcome(self):
         state: dict = {"processed": {}}
