@@ -112,6 +112,7 @@ The machine-specific config keys — watch folder, vault folders, mode key — s
 | `./preflight.sh availability` | Assert the availability contract: exit 0 = console session + daemon job loaded, 20 = no console user, 21 = job not loaded |
 | `./run_transcriber.sh catchup [days]` | Process recordings the service missed — default 7 days, including recordings already marked permanently failed. Back up your vault before running this against a large backlog |
 | `./run_transcriber.sh catchup-preview [days]` | Run catchup without processing files |
+| `./run_transcriber.sh cleanup-recordings` | Preview deletion of expired consumed and orphan session dirs (dry run; add `--apply` to delete) |
 
 ## Start on login (optional)
 

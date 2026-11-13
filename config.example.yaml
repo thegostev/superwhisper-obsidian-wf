@@ -17,6 +17,14 @@ superwhisper_relaunch_cooldown: 3600 # LAG-804: minimum seconds between two auto
 superwhisper_recordings_dir: "~/Documents/superwhisper/recordings"
 superwhisper_poll_interval: 3        # seconds between polls while waiting
 
+# Recordings retention (LAG-911): `./run_transcriber.sh cleanup-recordings --apply`
+# deletes session dirs the pipeline has consumed once they are older than
+# recordings_retention_days, and dirs with no meta.json (orphans from failed or
+# crashed handoffs) once they are older than orphan_retention_hours. Cleanup is
+# manual and a dry run unless --apply is passed.
+recordings_retention_days: 14
+orphan_retention_hours: 24
+
 # ── Custom Mode prompt (reference only — paste into Superwhisper UI) ───────
 # Go to Superwhisper > Settings > Custom Mode > Prompt and set:
 #

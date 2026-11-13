@@ -931,6 +931,23 @@ def _wait_for_superwhisper_idle(timeout: int = SUPERWHISPER_IDLE_CHECK_TIMEOUT) 
     )
 
 
+class SuperwhisperResult(str):
+    """A CATEGORY-bearing llmResult plus the session dir it came from (LAG-911).
+
+    Subclasses ``str`` so every caller that only needs the text keeps working
+    unchanged. ``recording_dir`` is persisted with a successful state entry as
+    retention provenance; cleanup.py otherwise cannot tell which store dir a
+    completed audio file used.
+    """
+
+    recording_dir: str
+
+    def __new__(cls, text: str, recording_dir: str) -> "SuperwhisperResult":
+        result: SuperwhisperResult = super().__new__(cls, text)
+        result.recording_dir = recording_dir
+        return result
+
+
 def wait_for_superwhisper_result(
     file_path: str,
     since: float,
@@ -1083,7 +1100,7 @@ def wait_for_superwhisper_result(
                 )
                 # R4: mark this recording consumed so retries don't re-match it.
                 _mark_consumed(entry)
-                return stable_text
+                return SuperwhisperResult(stable_text, entry.name)
 
             # Fast-fail case 1: LLM produced output but no CATEGORY: header = refusal.
             if text and not (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
@@ -1775,15 +1792,14 @@ def _run_attempt(
         since = time.time()
         switch_superwhisper_mode()
         handed_off_at = handoff_to_superwhisper(file_path)  # CB-10: accept window opens here
-        category, ai_filename, analysis = parse_superwhisper_output(
-            wait_for_superwhisper_result(
-                file_path,
-                since=since,
-                expected_duration_ms=expected_duration_ms,
-                handed_off_at=handed_off_at,
-                timeout=budget,
-            )
+        raw_result = wait_for_superwhisper_result(
+            file_path,
+            since=since,
+            expected_duration_ms=expected_duration_ms,
+            handed_off_at=handed_off_at,
+            timeout=budget,
         )
+        category, ai_filename, analysis = parse_superwhisper_output(raw_result)
 
         fname = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"
         if output_path := save_output(category, fname, analysis):
@@ -1796,6 +1812,7 @@ def _run_attempt(
             "processed_at": _now_local().isoformat(),
             "attempts": attempts,  # CB-21: counted at start, never re-incremented
             "outcome": OUTCOME_SUCCESS,  # CB-7: LAG-801 attempt classification
+            "recording_dir": getattr(raw_result, "recording_dir", None),  # LAG-911 provenance
         }
         record_attempt_result(state, OUTCOME_SUCCESS)
         save_state(state)

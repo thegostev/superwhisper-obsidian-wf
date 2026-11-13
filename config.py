@@ -137,6 +137,13 @@ DEPENDENCY_DOWN_ATTEMPT_TIMEOUT: float = _cfg.get("dependency_down_attempt_timeo
 SUPERWHISPER_RECORDINGS_DIR: str = _cfg["superwhisper_recordings_dir"]
 SUPERWHISPER_POLL_INTERVAL: int = _cfg.get("superwhisper_poll_interval", 3)
 
+# Recordings retention (LAG-911): consumed session dirs and class-D orphans
+# under SUPERWHISPER_RECORDINGS_DIR become eligible for `cleanup.py` after these
+# ages. Nothing is deleted automatically; cleanup is an operator command and
+# remains a dry run until --apply is passed.
+RECORDINGS_RETENTION_DAYS: float = float(_cfg.get("recordings_retention_days", 14))
+ORPHAN_RETENTION_HOURS: float = float(_cfg.get("orphan_retention_hours", 24))
+
 # Service behavior
 SCAN_INTERVAL: int = _cfg.get("scan_interval", 30)
 SCAN_DAYS_BACK: int = _cfg.get("scan_days_back", 7)
