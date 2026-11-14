@@ -130,6 +130,19 @@ DEFAULT_DISK_CRITICAL_GB = 2.0
 DEFAULT_DISK_HYSTERESIS_GB = 1.0
 DISK_NOTIFY_COOLDOWN = NOTIFY_COOLDOWN  # DS-9: at most one disk page per hour
 
+# Pending-horizon rules (HB-16, WD-19, LAG-915, post-mortem 2026-11-03 P2-7).
+# ``scan_days_back=7`` is a silent data-loss boundary: a recording that is not
+# drained before it ages out of discovery is never transcribed. A 3.7-day
+# outage left the Oct 31 backlog inside the window; one login later and it
+# would have vanished with no warning anywhere. Like disk, this is a
+# notification-only rule on an otherwise-healthy tick — a deep queue is not
+# evidence the daemon is dead, and restarting it does not drain anything.
+PENDING_WARN_ALERT = "pending-horizon"
+PENDING_CRITICAL_ALERT = "pending-horizon-critical"
+DEFAULT_PENDING_WARN_AGE_H = 120.0  # 5 days: a full weekend plus slack to act
+DEFAULT_PENDING_CRITICAL_AGE_H = 144.0  # 6 days: one day before the 7-day cutoff
+PENDING_NOTIFY_COOLDOWN = NOTIFY_COOLDOWN  # WD-19: independent hourly page cooldown
+
 
 def _to_int(field: str) -> int | None:
     try:
@@ -465,6 +478,88 @@ def disk_tick(
     return None, alert
 
 
+def pending_horizon_from_payload(payload: dict | None) -> tuple[int | None, float | None]:
+    """HB-16: read ``(pending_count, oldest_pending_age_h)`` from a heartbeat.
+
+    ``(None, None)`` means the heartbeat predates HB-16 and the queue is
+    unobservable. ``(0, None)`` is a real, known empty queue and must clear a
+    raised level — unlike unknown data, which never clears an alarm (HB-16).
+    """
+    if not isinstance(payload, dict):
+        return None, None
+    count = payload.get("pending_count")
+    age = payload.get("oldest_pending_age_h")
+    count_i = count if isinstance(count, int) and not isinstance(count, bool) else None
+    age_h = max(0.0, float(age)) if isinstance(age, (int, float)) and not isinstance(age, bool) else None
+    if count_i is None and age_h is None:
+        return None, None
+    return count_i, age_h
+
+
+def pending_horizon_level(
+    age_h: float | None,
+    current: str | None = None,
+    *,
+    warn_age_h: float = DEFAULT_PENDING_WARN_AGE_H,
+    critical_age_h: float = DEFAULT_PENDING_CRITICAL_AGE_H,
+) -> str | None:
+    """WD-19: "critical" | "warn" | None for the oldest pending recording.
+
+    No hysteresis: for a fixed queue the age only increases, and it drops
+    discontinuously when the oldest recording completes, so the value cannot
+    oscillate around a threshold the way free space can (DS-8). Unknown age
+    keeps the current level rather than clearing an alarm on missing data.
+    """
+    if age_h is None:
+        return current
+    if age_h >= critical_age_h:
+        return "critical"
+    if age_h >= warn_age_h:
+        return "warn"
+    return None
+
+
+def pending_horizon_tick(
+    state: dict,
+    payload: dict | None,
+    now: float,
+    *,
+    warn_age_h: float = DEFAULT_PENDING_WARN_AGE_H,
+    critical_age_h: float = DEFAULT_PENDING_CRITICAL_AGE_H,
+    cooldown: float = PENDING_NOTIFY_COOLDOWN,
+) -> tuple[str | None, str | None]:
+    """WD-19: one pending-horizon sample on an otherwise-healthy tick.
+
+    Returns ``(action, alert)``: ``"notify_pending"`` when a page is due,
+    otherwise None; ``alert`` is the level's label even while the page is
+    cooling down, so the ALARM marker keeps the surface raised (AF-3). Records
+    ``pending_level`` and ``last_pending_notify_at`` on *state*. A rise in level
+    — first warning, or warning → critical — pages immediately inside the
+    cooldown, because a queue ageing further is news (cf. DS-9).
+    """
+    count, age_h = pending_horizon_from_payload(payload)
+    current = state.get("pending_level")
+    if count is None and age_h is None:
+        level = current  # pre-HB-16 heartbeat: unobservable, never clears
+    elif count == 0:
+        level = None  # pending_count: 0 is a known empty queue, whatever else says
+    elif age_h is None:
+        level = current  # partial sample (count without an age): unknown, never clears
+    else:
+        level = pending_horizon_level(age_h, current, warn_age_h=warn_age_h, critical_age_h=critical_age_h)
+    state["pending_level"] = level
+    if level is None:
+        return None, None
+    alert = PENDING_CRITICAL_ALERT if level == "critical" else PENDING_WARN_ALERT
+    # `level_rose`, not `escalated`: WD-19 forbids setting the ES-4 `escalated`
+    # state field, and a same-named local doing different work invites a misread.
+    level_rose = level != current and (current is None or level == "critical")
+    if level_rose or (now - (state.get("last_pending_notify_at") or 0.0)) >= cooldown:
+        state["last_pending_notify_at"] = now
+        return "notify_pending", alert
+    return None, alert
+
+
 def render_plist_template(text: str, *, repo: str, home: str) -> str:
     """Expand the template's __REPO__/__HOME__ placeholders (WD-14).
 
@@ -652,6 +747,8 @@ def default_wd_state() -> dict:
         "last_throughput_notify_at": None,  # TP-4: throughput cooldown, independent of ES-3
         "disk_level": None,  # DS-8: current disk level, "warn" | "critical" | None (hysteresis memory)
         "last_disk_notify_at": None,  # DS-9: disk page cooldown, independent of ES-3/TP-4
+        "pending_level": None,  # WD-19: current horizon level, "warn" | "critical" | None
+        "last_pending_notify_at": None,  # WD-19: horizon page cooldown, independent of every other axis
     }
 
 
@@ -766,18 +863,21 @@ def _healthy_tick(
     disk_warn_gb: float = DEFAULT_DISK_WARN_GB,
     disk_critical_gb: float = DEFAULT_DISK_CRITICAL_GB,
     disk_hysteresis_gb: float = DEFAULT_DISK_HYSTERESIS_GB,
+    pending_warn_age_h: float = DEFAULT_PENDING_WARN_AGE_H,
+    pending_critical_age_h: float = DEFAULT_PENDING_CRITICAL_AGE_H,
 ) -> tuple[str, str | None]:
-    """Healthy-tick bookkeeping (TP-1..TP-5, DS-7..DS-9): diff the heartbeat
-    counters, sample disk pressure, reset the health counters, and return which
-    action the tick takes —
+    """Healthy-tick bookkeeping (TP-1..TP-5, DS-7..DS-9, WD-19): diff the
+    heartbeat counters, sample disk pressure and the pending horizon, reset the
+    health counters, and return which action the tick takes —
 
     ("notify_recovery", None) once an escalated episode ends (ES-4: the recovery
-    notification wins over any throughput or disk alert); ("notify_throughput",
-    label) when a throughput rule pages (TP-4: one page per hour on its own
-    cooldown, independent of ES-3); ("notify_disk", label) when disk pressure
-    pages (DS-9, one page per hour); or ("record", label|None) — the label, when
-    present, is a cooled-down alert that the caller still raises on the durable
-    ALARM surface (AF-3).
+    notification wins over any throughput, disk or horizon alert);
+    ("notify_throughput", label) when a throughput rule pages (TP-4: one page
+    per hour on its own cooldown, independent of ES-3); ("notify_disk", label)
+    when disk pressure pages (DS-9, one page per hour); ("notify_pending",
+    label) when the pending horizon pages (WD-19, one page per hour); or
+    ("record", label|None) — the label, when present, is a cooled-down alert
+    that the caller still raises on the durable ALARM surface (AF-3).
     """
     tracked, alert = throughput_diff(
         state.get("throughput"),
@@ -806,6 +906,15 @@ def _healthy_tick(
         critical_gb=disk_critical_gb,
         hysteresis_gb=disk_hysteresis_gb,
     )
+    # WD-19: sample the pending horizon on every healthy tick, like disk, so the
+    # level advances even on a tick whose page is cooled down or displaced.
+    pending_action, pending_alert = pending_horizon_tick(
+        state,
+        report.get("heartbeat"),
+        now,
+        warn_age_h=pending_warn_age_h,
+        critical_age_h=pending_critical_age_h,
+    )
     if alert:
         if (now - (state.get("last_throughput_notify_at") or 0.0)) >= NOTIFY_COOLDOWN:
             state["last_throughput_notify_at"] = now
@@ -816,7 +925,9 @@ def _healthy_tick(
         return "record", alert
     if disk_action == "notify_disk":
         return "notify_disk", disk_alert
-    return "record", disk_alert
+    if pending_action == "notify_pending":
+        return "notify_pending", pending_alert
+    return "record", disk_alert or pending_alert
 
 
 def _failure_ladder(
@@ -880,8 +991,10 @@ def decide_action(
     disk_warn_gb: float = DEFAULT_DISK_WARN_GB,
     disk_critical_gb: float = DEFAULT_DISK_CRITICAL_GB,
     disk_hysteresis_gb: float = DEFAULT_DISK_HYSTERESIS_GB,
+    pending_warn_age_h: float = DEFAULT_PENDING_WARN_AGE_H,
+    pending_critical_age_h: float = DEFAULT_PENDING_CRITICAL_AGE_H,
 ) -> dict:
-    """Pure decision ladder (WD-1..WD-12, PF-14, PF-16 reader half, ES-3/ES-4, TP-1..TP-8).
+    """Pure decision ladder (WD-1..WD-12, PF-14, PF-16 reader half, ES-3/ES-4, TP-1..TP-8, WD-19).
 
     Returns {"action", "restart", "notify", "alert", "state"} where "state" is
     the successor state — main() never computes state itself. "alert" carries
@@ -937,6 +1050,8 @@ def decide_action(
             disk_warn_gb=disk_warn_gb,
             disk_critical_gb=disk_critical_gb,
             disk_hysteresis_gb=disk_hysteresis_gb,
+            pending_warn_age_h=pending_warn_age_h,
+            pending_critical_age_h=pending_critical_age_h,
         )
         if kind == "notify_recovery":
             return finish("notify_recovery", notify=True)
@@ -944,6 +1059,10 @@ def decide_action(
             return finish("notify_throughput", notify=True, alert=alert)
         if kind == "notify_disk":
             return finish("notify_disk", notify=True, alert=alert)
+        if kind == "notify_pending":
+            # WD-19: notification-only. The daemon is alive; a deep queue may
+            # drain on its own, and a restart cannot transcribe faster.
+            return finish("notify_pending", notify=True, alert=alert)
         return finish("record", alert=alert)
 
     # TP-5: every tick that does not observe a fresh healthy heartbeat is an
@@ -1257,13 +1376,57 @@ def _disk_message(report: dict, decision: dict) -> str:
     )
 
 
-def _escalation_message(decision: dict, report: dict, now: float) -> str:
-    """Compose the notification text (ES-8, TP-7, DS-9): state the reason, name
-    the failure mode, and record any interpreter repoint."""
+def _pending_horizon_message(
+    report: dict,
+    decision: dict,
+    *,
+    warn_age_h: float = DEFAULT_PENDING_WARN_AGE_H,
+    critical_age_h: float = DEFAULT_PENDING_CRITICAL_AGE_H,
+) -> str:
+    """WD-19: compose the pending-horizon page with the numbers to act on.
+
+    Names how many recordings are waiting, how old the oldest is, and the
+    threshold that tripped — the *configured* one, so an operator override
+    (WD-19) is reported faithfully — plus the scan-window fact that makes it
+    urgent: past seven days the recording ages out of discovery and is never
+    transcribed, silently.
+    """
+    heartbeat = report.get("heartbeat") or {}
+    count, age_h = pending_horizon_from_payload(heartbeat)
+    critical = decision.get("alert") == PENDING_CRITICAL_ALERT
+    threshold = critical_age_h if critical else warn_age_h
+    severity = "critical" if critical else "warning"
+    count_text = str(count) if count is not None else "unknown"
+    age_text = f"{age_h:.1f}h" if age_h is not None else "unknown"
+    days = threshold / 24
+    return (
+        f"Transcriber pending horizon {severity}: {count_text} recording(s) waiting, oldest {age_text} — "
+        f"threshold {days:g} day{'s' if days != 1 else ''} ({threshold:g}h). The 7-day scan window is a hard "
+        "cutoff: drain the queue or the oldest recording ages out of discovery and is never transcribed."
+    )
+
+
+def _escalation_message(
+    decision: dict,
+    report: dict,
+    now: float,
+    *,
+    pending_warn_age_h: float = DEFAULT_PENDING_WARN_AGE_H,
+    pending_critical_age_h: float = DEFAULT_PENDING_CRITICAL_AGE_H,
+) -> str:
+    """Compose the notification text (ES-8, TP-7, DS-9, WD-19): state the reason,
+    name the failure mode, and record any interpreter repoint."""
     if decision["action"] == "notify_recovery":
         return "Transcriber health restored — heartbeat is fresh again."
     if decision.get("alert") in (DISK_WARN_ALERT, DISK_CRITICAL_ALERT):
         return _disk_message(report, decision)
+    if decision.get("alert") in (PENDING_WARN_ALERT, PENDING_CRITICAL_ALERT):
+        return _pending_horizon_message(
+            report,
+            decision,
+            warn_age_h=pending_warn_age_h,
+            critical_age_h=pending_critical_age_h,
+        )
     if decision.get("alert") in (PLATEAU_ALERT, FP_STALL_ALERT):
         # The 26-10-08 page would have said exactly what to try (relaunch the app).
         return _throughput_message(decision, now)
@@ -1318,6 +1481,8 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         disk_warn_gb=args.disk_warn_gb,
         disk_critical_gb=args.disk_critical_gb,
         disk_hysteresis_gb=args.disk_hysteresis_gb,
+        pending_warn_age_h=args.pending_warn_age_h,
+        pending_critical_age_h=args.pending_critical_age_h,
     )
     print(f"watchdog: {decision['action']}")
     attach_plist_drift(report, args)  # WD-14: reported every cycle, never acted on
@@ -1326,6 +1491,15 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
         print(f"alert: {decision['alert']}")
         if decision["alert"] in (DISK_WARN_ALERT, DISK_CRITICAL_ALERT):
             print(_disk_message(report, decision))
+        elif decision["alert"] in (PENDING_WARN_ALERT, PENDING_CRITICAL_ALERT):
+            print(
+                _pending_horizon_message(
+                    report,
+                    decision,
+                    warn_age_h=args.pending_warn_age_h,
+                    critical_age_h=args.pending_critical_age_h,
+                )
+            )
         else:
             print(_throughput_message(decision, now))
 
@@ -1346,7 +1520,13 @@ def run_watchdog_tick(args: argparse.Namespace) -> int:
     sync_alarm_marker(decision, report, now)  # AF-*: durable surface before the suppressible notification
 
     if decision["notify"]:
-        message = _escalation_message(decision, report, now)
+        message = _escalation_message(
+            decision,
+            report,
+            now,
+            pending_warn_age_h=args.pending_warn_age_h,
+            pending_critical_age_h=args.pending_critical_age_h,
+        )
         try:
             notify("Transcriber watchdog", message)
         except Exception as error:  # noqa: BLE001 — ES-6: never abort on notification failure
@@ -1530,6 +1710,18 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_DISK_HYSTERESIS_GB,
         help="GiB a disk level must clear above its threshold before stepping down (DS-8, LAG-910)",
+    )
+    parser.add_argument(
+        "--pending-warn-age-h",
+        type=float,
+        default=DEFAULT_PENDING_WARN_AGE_H,
+        help="oldest pending recording age in hours before a warning (WD-19, LAG-915)",
+    )
+    parser.add_argument(
+        "--pending-critical-age-h",
+        type=float,
+        default=DEFAULT_PENDING_CRITICAL_AGE_H,
+        help="oldest pending recording age in hours before a critical alert (WD-19, LAG-915)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="report only; never restart, write state, or notify (HC-9)"

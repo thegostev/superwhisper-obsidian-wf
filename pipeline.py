@@ -81,6 +81,12 @@ STATUS_IN_PROGRESS = "in_progress"
 _heartbeat_icloud_placeholders: dict | None = None
 _heartbeat_icloud_downloads_requested: int = 0  # IC-5 (LAG-813): latest preflight pass
 
+# HB-16 (LAG-915): the pending queue's depth and the oldest recording's age.
+# None until the daemon's first scan-cycle sample; the pair is updated together
+# so an empty queue (0, None) cannot leave a stale age behind.
+_heartbeat_pending_count: int | None = None
+_heartbeat_oldest_pending_age_h: float | None = None
+
 # HB-14: Just Press Record recordings not yet downloaded by iCloud exist only as
 # `.<name>.m4a.icloud` stubs. Matching is on the file NAME only: a substring test
 # on the full path is the known path-scope trap.
@@ -435,6 +441,20 @@ def measure_startup_gap(*, now: float | None = None) -> float | None:
     return _heartbeat_last_gap_s
 
 
+def _cache_pending_horizon(pending_count: int | None, oldest_pending_age_h: float | None) -> None:
+    """HB-16: cache the scan cycle's pending-horizon sample.
+
+    The pair moves together, so an empty queue ``(0, None)`` overwrites the
+    previous cycle's age; a call that does not know the sample (``None``) leaves
+    the caches alone.
+    """
+    global _heartbeat_pending_count, _heartbeat_oldest_pending_age_h
+    if pending_count is None:
+        return
+    _heartbeat_pending_count = pending_count
+    _heartbeat_oldest_pending_age_h = oldest_pending_age_h
+
+
 def write_heartbeat(
     phase: str,
     *,
@@ -446,6 +466,8 @@ def write_heartbeat(
     last_outcome: str | None = None,
     icloud_placeholders: dict | None = None,
     icloud_downloads_requested: int | None = None,
+    pending_count: int | None = None,
+    oldest_pending_age_h: float | None = None,
     force: bool = False,
     min_interval: float = HEARTBEAT_MIN_INTERVAL,
 ) -> bool:
@@ -496,6 +518,13 @@ def write_heartbeat(
     ``measure_startup_gap`` before the daemon's first write, ``null`` when that
     heartbeat was missing or unreadable. It remains cached for this process.
 
+    ``pending_count`` and ``oldest_pending_age_h`` (HB-16, LAG-915) are the
+    daemon's per-scan-cycle pending-horizon sample: how many recordings are
+    waiting and how old the oldest one is, in hours (``null`` when the queue is
+    empty). They are cached before the throttle check and updated together, so
+    a throttled write cannot lose the sample and an empty queue cannot leave a
+    stale age behind.
+
     Args:
         phase: One of "starting" | "scanning" | "processing" | "fatal".
         cycle: Scan-cycle number, when the caller knows it.
@@ -525,6 +554,7 @@ def write_heartbeat(
         # IC-5: cached before the throttle check — the preflight count is
         # reported once per cycle, and a throttled write must not drop it.
         _heartbeat_icloud_downloads_requested = icloud_downloads_requested
+    _cache_pending_horizon(pending_count, oldest_pending_age_h)  # HB-16, before the throttle check
     if phase == "fatal":
         force = True
     if not force and (now - _heartbeat_last_write) < min_interval:
@@ -558,6 +588,8 @@ def write_heartbeat(
         "icloud_placeholders": _heartbeat_icloud_placeholders,  # HB-14
         "icloud_downloads_requested": _heartbeat_icloud_downloads_requested,  # IC-5
         "last_gap_s": _heartbeat_last_gap_s,  # LAG-908
+        "pending_count": _heartbeat_pending_count,  # HB-16
+        "oldest_pending_age_h": _heartbeat_oldest_pending_age_h,  # HB-16
         # DS-6 (LAG-909/LAG-910): disk telemetry, schema v2. ``disk_free_*`` is
         # the lowest across the recordings store and all output roots;
         # ``disk_volumes`` carries the per-role detail the operator needs to
@@ -594,6 +626,30 @@ def write_heartbeat(
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
         return False
+
+
+def timestamp_from_path(audio_path: str) -> datetime | None:
+    """Parse Just Press Record's ``YYYY-MM-DD/HH-MM-SS.m4a`` naming, cheaply.
+
+    No subprocess and no filesystem access — the pending-horizon telemetry
+    (HB-16) dates every queued recording once per scan cycle, so ``mdls``
+    cannot be in this path. Returns naive Europe/Oslo wall-clock (the R10
+    contract), or None when the path does not carry the JPR naming.
+    """
+    try:
+        for part in reversed(Path(audio_path).parts):
+            if len(part) == 10 and part[4] == "-" and part[7] == "-":
+                try:
+                    dp, tp = part.split("-"), Path(audio_path).stem.split()[0].split("-")
+                    naive_jpr = datetime(int(dp[0]), int(dp[1]), int(dp[2]), int(tp[0]), int(tp[1]), int(tp[2]))
+                    # JPR filenames use CET (UTC+1 fixed). Convert to Europe/Oslo
+                    # so summer recordings (CEST) shift +1h to the meeting time.
+                    return naive_jpr.replace(tzinfo=JPR_FIXED_CET).astimezone(OSLO_TZ).replace(tzinfo=None)
+                except (ValueError, IndexError):
+                    continue
+    except Exception:  # noqa: BLE001 — a path that cannot be parsed has no timestamp
+        pass
+    return None
 
 
 def get_audio_timestamp(audio_path: str) -> datetime:
@@ -633,19 +689,9 @@ def get_audio_timestamp(audio_path: str) -> datetime:
     except Exception:
         pass
 
-    try:
-        for part in reversed(Path(audio_path).parts):
-            if len(part) == 10 and part[4] == "-" and part[7] == "-":
-                try:
-                    dp, tp = part.split("-"), Path(audio_path).stem.split()[0].split("-")
-                    naive_jpr = datetime(int(dp[0]), int(dp[1]), int(dp[2]), int(tp[0]), int(tp[1]), int(tp[2]))
-                    # JPR filename uses CET (UTC+1 fixed). Convert to Europe/Oslo so
-                    # summer recordings (CEST) shift +1h to match actual meeting time.
-                    return naive_jpr.replace(tzinfo=JPR_FIXED_CET).astimezone(OSLO_TZ).replace(tzinfo=None)
-                except (ValueError, IndexError):
-                    pass
-    except Exception:
-        pass
+    from_path = timestamp_from_path(audio_path)
+    if from_path is not None:
+        return from_path
 
     try:
         return datetime.fromtimestamp(Path(audio_path).stat().st_ctime, tz=OSLO_TZ).replace(tzinfo=None)

@@ -39,6 +39,8 @@ def fresh_writer_state():
     pipeline._heartbeat_icloud_placeholders = None  # HB-14 (LAG-814) placeholder count cache
     pipeline._heartbeat_icloud_downloads_requested = 0  # IC-5 (LAG-813) preflight count cache
     pipeline._heartbeat_last_gap_s = None  # LAG-908 startup-gap cache
+    pipeline._heartbeat_pending_count = None  # HB-16 (LAG-915) pending-horizon caches
+    pipeline._heartbeat_oldest_pending_age_h = None
     yield
 
 
