@@ -6,6 +6,7 @@ Runs as a launchd service. See README.md for setup instructions.
 import itertools
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from config import (
@@ -26,6 +27,7 @@ from config import (
 )
 from icloud_preflight import run_preflight
 from pipeline import (
+    OSLO_TZ,
     SALVAGE_PASS_EVERY_N_CYCLES,
     STARTUP_GAP_THRESHOLD_S,
     TIMESTAMP_FORMAT,
@@ -43,6 +45,7 @@ from pipeline import (
     report_startup_gap,
     save_state,
     set_heartbeat_writer,
+    timestamp_from_path,
     write_heartbeat,
 )
 
@@ -112,14 +115,75 @@ def _iter_unprocessed_audio(watch_folder, state):
             yield file_path
 
 
-def _pending_file_count(state):
-    """Count queued state entries plus not-yet-terminal audio in the scan window."""
+def _pending_paths(state) -> set[str]:
+    """Queued state entries plus not-yet-terminal audio in the scan window."""
     processed = state.get("processed", {})
     pending = {
         path for path, record in processed.items() if record.get("status") not in ("complete", "failed_permanent")
     }
     pending.update(_iter_unprocessed_audio(WATCH_FOLDER, state))
-    return len(pending)
+    return pending
+
+
+def _pending_file_count(state):
+    """Count queued state entries plus not-yet-terminal audio in the scan window."""
+    return len(_pending_paths(state))
+
+
+def _recording_timestamp(path: str, record: dict | None) -> datetime | None:
+    """The recording's own time, from the cheapest source that knows it.
+
+    The state record's ``timestamp`` (set at discovery from the recording
+    metadata) wins; then JPR's path naming, which costs no subprocess; the
+    caller falls back to the file's mtime. ``processed_at`` is only a last
+    resort inside the state record — it is later than the recording, so it
+    under-estimates the age and cannot page early.
+    """
+    for key in ("timestamp", "processed_at"):
+        raw = (record or {}).get(key)
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            continue
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(OSLO_TZ).replace(tzinfo=None)
+        return parsed
+    from_path = timestamp_from_path(path)
+    if from_path is not None:
+        return from_path
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime, tz=OSLO_TZ).replace(tzinfo=None)
+    except OSError:
+        return None
+
+
+def _pending_horizon(state, now: datetime | None = None) -> dict:
+    """HB-16: the pending queue's depth and oldest recording age, in hours.
+
+    Age derives from each recording's own timestamp, never from discovery
+    order: folders are scanned oldest-first, but that says nothing about a
+    recording that synced into a newer folder late. Sampled once per scan
+    cycle; a failure logs a warning and returns nothing, so the heartbeat keeps
+    the previous sample rather than breaking the scan (HB-16).
+    """
+    try:
+        pending = _pending_paths(state)
+        now_local = now if now is not None else _now_local()
+        oldest_h = None
+        for path in pending:
+            # A pending entry whose audio and metadata are both gone still
+            # counts; dating it "now" is conservative (age 0) and keeps count>0
+            # from pairing with a null age, which the reader would take for an
+            # empty queue.
+            timestamp = _recording_timestamp(path, state.get("processed", {}).get(path)) or now_local
+            age_h = max(0.0, (now_local - timestamp).total_seconds() / 3600.0)
+            oldest_h = age_h if oldest_h is None else max(oldest_h, age_h)
+        return {"pending_count": len(pending), "oldest_pending_age_h": oldest_h}
+    except Exception as e:  # noqa: BLE001 — telemetry must never break the scan cycle
+        print(f"   ⚠️  Pending horizon sample failed, continuing scan: {e}", flush=True)
+        return {}
 
 
 def _startup_pending_context(state, gap_s):
@@ -168,7 +232,11 @@ def run_scan_cycle(state, transcript_index, cycle_number):
     # HB-1: at least one heartbeat attempt per scan cycle. The throttle (15 s)
     # may suppress the file write; the 30 s scan interval keeps the file fresh.
     write_heartbeat(
-        "scanning", cycle=cycle_number, icloud_placeholders=_icloud_placeholder_count(), **_heartbeat_counts(state)
+        "scanning",
+        cycle=cycle_number,
+        icloud_placeholders=_icloud_placeholder_count(),
+        **_pending_horizon(state),  # HB-16: one sample per scan cycle
+        **_heartbeat_counts(state),
     )
     # IC-5: the request count rides on the next heartbeat — the writer caches it
     # before its throttle check, so a throttled write here still surfaces it on
