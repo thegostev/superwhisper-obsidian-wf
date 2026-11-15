@@ -9,21 +9,24 @@
 # Anti-storm rules: when no working interpreter can be produced it exits 0 so
 # KeepAlive{SuccessfulExit:false} does not respawn it (PF-9); it honours a
 # fresh phase="fatal" heartbeat by exiting 0 (PF-16); it defers during a
-# Homebrew operation (PF-15); it rebuilds at most once per hour (PF-8) under
-# an atomic lock (PF-10) with a rebuild-in-progress marker the watchdog reads
-# as "busy" (PF-14).
+# Homebrew operation (PF-15); it refuses to start below the free-space floor
+# and exits 0 with an escalation (PF-18); it rebuilds at most once per hour
+# (PF-8) under an atomic lock (PF-10) with a rebuild-in-progress marker the
+# watchdog reads as "busy" (PF-14).
 #
-# Verbs (PF-12, PF-17): probe <interpreter> | candidate-probe <interpreter> |
-# select | candidates | availability — everything else is wrapper mode.
-# --dry-run (PF-11) prints the decision without acting.
+# Verbs (PF-12, PF-17, PF-18): probe <interpreter> | candidate-probe
+# <interpreter> | select | candidates | availability | disk-space —
+# everything else is wrapper mode. --dry-run (PF-11) prints the decision
+# without acting.
 #
 # Test hooks (env): PREFLIGHT_CANDIDATES (colon-separated candidate list),
 # PREFLIGHT_NOTIFY=0 (suppress osascript, print instead), PREFLIGHT_PIP_CMD
 # (override the pip install step), PREFLIGHT_HEARTBEAT (heartbeat path),
 # PREFLIGHT_SCUTIL / PREFLIGHT_LAUNCHCTL / PREFLIGHT_LABEL (PF-17 probe
 # fixtures), PREFLIGHT_AVAILABILITY=0 (bypass the wrapper gate for isolated
-# venv-ladder tests). All persistent state lives under $HOME, outside the
-# repository.
+# venv-ladder tests), PREFLIGHT_DF / PREFLIGHT_DISK_PATH /
+# PREFLIGHT_DISK_MIN_FREE_KIB (PF-18 fixtures). All persistent state lives
+# under $HOME, outside the repository.
 
 set -u -o pipefail
 
@@ -48,6 +51,16 @@ AVAILABILITY_CHECK="${PREFLIGHT_AVAILABILITY:-1}"
 REBUILD_COOLDOWN_SECS=3600   # PF-8
 REBUILD_BUDGET_SECS=1800     # PF-10/PF-14
 FATAL_FRESH_SECS=300         # PF-16: a fatal heartbeat older than this is history
+
+# PF-18: free-space hard stop. Below 2 GiB the daemon cannot persist its
+# heartbeat or state (HB-10): it starts, fails every write, and is
+# indistinguishable from a dead process. The daemon's own handoff floor is
+# higher and configurable (DS-2, disk_min_free_gb, default 5 GiB); this is the
+# floor below which starting at all is pointless. $HOME is probed because the
+# heartbeat and state files live there.
+DISK_MIN_FREE_KIB="${PREFLIGHT_DISK_MIN_FREE_KIB:-2097152}"   # 2 GiB
+DISK_CHECK_PATH="${PREFLIGHT_DISK_PATH:-$HOME_DIR}"
+DF_BIN="${PREFLIGHT_DF:-df}"
 
 PF13_CANDIDATE_PROBE='import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'
 PF13_FULL_PROBE='import sys, yaml; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'
@@ -109,6 +122,49 @@ check_availability() {
         return 21
     fi
     say "availability: OK (console uid=$uid, $JOB_LABEL loaded)"
+    return 0
+}
+
+disk_reading() {
+    # PF-18: POSIX df (-P) keeps one record per filesystem even when the device
+    # name is long. Prints "<available KiB>\t<mount point>", or nothing when the
+    # probe fails.
+    "$DF_BIN" -kP "$1" 2>/dev/null | awk 'NR == 2 { print $4 "\t" $6 }'
+}
+
+format_kib() {
+    # Human units for the disk messages: KiB below a MiB, MiB below a GiB.
+    awk -v kib="$1" 'BEGIN {
+        if (kib < 1024) printf "%d KiB", kib
+        else if (kib < 1048576) printf "%.1f MiB", kib / 1024
+        else printf "%.1f GiB", kib / 1048576
+    }'
+}
+
+check_disk_space() {
+    # PF-18: exit 0 above the floor (or when free space cannot be read — an
+    # unreadable probe is not evidence of a full disk), 30 below it with
+    # remediation named. Reusable by verify_service.sh (STB-16).
+    local reading free_kib mount free_display floor_display
+    reading="$(disk_reading "$DISK_CHECK_PATH")"
+    if [ -z "$reading" ]; then
+        say "disk: cannot read free space for $DISK_CHECK_PATH — continuing"
+        return 0
+    fi
+    IFS=$'\t' read -r free_kib mount <<< "$reading"
+    case "$free_kib" in
+        "" | *[!0-9]*)
+            say "disk: unreadable free space for $DISK_CHECK_PATH — continuing"
+            return 0 ;;
+    esac
+    free_display="$(format_kib "$free_kib")"
+    floor_display="$(format_kib "$DISK_MIN_FREE_KIB")"
+    if [ "$free_kib" -lt "$DISK_MIN_FREE_KIB" ]; then
+        say "disk: ${free_display} free on ${mount:-$DISK_CHECK_PATH} — below the ${floor_display} floor (exit 30)."
+        say "Free space with ./run_transcriber.sh cleanup-recordings --apply; see docs/runbooks/enospc.md"
+        return 30
+    fi
+    say "disk: ${free_display} free on ${mount:-$DISK_CHECK_PATH} (floor ${floor_display})"
     return 0
 }
 
@@ -324,7 +380,8 @@ swap_in_venv() {
     fi
     mv "$VENV_NEW" "$VENV_DIR"
     # retain only the most recent broken copy
-    ls -d "$SCRIPT_DIR"/venv.broken.* 2>/dev/null | sort -r | tail -n +2 | xargs rm -rf 2>/dev/null || true
+    find "$SCRIPT_DIR" -maxdepth 1 -type d -name 'venv.broken.*' -print 2>/dev/null |
+        sort -r | tail -n +2 | while IFS= read -r broken; do rm -rf "$broken"; done
 }
 
 rebuild_flow() {
@@ -386,6 +443,19 @@ wrapper() {
                     "Availability precondition failed (exit $availability_rc): no logged-in GUI session or $JOB_LABEL not loaded. Not starting the daemon."
                 exit 0
             fi
+        fi
+    fi
+
+    # PF-18: a volume below the floor cannot hold the heartbeat or state, so a
+    # start would yield a daemon that is alive but unobservable. Escalate and
+    # exit 0 (PF-9): KeepAlive{SuccessfulExit:false} must not respawn it.
+    if ! check_disk_space; then
+        if [ "$dry_run" = "1" ]; then
+            say "dry-run: disk precondition unmet — a real run would escalate and exit 0"
+        else
+            escalate "Transcriber preflight" \
+                "Low disk space: below the $(format_kib "$DISK_MIN_FREE_KIB") floor. Free space before restarting (docs/runbooks/enospc.md). Not starting the daemon."
+            exit 0
         fi
     fi
 
@@ -454,6 +524,8 @@ case "${1:-}" in
         exit 0 ;;
     availability)
         check_availability ;;
+    disk-space)
+        check_disk_space ;;
     --dry-run)
         wrapper "$@" ;;
     *)
