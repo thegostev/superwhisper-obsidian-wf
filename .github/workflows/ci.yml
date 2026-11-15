@@ -93,11 +93,17 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
       - name: Ruff check
         run: ruff check .
 
       - name: Ruff format check
         run: ruff format --check .
+
+      - name: Shellcheck
+        run: shellcheck preflight.sh
 
   typecheck:
     name: Type check

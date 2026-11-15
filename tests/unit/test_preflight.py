@@ -13,6 +13,7 @@ PREFLIGHT_NOTIFY=0, PREFLIGHT_PIP_CMD, PREFLIGHT_HEARTBEAT.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,6 +23,9 @@ import pytest
 
 PROJECT_DIR = Path(__file__).parents[2]
 SCRIPT = PROJECT_DIR / "preflight.sh"
+
+HEALTHY_FREE_KIB = 50 * 1024 * 1024  # 50 GiB
+LOW_FREE_KIB = 1024 * 1024  # 1 GiB, below the PF-18 floor of 2 GiB
 
 # Overwritten by the deploy fixture with fake candidate interpreter paths.
 CAND_OK = "/nonexistent/cand_ok"
@@ -62,6 +66,20 @@ VENVPY_OK = '#!/bin/sh\ncase "$1" in -c) exit 0 ;; *) echo "DAEMON-RAN $*"; exit
 VENVPY_BAD = "#!/bin/sh\nexit 3\n"
 
 
+def write_df(shim_bin, free_kib, mount="/Volumes/Fake"):
+    """A POSIX `df -kP` shim reporting *free_kib* available on *mount*."""
+    path = shim_bin / "df"
+    path.write_text(
+        "#!/bin/sh\n"
+        "cat <<'EOF'\n"
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        f"/dev/fake 100000000 0 {free_kib} 0% {mount}\n"
+        "EOF\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
 @pytest.fixture
 def deploy(tmp_path, monkeypatch):
     """A throwaway deploy dir containing the real preflight.sh and shims."""
@@ -76,6 +94,8 @@ def deploy(tmp_path, monkeypatch):
     pgrep = shim_bin / "pgrep"
     pgrep.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")  # no brew running
     pgrep.chmod(0o755)
+    # PF-18: a deterministic `df` — tests must never depend on host free space.
+    write_df(shim_bin, HEALTHY_FREE_KIB)
 
     # Fake candidate interpreters: cand_ok builds a venv that passes the full
     # probe; cand_bad builds one that fails it. Both pass the candidate probe.
@@ -214,6 +234,61 @@ class TestVerbs:
         assert result.returncode == 0
         assert "FAIL /nonexistent/x" in result.stdout
         assert f"PASS {REAL_PROBE_PYTHON}" in result.stdout
+
+
+class TestDiskSpace:
+    """PF-18: a full volume stops the start; it must not yield a daemon that is
+    alive but cannot persist its heartbeat or state (HB-10)."""
+
+    def test_verb_reports_healthy_volume(self, deploy):
+        result = run_preflight(deploy, "disk-space")
+        assert result.returncode == 0
+        assert "50.0 GiB free" in result.stderr
+        assert "floor 2.0 GiB" in result.stderr
+
+    def test_verb_below_floor_exits_30_naming_volume_and_threshold(self, deploy):
+        write_df(Path(os.environ["PATH"].split(":")[0]), LOW_FREE_KIB, mount="/Volumes/Scratch")
+        result = run_preflight(deploy, "disk-space")
+        assert result.returncode == 30
+        assert "/Volumes/Scratch" in result.stderr
+        assert "1.0 GiB free" in result.stderr
+        assert "2.0 GiB" in result.stderr
+        assert "cleanup-recordings" in result.stderr
+
+    def test_verb_fails_open_when_df_is_unreadable(self, deploy):
+        df = Path(os.environ["PATH"].split(":")[0]) / "df"
+        df.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        df.chmod(0o755)
+        result = run_preflight(deploy, "disk-space")
+        assert result.returncode == 0
+        assert "cannot read free space" in result.stderr
+
+    def test_low_disk_blocks_daemon_start(self, deploy):
+        make_venv(deploy)
+        write_df(Path(os.environ["PATH"].split(":")[0]), LOW_FREE_KIB)
+        result = run_preflight(deploy)
+        assert result.returncode == 0  # PF-9: the wrapper never exits nonzero
+        assert "DAEMON-RAN" not in result.stdout
+        assert "Low disk space" in result.stderr
+        assert "ESCALATION" in result.stderr
+
+    def test_dry_run_reports_low_disk_without_exec(self, deploy):
+        make_venv(deploy)
+        write_df(Path(os.environ["PATH"].split(":")[0]), LOW_FREE_KIB)
+        result = run_preflight(deploy, "--dry-run")
+        assert result.returncode == 0
+        assert "DAEMON-RAN" not in result.stdout
+        assert "dry-run: disk precondition unmet" in result.stderr
+
+
+def test_preflight_is_shellcheck_clean():
+    """The wrapper is parsed by launchd's bash; static analysis catches the
+    mistakes the subprocess tests cannot reach."""
+    shellcheck = shutil.which("shellcheck")
+    if shellcheck is None:
+        pytest.skip("shellcheck not installed")
+    result = subprocess.run([shellcheck, str(SCRIPT)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 class TestWrapperExec:

@@ -110,6 +110,7 @@ The machine-specific config keys — watch folder, vault folders, mode key — s
 | `./run_transcriber.sh health` | Report liveness; exit code 0 means healthy, 1 means unhealthy |
 | `./run_transcriber.sh maintenance-end` | Finish `launchctl` maintenance: remove the pause sentinel, bootstrap the daemon, wait up to 60 s for a fresh heartbeat. Exit 0 means PASS |
 | `./preflight.sh availability` | Assert the availability contract: exit 0 = console session + daemon job loaded, 20 = no console user, 21 = job not loaded |
+| `./preflight.sh disk-space` | Assert the free-space floor: exit 0 = at least 2 GiB free (or unreadable), 30 = below the floor. Recovery: `docs/runbooks/enospc.md` |
 | `./run_transcriber.sh catchup [days]` | Process recordings the service missed — default 7 days, including recordings already marked permanently failed. Back up your vault before running this against a large backlog |
 | `./run_transcriber.sh catchup-preview [days]` | Run catchup without processing files |
 | `./run_transcriber.sh cleanup-recordings` | Preview deletion of expired consumed and orphan session dirs (dry run; add `--apply` to delete) |
@@ -126,6 +127,8 @@ The templates have two non-obvious requirements:
 The daemon template also sources `$HOME/.secrets/koding-transcriber.env` before starting — the author's personal secrets path. Edit or remove that line for your machine.
 
 The service only runs inside a logged-in GUI session. If a deploy or reboot leaves the Mac at the login window, the LaunchAgents never load and the service is silently down. `preflight.sh` now checks that contract before starting the daemon and refuses without a partial start; for a deploy-time check run `./preflight.sh availability` — exit 20 means no console user, exit 21 means the job is not loaded (the message names the bootstrap command).
+
+The preflight also refuses to start below 2 GiB free on the volume holding `$HOME`. Below that floor the daemon cannot write its heartbeat or state, so it would be alive but unobservable — and no restart can fix a full disk. Check before a deploy with `./preflight.sh disk-space` (exit 30 means below the floor); the recovery procedure is in `docs/runbooks/enospc.md`.
 
 > When the launchd service is loaded, `./run_transcriber.sh start` won't start — this prevents two daemons from racing. Manage the service through one mechanism or the other, not both.
 
