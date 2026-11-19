@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Automated audio transcription and analysis via Superwhisper"
 requires-python = ">=3.12"
 dependencies = [
-    "PyYAML>=6.0",
+    "PyYAML>=6.0.3",
 ]
 
 [project.optional-dependencies]
