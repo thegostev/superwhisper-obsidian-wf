@@ -151,6 +151,17 @@ STABILITY_POLLS_FLOOR = 10
 STABILITY_POLLS_CEILING = 120
 STABILITY_POLLS_PER_30S = 1  # add 1 poll per 30s of audio duration
 
+# LAG-913 (spec CB-25): class-D fast-fail. A session dir with no `meta.json` at
+# all is invisible to the empty-stub tracker above, so the attempt used to burn
+# the full wait budget (3600 s) while three real meetings queued behind it — the
+# 2026-10-30 disk-full handoff left a 197 MB `output.wav` and no metadata. Only
+# dirs created after handoff delivery are candidates (a stale stub from an
+# earlier attempt is not this attempt's session), and the budget shares R6's
+# 10..120 poll bounds: ~30 s for a short clip, at most ~6 min for a long meeting
+# at the 3 s poll interval.
+CLASS_D_FASTFAIL_POLLS_FLOOR = 10
+CLASS_D_FASTFAIL_POLLS_CEILING = 120
+
 # R8: salvage-pass re-check interval. recover_failed_permanent runs at daemon startup
 # and every N scan cycles, so a stub that completes after startup is still salvaged.
 SALVAGE_PASS_EVERY_N_CYCLES = 10
@@ -994,6 +1005,20 @@ class SuperwhisperResult(str):
         return result
 
 
+def _scaled_poll_budget(expected_duration_ms: int | None, floor: int, ceiling: int) -> int:
+    """Scale a poll budget with audio duration using R6's one-poll-per-30s rule.
+
+    Short audio gets ``floor`` polls; long audio gets proportionally more so the
+    LLM pass has time to start; the result is bounded to ``ceiling`` so a stuck
+    dependency cannot hold the queue for hours. Used by the class-D fast-fail
+    (CB-25), whose bounds are 10..120 polls — about 30 s to 6 min at the 3 s poll.
+    """
+    if not expected_duration_ms or expected_duration_ms <= 0:
+        return floor
+    scaled = floor + int(expected_duration_ms / 1000 / 30) * STABILITY_POLLS_PER_30S
+    return min(ceiling, max(floor, scaled))
+
+
 def wait_for_superwhisper_result(
     file_path: str,
     since: float,
@@ -1048,6 +1073,13 @@ def wait_for_superwhisper_result(
         SUPERWHISPER_TIMEOUT from the start of this wait - Superwhisper is
         demonstrably working on our file, so a stale flag must not fail a
         healthy long meeting.
+
+    CB-25 (LAG-913): class-D fast-fail. A session dir created after handoff
+        delivery that still has no `meta.json` after `class_d_fastfail_polls`
+        (scaled 10..120 by audio duration) is a truncated handoff, not a
+        recording in progress: fail the attempt with PermanentFileError
+        instead of waiting out the full deadline. `languageModelProcessingTime`
+        in a readable meta.json is proof of life and is never class D.
     """
     recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
     if not recordings_dir.exists():
@@ -1074,8 +1106,15 @@ def wait_for_superwhisper_result(
     else:
         stability_polls = RECORDING_STABILITY_POLLS
 
+    # CB-25: class-D budget, scaled 10..120 by duration like R6.
+    class_d_fastfail_polls = _scaled_poll_budget(
+        expected_duration_ms, CLASS_D_FASTFAIL_POLLS_FLOOR, CLASS_D_FASTFAIL_POLLS_CEILING
+    )
+
     # Empty-stub stability tracker: dir name → (last_mtime, count).
     stub_stability: dict[str, tuple[float, int]] = {}
+    # CB-25: meta-less (class D) stability tracker: dir name → (last_mtime, count).
+    class_d_stability: dict[str, tuple[float, int]] = {}
     # R5: write-stability tracker for CATEGORY-bearing llmResults: dir name → (last_mtime, last_size, count).
     write_stability: dict[str, tuple[float, int, int]] = {}
     # LAG-805: newest transcript seen in a matched dir, attached to a deadline /
@@ -1112,7 +1151,16 @@ def wait_for_superwhisper_result(
 
             info = _read_recording_meta(entry)
             if info is None:
+                # CB-25 (LAG-913): a dir created after handoff delivery with no
+                # meta.json at all is class D. A corrupt/partial meta.json is a
+                # write in progress, not class D, so only a *missing* file
+                # advances the tracker. Dirs older than the handoff are stale
+                # stubs from an earlier attempt and are not this session.
+                _track_class_d(entry, mtime, accept_from, class_d_stability, class_d_fastfail_polls, file_path)
                 continue  # meta.json not ready yet
+
+            # CB-25: meta.json arrived — this dir is no longer class D.
+            class_d_stability.pop(entry.name, None)
 
             # R3: duration-based correlation. Skip recordings whose duration doesn't
             # match the source audio within tolerance.
@@ -1290,6 +1338,66 @@ def _check_stub_abandoned(
                 f"Will retry on the next scan cycle. Recording dir: {entry.name}"
             ),
             recovery,
+        )
+
+
+def _track_class_d(
+    entry: Path,
+    mtime: float,
+    accept_from: float,
+    class_d_stability: dict[str, tuple[float, int]],
+    polls: int,
+    file_path: str,
+) -> None:
+    """CB-25: advance the class-D tracker for a meta-less session dir.
+
+    Only a session *dir* that appeared after handoff delivery is this attempt's
+    candidate; stray files (`.DS_Store`) and stale stubs from an earlier attempt
+    are not. A present-but-unreadable meta.json is a write in progress, so it is
+    not class D either. Raises permanently once the scaled budget is spent.
+    """
+    if entry.is_dir() and not (entry / "meta.json").exists() and mtime > accept_from:
+        _check_class_d_abandoned(class_d_stability, entry, mtime, polls, file_path)
+
+
+def _check_class_d_abandoned(
+    class_d_stability: dict[str, tuple[float, int]],
+    entry: Path,
+    mtime: float,
+    polls: int,
+    file_path: str,
+) -> None:
+    """CB-25 (LAG-913): a session dir that never produced meta.json.
+
+    Superwhisper creates the session dir first and writes ``meta.json`` once it
+    has metadata to record. A dir that stays meta-less for the whole scaled
+    budget is a truncated handoff — the 2026-10-30 disk-full case left a 197 MB
+    ``output.wav`` and no metadata — so re-opening the audio file is the only
+    way to get a result and this dir will never yield one. Raise
+    ``PermanentFileError`` per CB-25 so the attempt fails now instead of burning
+    the full wait budget; recovering the audio takes a fresh handoff (a manual
+    redrive can open one).
+
+    ``mtime`` stability guards against a dir being replaced mid-write; the
+    tracker resets whenever the dir changes. Caller only passes dirs created
+    after handoff delivery.
+    """
+    previous = class_d_stability.get(entry.name)
+    if previous is None:
+        class_d_stability[entry.name] = (mtime, 1)
+        return
+    previous_mtime, count = previous
+    if mtime != previous_mtime:
+        class_d_stability[entry.name] = (mtime, 1)
+        return
+    count += 1
+    class_d_stability[entry.name] = (mtime, count)
+    if count >= polls:
+        raise PermanentFileError(
+            f"Superwhisper session dir {entry.name} for {Path(file_path).name} has no "
+            f"meta.json after {count} polls ({count * SUPERWHISPER_POLL_INTERVAL}s): the "
+            f"handoff was opened but never materialized (truncated recording, e.g. a full "
+            f"disk). This dir cannot yield a result; recovering the audio needs a fresh handoff (redrive)."
         )
 
 

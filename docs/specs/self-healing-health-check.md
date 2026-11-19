@@ -274,6 +274,12 @@ Post-mortem 26-10-08, recommendation 2b: healthy handoff latency is 55–100 s, 
 - **CB-23** The cheap budget MUST last exactly as long as the flag: the first `success` outcome clears `dependency_down` (CB-3), so the next attempt is priced at `superwhisper_timeout` again. Failed attempts under the flag MUST NOT restore the full budget (the flag is sticky).
 - **CB-24** A capped attempt MUST extend its deadline to `superwhisper_timeout` (measured from the start of the wait, never beyond it) once a recording that passes the R3 duration filter shows its LLM pass in flight (`languageModelProcessingTime` present, no `llmResult` yet), logged once per attempt. That is proof Superwhisper is working on this file; without it, a healthy meeting longer than the fast budget would fail under a stale flag and could be pushed to `failed_permanent` by the very pricing meant to protect it. A duration-mismatched recording MUST NOT count, and an uncapped wait is never extended.
 
+### Class-D fast-fail (LAG-913)
+
+Post-mortem 2026-11-03, recommendation P1-4. On 2026-10-30 the Data volume filled: Superwhisper wrote a truncated 197 MB `output.wav` and never wrote `meta.json`. The dir satisfied the CB-10 accept window — the window asks "did Superwhisper take a handoff?", and `meta.json` need not exist — while the empty-stub tracker had nothing to watch, so the attempt burned the full 3600 s budget. The 1.02 s `18-44-58.m4a` stub was still `in_flight` at 635 s with three real meetings queued behind it.
+
+- **CB-25** `wait_for_superwhisper_result` MUST fail a class-D attempt — a session dir with no `meta.json` at all — with `PermanentFileError` once the dir has stayed meta-less for `class_d_fastfail_polls`, scaled 10..120 polls by audio duration with R6's one-poll-per-30s rule (no duration → 10 polls; ≤120 polls, under 6 min at the 3 s poll). Only dirs created after handoff delivery are candidates: a meta-less dir older than `handed_off_at` is a stale stub from an earlier attempt and MUST NOT be counted as this attempt's session. A dir whose `meta.json` is present but unreadable/partial is a write in progress, not class D, and MUST NOT advance the tracker; the tracker MUST reset when the dir's mtime changes. A readable `meta.json` carrying `languageModelProcessingTime` is proof of life, not class D (CB-24). A valid `CATEGORY:`-bearing `llmResult` MUST still return after the R5 write-stability check.
+
 ---
 
 ## IC — iCloud placeholder preflight (input materialization)
@@ -388,6 +394,7 @@ Every requirement in this document has a row naming the test or review that veri
 | CB-22 | `tests/unit/test_dependency_down_pricing.py` — `TestBudgetSelection` (flag on/off, cap never above the full budget, disable, purity), `TestBudgetConfig` (default, config key, example config), `TestWaitHonoursBudget`, `TestProcessAudioPricing` (wait argument, `attempt_budget_s`, log line) (LAG-803) |
 | CB-23 | `tests/unit/test_dependency_down_pricing.py` — `TestFlagLifecycle` (trip → fast budget → success → full budget; failures stay fast) |
 | CB-24 | `tests/unit/test_dependency_down_pricing.py` — `TestLivenessExtension` (in-flight LLM pass extends to the full budget, bounded, logged once, R3 mismatch ignored, uncapped wait untouched) |
+| CB-25 | `tests/unit/test_class_d_fast_fail.py` — budget bound (≤120 polls, under 6 min), stale-dir exclusion, success path, `languageModelProcessingTime` proof of life, unreadable meta, 2026-10-30/18-44-58 regression (LAG-913) |
 | IC-1, IC-2 | `tests/unit/test_icloud_preflight.py` — `TestPlaceholderDetection` (nested date dirs, non-audio stubs ignored), `TestDaemonWiring` (scan-window folders) (LAG-813) |
 | IC-3, IC-4 | `tests/unit/test_icloud_preflight.py` — `TestRequestDownloads` (argv, timeout, cooldown, cap, missing binary, non-zero exit) |
 | IC-5 | `tests/unit/test_icloud_preflight.py` — `TestSummaryAndHeartbeat` (silent no-op, summary line, heartbeat field) |
