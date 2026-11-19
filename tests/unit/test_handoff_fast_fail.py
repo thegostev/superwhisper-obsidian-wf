@@ -181,11 +181,26 @@ class TestAcceptWindow:
             wait_for_superwhisper_result("x.m4a", since=start - 1, handed_off_at=start)
 
     def test_session_dir_with_no_meta_yet_counts_as_accepted(self, recordings_dir, clock, monkeypatch):
-        """The dir itself is the acceptance signal; meta.json may land later."""
+        """The dir itself is the acceptance signal; meta.json may land later.
+
+        LAG-913/CB-25: a dir that *never* gets meta.json now fails as class D,
+        so this test brings meta.json in before the class-D budget elapses.
+        """
         monkeypatch.setattr(pipeline, "SUPERWHISPER_TIMEOUT", 900)
-        _session_dir(recordings_dir, "fresh", clock.now + 1, meta=None)
+        start = clock.now
+        _session_dir(recordings_dir, "fresh", start + 1, meta=None)
+
+        def add_meta(c: FakeClock) -> None:
+            if c.now - start >= 6 and not (recordings_dir / "fresh" / "meta.json").exists():
+                (recordings_dir / "fresh" / "meta.json").write_text(
+                    json.dumps({"languageModelProcessingTime": 1}), encoding="utf-8"
+                )
+                os.utime(recordings_dir / "fresh" / "meta.json", (c.now, c.now))
+                os.utime(recordings_dir / "fresh", (c.now, c.now))
+
+        clock.on_tick.append(add_meta)
         with pytest.raises(TimeoutError) as excinfo:
-            wait_for_superwhisper_result("x.m4a", since=clock.now - 1, handed_off_at=clock.now)
+            wait_for_superwhisper_result("x.m4a", since=start - 1, handed_off_at=start)
         assert not isinstance(excinfo.value, SuperwhisperNotAcceptingError)
 
     def test_old_consumed_and_non_dir_entries_do_not_count_as_acceptance(self, recordings_dir, clock):
