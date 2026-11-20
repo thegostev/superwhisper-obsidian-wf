@@ -1161,8 +1161,14 @@ class TestWatchdogWrappers:
         assert recorded["kwargs"].get("timeout") is not None
 
     def test_bootstrap_repair_uses_bootstrap_verb_plist_and_timeout(self, monkeypatch):
-        """WD-7/WD-8: absolute binary, gui/<uid>/<label> domain target, the plist
-        as the final argument, timeout set."""
+        """WD-7/WD-8: absolute binary, gui/<uid> domain target, the plist as
+        the final argument, timeout set.
+
+        `launchctl bootstrap` takes the DOMAIN (gui/<uid>) plus plist paths;
+        gui/<uid>/<label> is a service target, so launchctl prints usage and
+        exits non-zero — the 26-11-20 outage, where neither the watchdog nor
+        maintenance-end could restore a booted-out job.
+        """
         recorded = {}
 
         def fake_run(cmd, **kwargs):
@@ -1174,7 +1180,8 @@ class TestWatchdogWrappers:
         cmd = recorded["cmd"]
         assert cmd[0] == health_check.LAUNCHCTL_BIN  # WD-8
         assert "bootstrap" in cmd
-        assert f"gui/{os.getuid()}/com.alex.transcriber" in cmd
+        assert f"gui/{os.getuid()}" in cmd
+        assert f"gui/{os.getuid()}/com.alex.transcriber" not in cmd
         assert cmd[-1] == "/tmp/daemon.plist"
         assert recorded["kwargs"].get("timeout") is not None  # WD-7
 

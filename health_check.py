@@ -1178,16 +1178,19 @@ def kickstart(label: str, *, kill: bool = False) -> bool:
 
 def bootstrap_repair(label: str, plist_path: str) -> bool:
     """Tier-0 repair for service_not_loaded (WD-9 revision, LAG-673):
-    `launchctl bootstrap gui/<uid>/<label> <plist>` — the only repair for a
-    `launchctl bootout`, which removes the job from the domain entirely
-    (`kickstart` cannot undo it; the 26-09-16 outage ran 63h on exactly that).
+    `launchctl bootstrap gui/<uid> <plist>` — the only repair for a `launchctl
+    bootout`, which removes the job from the domain entirely (`kickstart` cannot
+    undo it; the 26-09-16 outage ran 63h on exactly that).
+
+    The domain target is `gui/<uid>` alone: adding the label makes launchctl
+    read it as a service target, print usage and exit non-zero (26-11-20).
 
     The plist path is passed at install time (--plist); the watchdog never
     guesses it. Failure returns False, never raises (ES-6).
     """
     try:
         result = subprocess.run(
-            [LAUNCHCTL_BIN, "bootstrap", f"gui/{os.getuid()}/{label}", plist_path],
+            [LAUNCHCTL_BIN, "bootstrap", f"gui/{os.getuid()}", plist_path],
             capture_output=True,
             text=True,
             check=False,
