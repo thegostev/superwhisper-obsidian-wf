@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -32,6 +33,7 @@ from config import (
     SUPERWHISPER_RELAUNCH_COOLDOWN,
     SUPERWHISPER_TIMEOUT,
 )
+from superwhisper_client import Segment, superwhisper_lock
 
 TIMESTAMP_FORMAT = "%y-%m-%d %H.%M"
 
@@ -822,17 +824,28 @@ def count_icloud_placeholders(folders) -> dict:
     return {"total": sum(by_dir.values()), "by_date_dir": by_dir}
 
 
-def switch_superwhisper_mode() -> None:
-    """Switch Superwhisper to the configured Custom Mode via deep link."""
-    if not SUPERWHISPER_MODE_KEY:
+def switch_superwhisper_mode(mode_key: str | None = None) -> None:
+    """Switch Superwhisper to a Custom Mode via deep link.
+
+    ``mode_key=None`` uses the configured ``SUPERWHISPER_MODE_KEY`` (the daemon
+    path, unchanged). ``analyze_file`` passes its own key so it never reads the
+    daemon's mode setting.
+    """
+    key = SUPERWHISPER_MODE_KEY if mode_key is None else mode_key
+    if not key:
         raise FatalAPIError(
             "superwhisper_mode_key is not set in config.yaml. Default value is 'meeting' — verify in ~/Documents/superwhisper/modes."
         )
-    subprocess.run(["open", f"superwhisper://mode?key={SUPERWHISPER_MODE_KEY}"], check=True)
+    subprocess.run(["open", f"superwhisper://mode?key={key}"], check=True)
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)  # allow mode switch to settle before file handoff
 
 
-def handoff_to_superwhisper(file_path: str) -> float:
+def handoff_to_superwhisper(
+    file_path: str,
+    *,
+    recordings_dir: Path | str | None = None,
+    heartbeat: bool = True,
+) -> float:
     """Hand the audio file to Superwhisper; return the delivery time (epoch seconds).
 
     The delivery time is taken after ``open`` returns, i.e. after the mode
@@ -844,12 +857,20 @@ def handoff_to_superwhisper(file_path: str) -> float:
         raise PermanentFileError(f"Audio file not found: {file_path}")
     # HB-11: forced write at the top of each handoff — the handoff window
     # (mode settle + idle wait + Superwhisper startup) can otherwise breach the
-    # staleness threshold on a healthy busy daemon.
-    write_heartbeat("processing", force=True)
+    # staleness threshold on a healthy busy daemon. ``heartbeat=False`` is for
+    # analyze_file (LAG-1057): a caller outside the daemon must not refresh the
+    # daemon's liveness file.
+    if heartbeat:
+        write_heartbeat("processing", force=True)
     # R7: wait for Superwhisper to finish any in-flight LLM pass before issuing the
     # next `open -a Superwhisper`. Rapid successive opens while Superwhisper is busy
     # create empty recording stubs that never get filled — the documented known issue.
-    _wait_for_superwhisper_idle()
+    # The daemon path calls with no arguments (tests patch that exact call shape);
+    # an alternative recordings dir or heartbeat suppression takes the explicit path.
+    if recordings_dir is None and heartbeat:
+        _wait_for_superwhisper_idle()
+    else:
+        _wait_for_superwhisper_idle(recordings_dir=recordings_dir, heartbeat=heartbeat)
     subprocess.run(["open", file_path, "-a", "Superwhisper"], check=True)
     return time.time()
 
@@ -891,6 +912,37 @@ def _read_recording_meta(path: Path) -> dict[str, str | int | None] | None:
         "raw_result": str(raw) if raw is not None else None,
         "app_version": str(app_version) if app_version is not None else None,
     }
+
+
+def _read_recording_segments(path: Path) -> tuple[Segment, ...]:
+    """Best-effort word-level segments from a recording's ``meta.json``.
+
+    Only used on the success path (once per analyzed file). Entries that are
+    not ``{"start": float, "end": float, "text": str}``-shaped are skipped, so a
+    Superwhisper schema change degrades to an empty tuple instead of failing the
+    analysis that already succeeded.
+    """
+    try:
+        meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ()
+    raw = meta.get("segments") if isinstance(meta, dict) else None
+    if not isinstance(raw, list):
+        return ()
+    segments: list[Segment] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if text is None:
+            continue
+        try:
+            start = float(item["start"])
+            end = float(item["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        segments.append(Segment(start=start, end=end, text=str(text)))
+    return tuple(segments)
 
 
 def _recovery_material(info: dict[str, str | int | None], entry: Path) -> dict[str, str | int | bool | None] | None:
@@ -951,17 +1003,18 @@ def _mark_consumed(recording_dir: Path) -> None:
         print(f"   ⚠️  Could not mark {recording_dir.name} as consumed: {e}", flush=True)
 
 
-def _is_superwhisper_idle() -> bool:
+def _is_superwhisper_idle(recordings_dir: Path | str | None = None) -> bool:
     """True if no recording dir has an in-flight LLM pass (lpt present, llmResult absent).
 
     R7: gate for sequencing handoffs. `open -a Superwhisper` arriving while a prior
     LLM pass is in flight is the documented cause of empty-stub abandonment.
+    ``recordings_dir=None`` uses the configured ``SUPERWHISPER_RECORDINGS_DIR``.
     """
-    recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
-    if not recordings_dir.exists():
+    resolved = Path(SUPERWHISPER_RECORDINGS_DIR) if recordings_dir is None else Path(recordings_dir)
+    if not resolved.exists():
         return True
     try:
-        for entry in recordings_dir.iterdir():
+        for entry in resolved.iterdir():
             if not entry.is_dir() or entry.name.startswith("consumed-") or _is_consumed(entry):
                 continue
             info = _read_recording_meta(entry)
@@ -972,14 +1025,30 @@ def _is_superwhisper_idle() -> bool:
     return True
 
 
-def _wait_for_superwhisper_idle(timeout: int = SUPERWHISPER_IDLE_CHECK_TIMEOUT) -> None:
-    """Block until Superwhisper has no in-flight LLM pass, or timeout. R7."""
+def _wait_for_superwhisper_idle(
+    timeout: int = SUPERWHISPER_IDLE_CHECK_TIMEOUT,
+    *,
+    recordings_dir: Path | str | None = None,
+    heartbeat: bool = True,
+) -> None:
+    """Block until Superwhisper has no in-flight LLM pass, or timeout. R7.
+
+    ``heartbeat=False`` suppresses the loop's heartbeat writes for callers
+    outside the daemon (LAG-1057 ``analyze_file``): the daemon's liveness file
+    must only be refreshed by daemon code, or a podscribe run would look like
+    proof of daemon life.
+
+    The default call shape (no arguments, no heartbeat suppression) is kept for
+    the daemon path and its tests.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         # HB-11: throttled heartbeat inside the inter-file idle-wait loop, so the
         # wait for a busy Superwhisper cannot breach the staleness threshold.
-        write_heartbeat("processing")
-        if _is_superwhisper_idle():
+        if heartbeat:
+            write_heartbeat("processing")
+        idle = _is_superwhisper_idle() if recordings_dir is None else _is_superwhisper_idle(recordings_dir)
+        if idle:
             return
         time.sleep(SUPERWHISPER_IDLE_CHECK_INTERVAL)
     print(
@@ -989,19 +1058,42 @@ def _wait_for_superwhisper_idle(timeout: int = SUPERWHISPER_IDLE_CHECK_TIMEOUT) 
 
 
 class SuperwhisperResult(str):
-    """A CATEGORY-bearing llmResult plus the session dir it came from (LAG-911).
+    """A contract-satisfying llmResult plus its recording provenance (LAG-911).
 
     Subclasses ``str`` so every caller that only needs the text keeps working
     unchanged. ``recording_dir`` is persisted with a successful state entry as
     retention provenance; cleanup.py otherwise cannot tell which store dir a
     completed audio file used.
+
+    LAG-1057 (``analyze_file``) additionally consumes ``transcript``
+    (``meta.json.rawResult``), ``analysis`` (the returned llmResult),
+    ``duration_ms`` (``meta.json.duration``) and ``segments``. The daemon path
+    only reads the string value and ``recording_dir``; all new fields have
+    defaults so positional construction is unchanged.
     """
 
     recording_dir: str
+    transcript: str | None
+    analysis: str | None
+    duration_ms: int | None
+    segments: tuple[Segment, ...]
 
-    def __new__(cls, text: str, recording_dir: str) -> "SuperwhisperResult":
+    def __new__(
+        cls,
+        text: str,
+        recording_dir: str,
+        *,
+        transcript: str | None = None,
+        analysis: str | None = None,
+        duration_ms: int | None = None,
+        segments: tuple[Segment, ...] = (),
+    ) -> "SuperwhisperResult":
         result: SuperwhisperResult = super().__new__(cls, text)
         result.recording_dir = recording_dir
+        result.transcript = transcript
+        result.analysis = analysis
+        result.duration_ms = duration_ms
+        result.segments = segments
         return result
 
 
@@ -1019,21 +1111,66 @@ def _scaled_poll_budget(expected_duration_ms: int | None, floor: int, ceiling: i
     return min(ceiling, max(floor, scaled))
 
 
+def _scaled_stability_polls(expected_duration_ms: int | None) -> int:
+    """R6: empty-stub stability threshold, scaled by audio duration.
+
+    Kept as a helper so ``wait_for_superwhisper_result`` stays within the
+    repo's mccabe budget while LAG-1057 adds the contract/lock parameters.
+    """
+    if expected_duration_ms and expected_duration_ms > 0:
+        scaled = STABILITY_POLLS_FLOOR + int(expected_duration_ms / 1000 / 30) * STABILITY_POLLS_PER_30S
+        return min(STABILITY_POLLS_CEILING, max(STABILITY_POLLS_FLOOR, scaled))
+    return RECORDING_STABILITY_POLLS
+
+
+def _satisfies_contract(text: str, contract_check: Callable[[str], bool] | None) -> bool:
+    """LAG-1057: success predicate for an llmResult.
+
+    ``contract_check=None`` is the daemon's historical rule: a ``CATEGORY:`` or
+    ``---CATEGORY---`` header. Callers that supply a check (``analyze_file``)
+    define their own contract.
+    """
+    if contract_check is None:
+        return CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text
+    return bool(contract_check(text))
+
+
+def _contract_failure_reason(contract_check: Callable[[str], bool] | None) -> str:
+    """Describe the contract an llmResult failed, for the permanent-error message."""
+    if contract_check is None:
+        return f"without the {CATEGORY_HEADER} contract header"
+    return "that fails the caller's contract_check"
+
+
 def wait_for_superwhisper_result(
     file_path: str,
     since: float,
     expected_duration_ms: int | None = None,
     handed_off_at: float | None = None,
     timeout: float | None = None,
-) -> str:
+    *,
+    contract_check: Callable[[str], bool] | None = None,
+    recordings_dir: Path | str | None = None,
+    heartbeat: bool = True,
+) -> SuperwhisperResult:
     """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper().
 
     Detection strategy (fast-fail, avoids blocking the queue for SUPERWHISPER_TIMEOUT):
-      - llmResult with CATEGORY: header → success, return it (after write-stability check)
-      - llmResult present but no CATEGORY: header → LLM refused the contract → PermanentFileError
+      - llmResult satisfying the contract → success, return it (after write-stability check)
+      - llmResult present but not satisfying the contract → PermanentFileError
       - No llmResult but meta.json mtime stable for stability_polls polls and
         transcription completed → analysis pass did not run → PermanentFileError
       - Otherwise keep polling until SUPERWHISPER_TIMEOUT → TimeoutError (transient retry)
+
+    Contract (LAG-1057): ``contract_check`` is the success predicate over
+    ``llmResult``. ``None`` keeps the daemon's historical rule — a ``CATEGORY:``
+    or ``---CATEGORY---`` header — byte-for-byte. ``analyze_file`` passes its
+    own check (default "non-empty"), so modes that emit cleaned text instead of
+    the meetings header still succeed.
+
+    ``recordings_dir=None`` uses ``SUPERWHISPER_RECORDINGS_DIR``; ``heartbeat=False``
+    suppresses the poll-loop heartbeat so callers outside the daemon never write
+    the daemon's liveness file. Both defaults preserve the daemon call shape.
 
     R3: if `expected_duration_ms` is provided, recording dirs whose `duration` field
         differs by more than DURATION_MATCH_TOLERANCE are skipped. Prevents the
@@ -1081,10 +1218,10 @@ def wait_for_superwhisper_result(
         instead of waiting out the full deadline. `languageModelProcessingTime`
         in a readable meta.json is proof of life and is never class D.
     """
-    recordings_dir = Path(SUPERWHISPER_RECORDINGS_DIR)
-    if not recordings_dir.exists():
+    resolved_dir = Path(SUPERWHISPER_RECORDINGS_DIR) if recordings_dir is None else Path(recordings_dir)
+    if not resolved_dir.exists():
         raise FatalAPIError(
-            f"Superwhisper recordings folder not found: {recordings_dir}. Verify Superwhisper is installed and has been used at least once."
+            f"Superwhisper recordings folder not found: {resolved_dir}. Verify Superwhisper is installed and has been used at least once."
         )
 
     wait_started = time.time()
@@ -1100,11 +1237,7 @@ def wait_for_superwhisper_result(
     session_seen = False
 
     # R6: scale empty-stub stability threshold to audio duration.
-    if expected_duration_ms and expected_duration_ms > 0:
-        scaled = STABILITY_POLLS_FLOOR + int(expected_duration_ms / 1000 / 30) * STABILITY_POLLS_PER_30S
-        stability_polls = min(STABILITY_POLLS_CEILING, max(STABILITY_POLLS_FLOOR, scaled))
-    else:
-        stability_polls = RECORDING_STABILITY_POLLS
+    stability_polls = _scaled_stability_polls(expected_duration_ms)
 
     # CB-25: class-D budget, scaled 10..120 by duration like R6.
     class_d_fastfail_polls = _scaled_poll_budget(
@@ -1126,10 +1259,12 @@ def wait_for_superwhisper_result(
         # HB-1: heartbeat from inside the Superwhisper poll loop (every 3 s,
         # throttled to 15 s). This is the load-bearing busy-state call site: a
         # legitimately busy daemon would otherwise look dead for up to
-        # SUPERWHISPER_TIMEOUT × MAX_FILES_PER_CYCLE ≈ 5 hours.
-        write_heartbeat("processing")
+        # SUPERWHISPER_TIMEOUT × MAX_FILES_PER_CYCLE ≈ 5 hours. Suppressed for
+        # callers outside the daemon (LAG-1057 analyze_file, heartbeat=False).
+        if heartbeat:
+            write_heartbeat("processing")
         try:
-            entries = sorted(recordings_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            entries = sorted(resolved_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
         except OSError:
             continue
 
@@ -1179,7 +1314,7 @@ def wait_for_superwhisper_result(
 
             raw_text = info["llm_result"]
             text = raw_text if isinstance(raw_text, str) else None
-            if text and (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
+            if text and _satisfies_contract(text, contract_check):
                 # R5: require WRITE_STABILITY_POLLS consecutive polls with unchanged
                 # mtime AND unchanged llmResult byte length before returning. Catches
                 # mid-stream reads where Superwhisper is still appending to llmResult.
@@ -1194,13 +1329,22 @@ def wait_for_superwhisper_result(
                 )
                 # R4: mark this recording consumed so retries don't re-match it.
                 _mark_consumed(entry)
-                return SuperwhisperResult(stable_text, entry.name)
+                raw_transcript = info["raw_result"]
+                return SuperwhisperResult(
+                    stable_text,
+                    entry.name,
+                    transcript=raw_transcript if isinstance(raw_transcript, str) else None,
+                    analysis=stable_text,
+                    duration_ms=duration_ms if isinstance(duration_ms, int) else None,
+                    segments=_read_recording_segments(entry),
+                )
 
-            # Fast-fail case 1: LLM produced output but no CATEGORY: header = refusal.
-            if text and not (CATEGORY_HEADER in text or CATEGORY_SECTION_MARKER in text):
+            # Fast-fail case 1: LLM produced output that fails the contract = refusal.
+            if text and not _satisfies_contract(text, contract_check):
+                contract_expectation = _contract_failure_reason(contract_check)
                 raise _attach_recovery(
                     PermanentFileError(
-                        f"Superwhisper produced an llmResult without the {CATEGORY_HEADER} contract header "
+                        f"Superwhisper produced an llmResult {contract_expectation} "
                         f"for {Path(file_path).name}. The Custom Mode LLM likely refused the transcript "
                         f"(too short, wrong format, or non-meeting audio). First line: {text.splitlines()[0][:120]!r}"
                     ),
@@ -1944,15 +2088,20 @@ def _run_attempt(
 
         check_disk_space()  # DS-2: no Superwhisper handoff below the floor
         since = time.time()
-        switch_superwhisper_mode()
-        handed_off_at = handoff_to_superwhisper(file_path)  # CB-10: accept window opens here
-        raw_result = wait_for_superwhisper_result(
-            file_path,
-            since=since,
-            expected_duration_ms=expected_duration_ms,
-            handed_off_at=handed_off_at,
-            timeout=budget,
-        )
+        # LAG-1057: the same cross-process lock analyze_file holds, so a podscribe
+        # run and the meetings daemon never interleave mode switches/handoffs.
+        # Held from mode switch through the result; released before the outcome
+        # bookkeeping and any auto-relaunch.
+        with superwhisper_lock():
+            switch_superwhisper_mode()
+            handed_off_at = handoff_to_superwhisper(file_path)  # CB-10: accept window opens here
+            raw_result = wait_for_superwhisper_result(
+                file_path,
+                since=since,
+                expected_duration_ms=expected_duration_ms,
+                handed_off_at=handed_off_at,
+                timeout=budget,
+            )
         category, ai_filename, analysis = parse_superwhisper_output(raw_result)
 
         fname = f"{timestamp.strftime(TIMESTAMP_FORMAT)} - {ai_filename.removesuffix(MARKDOWN_EXT)}{MARKDOWN_EXT}"

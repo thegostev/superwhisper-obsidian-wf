@@ -7,6 +7,7 @@ user's real config.yaml (which may have personal paths / category names).
 
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -14,6 +15,10 @@ import pytest
 import yaml
 
 _PROJECT_DIR = Path(__file__).parent.parent
+
+# LAG-1057: the pipeline takes the shared Superwhisper flock on every attempt.
+# Point it at a throwaway path so the suite never creates ~/.superwhisper.lock.
+os.environ.setdefault("SWOWF_LOCK_PATH", str(Path(tempfile.gettempdir()) / f"swowf-test-{os.getpid()}.lock"))
 
 # Pin the local timezone for the whole session. get_audio_timestamp() converts
 # UTC mdls output to local time via datetime.astimezone() — tests assert CEST
