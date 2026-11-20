@@ -10,10 +10,11 @@ exception, and path resolution.
 import multiprocessing
 import queue
 import threading
+import time
 
 import pytest
 
-from superwhisper_client import resolve_lock_path, superwhisper_lock
+from superwhisper_client import SuperwhisperBusyError, resolve_lock_path, superwhisper_lock
 
 
 def _acquire(lock_path: str) -> bool:
@@ -24,6 +25,12 @@ def _acquire(lock_path: str) -> bool:
 def _process_worker(lock_path: str, result_queue) -> None:
     with superwhisper_lock(lock_path):
         result_queue.put("child-acquired")
+
+
+def _hold_worker(lock_path: str, ready, release) -> None:
+    with superwhisper_lock(lock_path):
+        ready.set()
+        release.wait(timeout=10)
 
 
 def test_explicit_path_is_used_and_created(tmp_path):
@@ -104,3 +111,56 @@ def test_lock_parent_directory_created(tmp_path):
     lock_path = tmp_path / "nested" / "dir" / "shared.lock"
     with superwhisper_lock(lock_path) as held:
         assert held.parent.is_dir()
+
+
+def test_bounded_wait_raises_naming_lock_and_wait(tmp_path):
+    """A held lock from a forked child makes the parent's bounded acquire time out."""
+    ctx = multiprocessing.get_context("fork")
+    lock_path = tmp_path / "busy.lock"
+    ready, release = ctx.Event(), ctx.Event()
+    proc = ctx.Process(target=_hold_worker, args=(str(lock_path), ready, release))
+    proc.start()
+    try:
+        assert ready.wait(timeout=5), "child never acquired the lock"
+        started = time.monotonic()
+        with (
+            pytest.raises(SuperwhisperBusyError, match=r"waiting for the Superwhisper lock .*busy\.lock"),
+            superwhisper_lock(lock_path, timeout=0.2, poll_interval=0.01),
+        ):
+            pytest.fail("acquired a lock the child holds")
+        assert time.monotonic() - started >= 0.2
+    finally:
+        release.set()
+        proc.join(timeout=5)
+    assert proc.exitcode == 0
+
+
+def test_on_wait_fires_between_attempts(tmp_path):
+    """The waiter can refresh the daemon heartbeat while another process holds the lock."""
+    lock_path = tmp_path / "waited.lock"
+    ready, release = threading.Event(), threading.Event()
+    waits: list[float] = []
+
+    def holder() -> None:
+        with superwhisper_lock(lock_path):
+            ready.set()
+            release.wait(timeout=5)
+
+    thread = threading.Thread(target=holder, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    try:
+        with (
+            pytest.raises(SuperwhisperBusyError),
+            superwhisper_lock(
+                lock_path,
+                timeout=0.15,
+                on_wait=lambda: waits.append(time.monotonic()),
+                poll_interval=0.01,
+            ),
+        ):
+            pytest.fail("acquired a lock the thread holds")
+    finally:
+        release.set()
+        thread.join(timeout=5)
+    assert waits, "on_wait was never called while waiting for the lock"

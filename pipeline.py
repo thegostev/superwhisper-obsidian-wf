@@ -1152,6 +1152,7 @@ def wait_for_superwhisper_result(
     contract_check: Callable[[str], bool] | None = None,
     recordings_dir: Path | str | None = None,
     heartbeat: bool = True,
+    extend_for_proof_of_life: bool = True,
 ) -> SuperwhisperResult:
     """Poll until Superwhisper finishes; `since` = time.time() before handoff_to_superwhisper().
 
@@ -1209,7 +1210,10 @@ def wait_for_superwhisper_result(
         filter shows its LLM pass in flight, the deadline extends to
         SUPERWHISPER_TIMEOUT from the start of this wait - Superwhisper is
         demonstrably working on our file, so a stale flag must not fail a
-        healthy long meeting.
+        healthy long meeting. ``extend_for_proof_of_life=False`` disables that
+        extension, so the caller's ``timeout`` is a hard ceiling; the
+        programmatic seam (LAG-1057) uses it to keep ``analyze_file(timeout=)``
+        meaningful. The daemon keeps the default.
 
     CB-25 (LAG-913): class-D fast-fail. A session dir created after handoff
         delivery that still has no `meta.json` after `class_d_fastfail_polls`
@@ -1227,7 +1231,7 @@ def wait_for_superwhisper_result(
     wait_started = time.time()
     budget = SUPERWHISPER_TIMEOUT if timeout is None else timeout
     deadline = wait_started + budget
-    full_deadline = wait_started + SUPERWHISPER_TIMEOUT  # CB-24: ceiling for a proof-of-life extension
+    full_deadline = wait_started + (SUPERWHISPER_TIMEOUT if extend_for_proof_of_life else budget)  # CB-24 ceiling
     print(f"   ⏳ Waiting for Superwhisper (timeout: {budget}s)...", flush=True)
 
     # CB-10: the accept window opens at handoff delivery, not at `since` (which
@@ -1314,39 +1318,42 @@ def wait_for_superwhisper_result(
 
             raw_text = info["llm_result"]
             text = raw_text if isinstance(raw_text, str) else None
-            if text and _satisfies_contract(text, contract_check):
+            if text:
                 # R5: require WRITE_STABILITY_POLLS consecutive polls with unchanged
-                # mtime AND unchanged llmResult byte length before returning. Catches
-                # mid-stream reads where Superwhisper is still appending to llmResult.
+                # mtime AND unchanged llmResult byte length before evaluating the
+                # contract. A caller-supplied contract_check (LAG-1057) may depend on
+                # a later section of the output; evaluating a partial, still-growing
+                # llmResult would fast-fail a run that would eventually succeed.
                 stable_text = _check_write_stability(write_stability, entry, mtime, text)
                 if stable_text is None:
                     continue
-                # Stable — safe to return. R13: log dir + hash + bytes for post-hoc verification.
-                content_hash = hashlib.sha256(stable_text[:200].encode("utf-8")).hexdigest()[:8]
-                print(
-                    f"   📄 Got result from: {entry.name} (bytes={len(stable_text)}, hash={content_hash})",
-                    flush=True,
-                )
-                # R4: mark this recording consumed so retries don't re-match it.
-                _mark_consumed(entry)
-                raw_transcript = info["raw_result"]
-                return SuperwhisperResult(
-                    stable_text,
-                    entry.name,
-                    transcript=raw_transcript if isinstance(raw_transcript, str) else None,
-                    analysis=stable_text,
-                    duration_ms=duration_ms if isinstance(duration_ms, int) else None,
-                    segments=_read_recording_segments(entry),
-                )
+                if _satisfies_contract(stable_text, contract_check):
+                    # Stable — safe to return. R13: log dir + hash + bytes for post-hoc verification.
+                    content_hash = hashlib.sha256(stable_text[:200].encode("utf-8")).hexdigest()[:8]
+                    print(
+                        f"   📄 Got result from: {entry.name} (bytes={len(stable_text)}, hash={content_hash})",
+                        flush=True,
+                    )
+                    # R4: mark this recording consumed so retries don't re-match it.
+                    _mark_consumed(entry)
+                    raw_transcript = info["raw_result"]
+                    return SuperwhisperResult(
+                        stable_text,
+                        entry.name,
+                        transcript=raw_transcript if isinstance(raw_transcript, str) else None,
+                        analysis=stable_text,
+                        duration_ms=duration_ms if isinstance(duration_ms, int) else None,
+                        segments=_read_recording_segments(entry),
+                    )
 
-            # Fast-fail case 1: LLM produced output that fails the contract = refusal.
-            if text and not _satisfies_contract(text, contract_check):
+                # Stable and failing the contract: the LLM refused it. Fast-fail
+                # only now that the file has stopped growing (R5).
                 contract_expectation = _contract_failure_reason(contract_check)
                 raise _attach_recovery(
                     PermanentFileError(
                         f"Superwhisper produced an llmResult {contract_expectation} "
                         f"for {Path(file_path).name}. The Custom Mode LLM likely refused the transcript "
-                        f"(too short, wrong format, or non-meeting audio). First line: {text.splitlines()[0][:120]!r}"
+                        f"(too short, wrong format, or non-meeting audio). First line: {stable_text.splitlines()[0][:120]!r}"
                     ),
                     entry_recovery,
                 )
@@ -2087,12 +2094,33 @@ def _run_attempt(
             print(f"   📏 Source audio duration: {expected_duration_ms} ms", flush=True)
 
         check_disk_space()  # DS-2: no Superwhisper handoff below the floor
-        since = time.time()
         # LAG-1057: the same cross-process lock analyze_file holds, so a podscribe
         # run and the meetings daemon never interleave mode switches/handoffs.
         # Held from mode switch through the result; released before the outcome
-        # bookkeeping and any auto-relaunch.
-        with superwhisper_lock():
+        # bookkeeping and any auto-relaunch. Acquisition retries non-blocking while
+        # refreshing the heartbeat: a blocking flock here left the daemon looking
+        # dead to health_check (DEFAULT_MAX_AGE=300) whenever podscribe held the
+        # lock for minutes, so the watchdog kickstarted it in a loop.
+        lock_waited: list[bool] = []
+
+        def _heartbeat_while_lock_waiting() -> None:
+            lock_waited.append(True)
+            write_heartbeat("processing")
+
+        lock_entry = time.time()
+        with superwhisper_lock(timeout=budget, on_wait=_heartbeat_while_lock_waiting):
+            # LAG-1057 review: `since` must postdate lock acquisition. Set before
+            # the lock, it let a leftover recording from a failed podscribe run
+            # pass the R3 duration match and be adopted as this session.
+            since = time.time()
+            # When the lock was contended, its wait comes out of this attempt's
+            # existing budget; an uncontended acquire leaves the budget untouched.
+            remaining = max(0.0, budget - (since - lock_entry)) if lock_waited else budget
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Superwhisper attempt budget of {budget:.0f}s was consumed waiting for the shared "
+                    f"Superwhisper lock; {Path(file_path).name} will retry on the next cycle"
+                )
             switch_superwhisper_mode()
             handed_off_at = handoff_to_superwhisper(file_path)  # CB-10: accept window opens here
             raw_result = wait_for_superwhisper_result(
@@ -2100,7 +2128,7 @@ def _run_attempt(
                 since=since,
                 expected_duration_ms=expected_duration_ms,
                 handed_off_at=handed_off_at,
-                timeout=budget,
+                timeout=remaining,
             )
         category, ai_filename, analysis = parse_superwhisper_output(raw_result)
 

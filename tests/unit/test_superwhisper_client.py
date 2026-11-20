@@ -9,8 +9,10 @@ handoff -> wait sequence. Superwhisper itself is faked through
 
 import fcntl
 import json
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,7 +20,7 @@ import pytest
 
 import pipeline
 import superwhisper_client
-from superwhisper_client import Segment, analyze_file
+from superwhisper_client import Segment, SuperwhisperBusyError, analyze_file, superwhisper_lock
 
 AUDIO_DURATION_MS = 600_000
 CLEAN_TEXT = "Cleaned podcast text. No CATEGORY header."
@@ -150,6 +152,34 @@ def test_timeout_budget_is_honoured(env, monkeypatch):
         analyze_file(env.audio, mode_key="podcast", timeout=0, lock_path=env.tmp / "shared.lock")
 
 
+def test_timeout_budget_covers_lock_wait(env):
+    """A held lock consumes the caller's budget and raises a typed, named error."""
+    lock_path = env.tmp / "shared.lock"
+    with superwhisper_lock(lock_path):
+        started = time.monotonic()
+        with pytest.raises(SuperwhisperBusyError, match=r"waiting for the Superwhisper lock .*shared\.lock"):
+            analyze_file(env.audio, mode_key="podcast", timeout=0.3, lock_path=lock_path)
+        assert time.monotonic() - started >= 0.3
+
+
+def test_proof_of_life_extension_is_capped_at_caller_budget(env, monkeypatch):
+    """The seam disables CB-24's jump to SUPERWHISPER_TIMEOUT; its own timeout rules."""
+    captured: dict = {}
+    monkeypatch.setattr(pipeline, "switch_superwhisper_mode", lambda **_kw: None)
+    monkeypatch.setattr(pipeline, "handoff_to_superwhisper", lambda *_a, **_kw: time.time())
+
+    def fake_wait(*_args, **kwargs):
+        captured.update(kwargs)
+        return pipeline.SuperwhisperResult(CLEAN_TEXT, "session-1")
+
+    monkeypatch.setattr(pipeline, "wait_for_superwhisper_result", fake_wait)
+
+    analyze_file(env.audio, mode_key="podcast", timeout=60, lock_path=env.tmp / "shared.lock")
+
+    assert captured["extend_for_proof_of_life"] is False
+    assert 0 < captured["timeout"] <= 60
+
+
 # --- provenance / side effects ------------------------------------------------
 
 
@@ -269,3 +299,23 @@ def test_importing_module_does_not_import_pipeline_or_config():
         "assert 'config' not in sys.modules, 'config imported eagerly'"
     )
     subprocess.run([sys.executable, "-c", code], cwd=repo_root, check=True, timeout=30)
+
+
+def test_missing_config_raises_typed_error_not_system_exit(tmp_path):
+    """config.py's import-time sys.exit must not kill the calling process."""
+    repo_root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "SWOWF_CONFIG_PATH": str(tmp_path / "missing-config.yaml")}
+    code = (
+        "import superwhisper_client as sc\n"
+        "try:\n"
+        "    sc.analyze_file('/nope.m4a', mode_key='podcast')\n"
+        "except sc.SuperwhisperConfigError:\n"
+        "    print('typed-config-error')\n"
+        "except SystemExit:\n"
+        "    raise\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code], cwd=repo_root, env=env, capture_output=True, text=True, timeout=30
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "typed-config-error" in completed.stdout

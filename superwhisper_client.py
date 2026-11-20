@@ -4,12 +4,15 @@ Public API::
 
     analyze_file(audio_path, *, mode_key, timeout=3600, contract_check=None,
                  recordings_dir=None, lock_path=None) -> AnalyzerResult
-    superwhisper_lock(lock_path=None)  # cross-process flock context manager
+    superwhisper_lock(lock_path=None, *, timeout=None, on_wait=None,
+                      poll_interval=...)  # cross-process flock context manager
 
 This module is deliberately import-light: it imports only the standard library
 at module level. ``pipeline`` is imported lazily inside ``analyze_file``
 because importing it loads ``config.py``, which reads ``locations/config.yaml``
 (or ``$SWOWF_CONFIG_PATH``) at import time and exits when no config exists.
+That ``SystemExit`` is caught and re-raised as ``SuperwhisperConfigError`` so a
+programmatic caller is never killed by a missing config.
 
 Minimum configuration a caller must provide
 --------------------------------------------
@@ -22,7 +25,9 @@ Minimum configuration a caller must provide
   ``superwhisper_recordings_dir`` (default
   ``~/Documents/superwhisper/recordings``).
 * If the checkout is not inside an ``Obsidian`` folder, set
-  ``SWOWF_OBSIDIAN_BASE`` unless every config path is absolute.
+  ``SWOWF_OBSIDIAN_BASE`` (or ``SWOWF_CONFIG_PATH``, which makes the lookup
+  fall back to the repo root). Absolute config paths do not avoid the lookup:
+  ``config.py`` calls ``find_obsidian_base()`` at import time regardless.
 * A Superwhisper Custom Mode whose key is passed as ``mode_key``. The podcast
   mode key is ``podcast`` - a safe-key copy of a mode whose display key
   contains spaces, which the ``superwhisper://mode?key=`` deep link silently
@@ -45,10 +50,27 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 DEFAULT_LOCK_PATH = Path.home() / ".superwhisper.lock"
 LOCK_PATH_ENV = "SWOWF_LOCK_PATH"
 MODES_SUBDIR = Path("Documents") / "superwhisper" / "modes"
+# Lock acquisition retries at this interval while another process holds the
+# lock. Short enough that the daemon notices a release promptly, long enough
+# that a waiting process is not a spin loop.
+LOCK_POLL_INTERVAL = 0.25
+
+
+class SuperwhisperBusyError(TimeoutError):
+    """The shared Superwhisper lock could not be acquired within the budget.
+
+    Subclasses ``TimeoutError`` so callers that treat a busy Superwhisper as a
+    transient timeout keep working unchanged.
+    """
+
+
+class SuperwhisperConfigError(RuntimeError):
+    """``pipeline``/``config`` could not be imported (missing or invalid config)."""
 
 
 @dataclass(frozen=True)
@@ -90,7 +112,13 @@ def resolve_lock_path(lock_path: str | Path | None = None) -> Path:
 
 
 @contextlib.contextmanager
-def superwhisper_lock(lock_path: str | Path | None = None) -> Iterator[Path]:
+def superwhisper_lock(
+    lock_path: str | Path | None = None,
+    *,
+    timeout: float | None = None,
+    on_wait: Callable[[], object] | None = None,
+    poll_interval: float = LOCK_POLL_INTERVAL,
+) -> Iterator[Path]:
     """Hold the cross-process Superwhisper handoff lock for the ``with`` body.
 
     An exclusive ``fcntl.flock`` on ``~/.superwhisper.lock`` (override with
@@ -98,15 +126,63 @@ def superwhisper_lock(lock_path: str | Path | None = None) -> Iterator[Path]:
     on exception, and on process death (the kernel drops the flock with the
     file description). The lock file itself carries no state; its contents are
     never read.
+
+    Acquisition is non-blocking and retried, so a waiter can do work while
+    another process (podscribe or the meetings daemon) holds the lock.
+
+    Args:
+        lock_path: Lock file; defaults to ``$SWOWF_LOCK_PATH`` then
+            ``~/.superwhisper.lock``.
+        timeout: Maximum seconds to wait for the lock; ``None`` waits as long
+            as the holder needs. On expiry raises :class:`SuperwhisperBusyError`
+            naming the path and the wait.
+        on_wait: Called between acquisition attempts (typically a heartbeat
+            refresh); its return value is ignored. Exceptions from it propagate;
+            keep it non-blocking.
+        poll_interval: Seconds between acquisition attempts.
+
+    Raises:
+        SuperwhisperBusyError: ``timeout`` elapsed while another process held
+            the lock.
     """
     path = resolve_lock_path(lock_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _acquire_lock(handle, path, timeout=timeout, on_wait=on_wait, poll_interval=poll_interval)
         try:
             yield path
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire_lock(
+    handle: IO[str],
+    path: Path,
+    *,
+    timeout: float | None,
+    on_wait: Callable[[], object] | None,
+    poll_interval: float,
+) -> None:
+    """Retry ``LOCK_EX | LOCK_NB`` until acquired or the timeout expires."""
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            pass
+        if deadline is not None and time.monotonic() >= deadline:
+            raise SuperwhisperBusyError(
+                f"Timed out after {timeout:.1f}s waiting for the Superwhisper lock {path} "
+                "(another Superwhisper caller holds it)"
+            )
+        if on_wait is not None:
+            on_wait()
+        sleep_for = poll_interval
+        if deadline is not None:
+            sleep_for = min(poll_interval, max(0.0, deadline - time.monotonic()))
+        if sleep_for > 0:
+            time.sleep(sleep_for)
 
 
 def analyze_file(
@@ -130,8 +206,10 @@ def analyze_file(
         audio_path: Audio file to hand to Superwhisper.
         mode_key: Superwhisper Custom Mode key (for example ``"podcast"``).
             Never read from ``SUPERWHISPER_MODE_KEY``; the caller owns it.
-        timeout: Wait budget for the result, in seconds (default 3600). The
-            pipeline's own fast-fail and accept-window rules still apply.
+        timeout: Total wait budget in seconds (default 3600), covering both the
+            shared-lock wait and the result wait. The pipeline's own fast-fail
+            and accept-window rules still apply; the CB-24 proof-of-life
+            extension is capped at this budget for the seam.
         contract_check: Success predicate over ``llmResult``. ``None`` means
             "any non-empty llmResult is success", which is right for modes that
             emit cleaned text instead of the meetings ``CATEGORY:`` header. The
@@ -149,15 +227,27 @@ def analyze_file(
 
     Raises:
         FileNotFoundError: ``audio_path`` does not exist.
+        SuperwhisperConfigError: ``pipeline`` could not be imported (missing or
+            invalid config); ``config.py`` would otherwise ``sys.exit(1)`` and
+            kill the calling process.
         pipeline.FatalAPIError: misconfiguration or missing recordings dir.
         pipeline.PermanentFileError: the LLM refused the contract.
+        SuperwhisperBusyError: another Superwhisper caller held the shared lock
+            for the whole ``timeout`` budget.
         TimeoutError: no result within the budget or an abandoned stub.
         pipeline.SuperwhisperNotAcceptingError: Superwhisper never took the
             handoff within the accept window.
         NotImplementedError: running where ``fcntl`` is unavailable (POSIX
             only).
     """
-    import pipeline  # deliberate lazy import; see module docstring
+    deadline = time.monotonic() + timeout
+    try:
+        import pipeline  # deliberate lazy import; see module docstring
+    except SystemExit as exc:
+        raise SuperwhisperConfigError(
+            "Could not import pipeline: config.py exited while loading configuration "
+            "(set $SWOWF_CONFIG_PATH to a valid config, or add locations/config.yaml)"
+        ) from exc
 
     path = Path(audio_path).expanduser()
     if not path.exists():
@@ -169,7 +259,9 @@ def analyze_file(
     )
     expected_duration_ms = pipeline.get_audio_duration_ms(str(path))
 
-    with superwhisper_lock(lock_path):
+    # LAG-1057 review: the caller's budget covers the lock wait too, not just
+    # the result wait. On expiry SuperwhisperBusyError names the lock and wait.
+    with superwhisper_lock(lock_path, timeout=_remaining(deadline)):
         pipeline.switch_superwhisper_mode(mode_key=mode_key)
         since = time.time()
         handed_off_at = pipeline.handoff_to_superwhisper(
@@ -182,10 +274,13 @@ def analyze_file(
             since=since,
             expected_duration_ms=expected_duration_ms,
             handed_off_at=handed_off_at,
-            timeout=timeout,
+            timeout=_remaining(deadline),
             contract_check=check,
             recordings_dir=rec_dir,
             heartbeat=False,
+            # CB-24's extension targets SUPERWHISPER_TIMEOUT; for this seam the
+            # caller's remaining budget is the hard ceiling.
+            extend_for_proof_of_life=False,
         )
 
     return AnalyzerResult(
@@ -196,6 +291,11 @@ def analyze_file(
         segments=result.segments,
         mode_name=_read_mode_name(mode_key),
     )
+
+
+def _remaining(deadline: float) -> float:
+    """Seconds left before a ``time.monotonic()`` deadline, never negative."""
+    return max(0.0, deadline - time.monotonic())
 
 
 def _non_empty_result(text: str) -> bool:

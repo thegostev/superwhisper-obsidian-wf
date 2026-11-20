@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+import pipeline
 from pipeline import (
     CATEGORY_HEADER,
     PermanentFileError,
@@ -164,3 +165,74 @@ def test_timeout_when_recording_never_appears(recordings_dir, monkeypatch):
     since = time.time() + 100  # force all recordings to be "older" than since
     with patch("time.sleep"), pytest.raises(TimeoutError, match="did not return"):
         wait_for_superwhisper_result("foo.m4a", since=since)
+
+
+# --- LAG-1057 review: contract only after write stability --------------------
+
+
+def test_custom_contract_polls_while_llmresult_still_grows(recordings_dir):
+    """A contract that needs a later section must not fast-fail a growing llmResult."""
+    rec_dir = _write_recording(recordings_dir, "555", 0.0, {"llmResult": "PART A"})
+    since = time.time() - 1
+    polls = {"n": 0}
+
+    def fake_sleep(_):
+        polls["n"] += 1
+        if polls["n"] == 2:  # first poll sees only "PART A"; grow it before the next
+            (rec_dir / "meta.json").write_text(json.dumps({"llmResult": "PART A\nPART B"}), encoding="utf-8")
+
+    with patch("time.sleep", fake_sleep):
+        result = wait_for_superwhisper_result(
+            "foo.m4a",
+            since=since,
+            contract_check=lambda text: "PART B" in text,
+        )
+
+    assert "PART B" in result
+    assert polls["n"] >= 2
+
+
+def test_failing_contract_raises_only_after_write_stability(recordings_dir):
+    """A static, contract-failing llmResult raises after R5 stability, not on first sight."""
+    _write_recording(recordings_dir, "666", 0.0, {"llmResult": "no marker here"})
+    since = time.time() - 1
+    polls = {"n": 0}
+
+    def fake_sleep(_):
+        polls["n"] += 1
+
+    with patch("time.sleep", fake_sleep), pytest.raises(PermanentFileError, match="contract_check"):
+        wait_for_superwhisper_result(
+            "foo.m4a",
+            since=since,
+            contract_check=lambda text: "MARKER" in text,
+        )
+
+    assert polls["n"] >= pipeline.WRITE_STABILITY_POLLS
+
+
+def test_meetings_category_fast_fail_still_applies_after_stability(recordings_dir):
+    """The daemon's CATEGORY: contract is unchanged by the reordering."""
+    _write_recording(recordings_dir, "667", 0.0, {"llmResult": "LLM refused this fragment."})
+    since = time.time() - 1
+    with patch("time.sleep"), pytest.raises(PermanentFileError, match="CATEGORY"):
+        wait_for_superwhisper_result("foo.m4a", since=since)
+
+
+# --- LAG-1057 review: CB-24 extension is capped for the seam ----------------
+
+
+def test_proof_of_life_extension_can_be_disabled(recordings_dir, monkeypatch):
+    """extend_for_proof_of_life=False keeps a short caller budget a hard ceiling."""
+    meta = {"languageModelProcessingTime": 5000, "duration": 600000}
+    _write_recording(recordings_dir, "888", 0.0, meta)
+    since = time.time() - 1
+    monkeypatch.setattr("pipeline.SUPERWHISPER_TIMEOUT", 100)
+
+    with patch("time.sleep"), pytest.raises(TimeoutError, match="did not return"):
+        wait_for_superwhisper_result(
+            "foo.m4a",
+            since=since,
+            timeout=0.05,
+            extend_for_proof_of_life=False,
+        )
